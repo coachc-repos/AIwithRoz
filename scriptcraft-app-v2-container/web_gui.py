@@ -4447,7 +4447,7 @@ def agent_mode_api():
 
 
 # ---------------------------------------------------------------------------
-# Idea Generator (Claude Opus 5 + web search)
+# Idea Generator (Claude Opus 5.1 + web search)
 #
 # Brainstorm video-episode ideas from a free-text request, then expand the
 # chosen idea into a full creative brief in the channel's house format. Uses
@@ -4459,9 +4459,9 @@ def agent_mode_api():
 ANTHROPIC_MODEL = "claude-opus-4-8"
 
 # Model used specifically by the Idea Generator (idea brainstorm + brief). Claude
-# Opus 5 — the newest Opus tier — for the strongest creative/title ideation.
+# Opus 5.1 — the newest Opus tier — for the strongest creative/title ideation.
 # Kept separate from ANTHROPIC_MODEL so other Claude features are unaffected.
-IDEA_MODEL = "claude-opus-5"
+IDEA_MODEL = "claude-opus-5-1"
 
 # Model used for the optional "final polish" pass on a finished script. Claude
 # Fable 5 is Anthropic's newest storytelling-tuned model; it rewrites the script
