@@ -1279,6 +1279,14 @@
                     <label style="display:block; color:#cbd5e1; font-size:0.85em; margin-bottom:4px;">🎯 Be adjacent to these videos <span style="color:#94a3b8;">(optional — paste YouTube links, one per line; I'll pull each title + transcript so your ideas ride their audience)</span></label>
                     <textarea id="ideaGenAdjacency" rows="2" placeholder="https://youtu.be/…&#10;https://www.youtube.com/watch?v=…" style="width:100%; box-sizing:border-box; padding:10px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-size:0.9em; resize:vertical;"></textarea>
                 </div>
+                <div style="margin-top:10px;">
+                    <label style="display:block; color:#cbd5e1; font-size:0.85em; margin-bottom:4px;">📎 Base ideas on a file <span style="color:#94a3b8;">(optional — attach a PDF or text/markdown file; Claude reads it and grounds all 10 ideas in its content)</span></label>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <input type="file" id="ideaGenFile" accept=".pdf,.txt,.md,.markdown,.rtf,.csv,application/pdf,text/plain" onchange="onIdeaFileChange()" style="flex:1; min-width:200px; color:#cbd5e1; font-size:0.85em;" />
+                        <span id="ideaGenFileName" style="color:#94a3b8; font-size:0.82em;"></span>
+                        <button type="button" id="ideaGenFileClear" onclick="clearIdeaFile()" title="Remove attachment" style="display:none; padding:5px 10px; background:#374151; color:#cbd5e1; border:none; border-radius:6px; font-size:0.8em; cursor:pointer;">✕ Remove</button>
+                    </div>
+                </div>
                 <div id="ideaGenStatus" style="margin-top:10px; color:#94a3b8; font-size:0.88em; min-height:18px;"></div>
                 <div id="ideaGenList" style="margin-top:8px; display:flex; flex-direction:column; gap:8px;"></div>
                 <div id="ideaGenUseRow" style="display:none; margin-top:14px; align-items:center; gap:12px; flex-wrap:wrap;">
@@ -1500,27 +1508,64 @@
                 }
             }
 
+            // Attachment helpers for the Idea Generator file picker.
+            function onIdeaFileChange() {
+                const fileEl = document.getElementById('ideaGenFile');
+                const nameEl = document.getElementById('ideaGenFileName');
+                const clearEl = document.getElementById('ideaGenFileClear');
+                const f = (fileEl && fileEl.files && fileEl.files[0]) ? fileEl.files[0] : null;
+                if (f) {
+                    const kb = f.size >= 1048576 ? (f.size / 1048576).toFixed(1) + ' MB'
+                                                 : Math.max(1, Math.round(f.size / 1024)) + ' KB';
+                    nameEl.textContent = '✓ ' + f.name + ' (' + kb + ')';
+                    clearEl.style.display = '';
+                } else {
+                    nameEl.textContent = '';
+                    clearEl.style.display = 'none';
+                }
+            }
+            function clearIdeaFile() {
+                const fileEl = document.getElementById('ideaGenFile');
+                if (fileEl) fileEl.value = '';
+                onIdeaFileChange();
+            }
+
             async function generateIdeas() {
                 const inp = document.getElementById('ideaGenRequest');
                 const req = (inp.value || '').trim();
                 const adjUrls = ((document.getElementById('ideaGenAdjacency') || {}).value || '').trim();
+                const fileEl = document.getElementById('ideaGenFile');
+                const file = (fileEl && fileEl.files && fileEl.files[0]) ? fileEl.files[0] : null;
                 const statusEl = document.getElementById('ideaGenStatus');
                 const listEl = document.getElementById('ideaGenList');
                 const btn = document.getElementById('ideaGenBtn');
                 _ideaGenState.request = req;
                 _ideaGenState.adjacencyUrls = adjUrls;
                 const timer = _startBtnTimer(btn, 'Generating');
-                statusEl.innerHTML = (adjUrls
+                statusEl.innerHTML = (file
+                    ? '📎 Reading ' + (file.name || 'your file') + ' &amp; brainstorming with Claude Opus 4.8 (~25-50s)…'
+                    : adjUrls
                     ? '🎯 Fetching your adjacency videos (title + transcript) &amp; brainstorming with Claude Opus 4.8 (~20-40s)…'
                     : '🔎 Pulling the top AI videos on YouTube &amp; brainstorming with Claude Opus 4.8 (~15-30s)…');
                 listEl.innerHTML = '';
                 document.getElementById('ideaGenUseRow').style.display = 'none';
                 try {
-                    const r = await fetch('/api/ideas/generate', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ request: req, adjacency_urls: adjUrls })
-                    });
+                    let r;
+                    if (file) {
+                        // Multipart when a file is attached — the request text and
+                        // adjacency ride along as form fields.
+                        const fd = new FormData();
+                        fd.append('file', file);
+                        fd.append('request', req);
+                        fd.append('adjacency_urls', adjUrls);
+                        r = await fetch('/api/ideas/generate', { method: 'POST', body: fd });
+                    } else {
+                        r = await fetch('/api/ideas/generate', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ request: req, adjacency_urls: adjUrls })
+                        });
+                    }
                     const data = await r.json();
                     if (!data.success) { statusEl.textContent = '❌ ' + (data.error || 'Failed to generate ideas'); return; }
                     _ideaGenState.ideas = data.ideas || [];
@@ -1530,7 +1575,9 @@
                     const _ty = (data.top_youtube || []).length;
                     const _adj = (data.adjacency || []);
                     let _note = '';
-                    if (_adj.length) {
+                    if (file) {
+                        _note = ' — grounded in ' + (file.name || 'your file');
+                    } else if (_adj.length) {
                         _note = ' — riding ' + _adj.length + ' video(s): ' + _adj.map(v => (v.title || v.url)).join('; ').slice(0, 120);
                     } else if (_ty) {
                         _note = ' (grounded in the top ' + _ty + ' AI videos on YouTube)';

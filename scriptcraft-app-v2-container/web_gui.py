@@ -4525,14 +4525,17 @@ def _get_anthropic_client(timeout: float = 60.0):
 
 def _anthropic_complete(system: str, user: str, max_tokens: int = 4000,
                         use_web_search: bool = True, max_searches: int = 4,
-                        model: str = None, timeout: float = 60.0) -> str:
+                        model: str = None, timeout: float = 60.0,
+                        documents=None) -> str:
     """Run one Claude turn, draining the server-side web_search loop.
 
     `model` defaults to ANTHROPIC_MODEL (Opus 4.8). `timeout` (seconds) bounds
     each request — raise it for long inputs where web search takes a while.
-    Returns the concatenated text of the final assistant message. If a request
-    with web search fails (e.g. the tool isn't enabled on the account), it
-    retries once without tools. Raises on hard failures.
+    `documents` is an optional list of content blocks (e.g. a base64 PDF
+    document block) prepended to the user turn so Claude can ground its output
+    in an uploaded file. Returns the concatenated text of the final assistant
+    message. If a request with web search fails (e.g. the tool isn't enabled on
+    the account), it retries once without tools. Raises on hard failures.
     """
     _model = model or ANTHROPIC_MODEL
     client = _get_anthropic_client(timeout=timeout)
@@ -4543,10 +4546,18 @@ def _anthropic_complete(system: str, user: str, max_tokens: int = 4000,
         )
     import anthropic
 
+    # When documents are supplied, the user turn becomes a block list:
+    # [<document blocks…>, {"type":"text","text": user}]. Otherwise it stays a
+    # plain string (fully backward-compatible with every existing caller).
+    if documents:
+        user_content = list(documents) + [{"type": "text", "text": user}]
+    else:
+        user_content = user
+
     def _run(with_tools: bool):
         # The server runs the web_search loop and returns pause_turn if it hits
         # its iteration cap; re-send to resume. Cap our own resumes as a guard.
-        messages = [{"role": "user", "content": user}]
+        messages = [{"role": "user", "content": user_content}]
         resp = None
         logger.info(
             "🤖 Claude %s | web_search=%s | calling…",
@@ -4876,16 +4887,86 @@ def _fetch_top_youtube_ai_titles(limit: int = 10) -> list:
     return []
 
 
+# Attachments the Idea Generator accepts as the basis for the brainstorm.
+# PDFs go to Claude as a native document block (it reads them directly, no
+# text-extraction lib needed on SDK >=0.30); plain-text/markdown are sent as a
+# text document block. Capped so a huge upload can't blow the request budget.
+_IDEA_DOC_MAX_BYTES = 32 * 1024 * 1024   # 32 MB (Anthropic PDF request cap)
+_IDEA_TEXT_EXT = {".txt", ".md", ".markdown", ".rtf", ".csv"}
+
+
+def _idea_document_block(storage):
+    """Turn an uploaded Werkzeug file into an Anthropic content block.
+
+    Returns (block, filename). Raises ValueError with a user-facing message on
+    an empty file, an oversize file, or an unsupported type.
+    """
+    import base64 as _b64
+    name = (getattr(storage, "filename", "") or "attachment").strip()
+    raw = storage.read()
+    if not raw:
+        raise ValueError("The attached file is empty.")
+    if len(raw) > _IDEA_DOC_MAX_BYTES:
+        mb = _IDEA_DOC_MAX_BYTES // (1024 * 1024)
+        raise ValueError(f"Attachment is too large (max {mb} MB).")
+    ext = os.path.splitext(name)[1].lower()
+    ctype = (getattr(storage, "mimetype", "") or "").lower()
+    is_pdf = ext == ".pdf" or ctype == "application/pdf"
+    if is_pdf:
+        block = {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": _b64.standard_b64encode(raw).decode("ascii"),
+            },
+            "title": name[:200],
+            "citations": {"enabled": False},
+        }
+        return block, name
+    if ext in _IDEA_TEXT_EXT or ctype.startswith("text/"):
+        try:
+            text = raw.decode("utf-8", "replace")
+        except Exception:
+            raise ValueError("Could not read the text attachment.")
+        block = {
+            "type": "document",
+            "source": {"type": "text", "media_type": "text/plain",
+                       "data": text},
+            "title": name[:200],
+            "citations": {"enabled": False},
+        }
+        return block, name
+    raise ValueError(
+        "Unsupported attachment type. Upload a PDF or a text/markdown file.")
+
+
 @app.route("/api/ideas/generate", methods=["POST"])
 def api_ideas_generate():
     """Brainstorm 10 distinct video-episode ideas, grounded by default in the
-    current top AI videos on YouTube (request box optional)."""
-    data = request.get_json(silent=True) or {}
+    current top AI videos on YouTube (request box optional). An optional file
+    attachment (PDF or text) can be uploaded as the basis for the ideas."""
+    # Accept EITHER application/json (no attachment) OR multipart/form-data
+    # (idea request fields + an optional file). Normalize both into `data`.
+    idea_doc = None
+    idea_doc_name = ""
+    if request.files and request.files.get("file"):
+        data = {
+            "request": request.form.get("request", ""),
+            "adjacency_urls": request.form.get("adjacency_urls", ""),
+        }
+        try:
+            idea_doc, idea_doc_name = _idea_document_block(request.files["file"])
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+    else:
+        data = request.get_json(silent=True) or {}
     user_request = (data.get("request") or "").strip()
-    # Did the producer actually type a specific topic? If so it becomes the HARD
-    # anchor for all 10 ideas (vary angle/format, never the subject). If blank,
-    # we fall back to a trend-driven brainstorm.
-    has_request = bool(user_request)
+    # Did the producer actually type a specific topic OR attach a file? Either
+    # becomes the HARD anchor for all 10 ideas (vary angle/format, never the
+    # subject). If neither, we fall back to a trend-driven brainstorm.
+    has_doc = idea_doc is not None
+    has_request = bool(user_request) or has_doc
 
     # Optional adjacency targets: YouTube links the creator wants to be the
     # "natural next watch" to. We fetch each title + transcript and steer the
@@ -4933,7 +5014,7 @@ def api_ideas_generate():
             "Use web search to find the CURRENT top/trending AI videos on "
             "YouTube right now and ground your ideas in what's resonating.\n\n"
         )
-    if not user_request:
+    if not user_request and not has_doc:
         user_request = ("Trending AI episode ideas based on the current top AI "
                         "videos on YouTube")
 
@@ -4974,7 +5055,38 @@ def api_ideas_generate():
             "broadening into unrelated AI topics."
         )
 
-    if has_request:
+    if has_doc:
+        # A file is the basis. Tell the model to read it and anchor every idea
+        # in its content. Works alone or alongside a typed topic (which then
+        # narrows the focus within the document).
+        system += (
+            "\n\nSOURCE DOCUMENT: The producer has ATTACHED a file (shown at the "
+            "start of the message) as the basis for this batch. Read it "
+            "carefully and ground ALL 10 ideas in its actual content — its "
+            "facts, arguments, examples, data, and story. Do not invent details "
+            "that contradict it. Pull the most video-worthy hooks, surprises, "
+            "and takeaways FROM the document and shape them into episodes."
+            + (" The typed topic below narrows which part of the document to "
+               "focus on." if user_request else "")
+        )
+
+    if has_doc:
+        src = f' (titled "{idea_doc_name}")' if idea_doc_name else ""
+        topic_line = (
+            f"SOURCE (REQUIRED): base every one of the 10 ideas on the attached "
+            f"document{src} at the start of this message.\n"
+        )
+        if user_request:
+            topic_line += (f"FOCUS within the document: {user_request}\n")
+        topic_directive = topic_line + "\n"
+        diversity_directive = (
+            "Generate exactly 10 video episode ideas, ALL grounded in the "
+            "attached document's content. Map each to one of the breakout "
+            "formats and make the set diverse across FORMATS and ANGLES drawn "
+            "from the document — do not drift to unrelated AI topics or replace "
+            "the document's subject with a trending one."
+        )
+    elif has_request:
         topic_directive = (
             "TOPIC (REQUIRED — every one of the 10 ideas MUST be directly about "
             f"this, and nothing else):\n{user_request}\n\n"
@@ -5006,12 +5118,15 @@ def api_ideas_generate():
         '  "angle": one sentence naming the format + the cold-open hook / why it earns the click\n'
         "Return only the JSON array."
     )
-    logger.info("💡 Idea generation requested: %r (top_youtube=%d, adjacency=%d)",
-                user_request, len(top_videos), len(adjacency))
+    logger.info("💡 Idea generation requested: %r (top_youtube=%d, adjacency=%d, doc=%s)",
+                user_request, len(top_videos), len(adjacency),
+                idea_doc_name or "-")
     try:
         text = _anthropic_complete(system, user, max_tokens=4000,
                                    use_web_search=True, max_searches=4,
-                                   model=IDEA_MODEL)
+                                   model=IDEA_MODEL,
+                                   documents=[idea_doc] if idea_doc else None,
+                                   timeout=120.0 if idea_doc else 60.0)
         ideas = _parse_json_array(text)
     except Exception as e:
         logger.error(f"❌ Idea generation failed: {e}")
