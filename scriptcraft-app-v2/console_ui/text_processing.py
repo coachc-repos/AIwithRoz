@@ -787,6 +787,23 @@ def generate_heygen_curl_commands(
 
     heygen_content = heygen_match.group(1).strip()
 
+    # Cut trailing production/metadata sections that follow the LAST chapter
+    # (=== SUPPORTING RESEARCH ===, === FINAL PACKAGING ===, === STRATEGY NOTES
+    # ===, === YOUTUBE VIDEO DESCRIPTION ===, and any other "=== SECTION ==="
+    # header). The primary chapter regex bounds the final chapter with \Z, so
+    # without this cut these non-spoken sections get swallowed into the last
+    # chapter's curl and split across its parts (the reported Chapter-7 bug).
+    _meta_cut = re.search(
+        r'^[ \t]*={3,}[ \t]*[A-Za-z]'                 # "=== SECTION ===" header
+        r'|^[ \t]*(?:SUPPORTING[ \t]+RESEARCH'        # or a known bare section
+        r'|FINAL[ \t]+PACKAGING'
+        r'|STRATEGY[ \t]+NOTES'
+        r'|YOUTUBE[ \t]+VIDEO[ \t]+DESCRIPTION)\b',
+        heygen_content, re.IGNORECASE | re.MULTILINE,
+    )
+    if _meta_cut:
+        heygen_content = heygen_content[:_meta_cut.start()].rstrip()
+
     # Parse chapters
     chapters = []
 
