@@ -269,23 +269,15 @@ class BaseAgentClient(ABC):
                     # the underlying httpx session is in a bad state.
                     self._reset_v2()
                     _time.sleep(1.5 * (attempt + 1))
-            fallback_msg = str(last_err).lower(
-            ) if last_err is not None else ""
-            if "404" in fallback_msg or "resource not found" in fallback_msg:
-                print(
-                    "⚠️ v2 conversation endpoint unavailable for this project; falling back to v1 agent threads"
-                )
-                thread = self._v1().threads.create()
-                self._active_api_mode = "v1"
-                return thread
+            # v1 is disabled — never fall back to the classic Assistants path.
+            # If v2 conversation creation fails (even a 404), surface it loudly
+            # so we don't silently run an older agent version on the wrong model.
             raise Exception(f"Failed to create v2 conversation: {last_err}")
-        # v1
-        try:
-            thread = self._v1().threads.create()
-            self._active_api_mode = "v1"
-            return thread
-        except Exception as e:
-            raise Exception(f"Failed to create v1 thread: {e}")
+        # v1 mode is retired and unreachable (get_api_mode() is a v2 constant).
+        raise RuntimeError(
+            "v1 (classic Assistants) mode is disabled. This app runs on Foundry "
+            "v2 only. If you see this, get_api_mode() returned a non-v2 value."
+        )
 
     def send_message(
         self,
@@ -440,6 +432,12 @@ class BaseAgentClient(ABC):
         timeout: int,
         max_retries: int,
     ) -> Dict[str, Any]:
+        # v1 is disabled. This backend is retired and must never run — reaching
+        # it would silently execute an older agent version on the wrong model.
+        raise RuntimeError(
+            "v1 (classic Assistants) backend is disabled. This app runs on "
+            "Foundry v2 only."
+        )
         client = self._v1()
 
         # Cancel any active runs on the thread first

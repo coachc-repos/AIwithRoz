@@ -4502,16 +4502,20 @@ def index():
 
 @app.route("/api/agent-mode", methods=["GET", "POST"])
 def agent_mode_api():
-    """Get or set the active Foundry agent API mode (v1=classic Assistants, v2=new Foundry)."""
+    """Get the active Foundry agent API mode. v1 (classic Assistants) is retired —
+    the app is Foundry v2 only, so this always reports 'v2' and rejects any attempt
+    to switch to v1."""
     if request.method == "POST":
         data = request.get_json(silent=True) or {}
         requested = (data.get("mode") or "").strip().lower()
-        if requested not in ("v1", "v2"):
-            return jsonify({"success": False, "error": "mode must be 'v1' or 'v2'"}), 400
-        os.environ["FOUNDRY_API_MODE"] = requested
-        logger.info(f"\U0001F500 Agent API mode switched to: {requested}")
-    current = (os.environ.get("FOUNDRY_API_MODE") or "v2").lower()
-    return jsonify({"success": True, "mode": current})
+        if requested and requested != "v2":
+            return jsonify({
+                "success": False,
+                "error": "v1 (classic Assistants) is disabled. This app runs on "
+                         "Foundry v2 only.",
+            }), 400
+        os.environ["FOUNDRY_API_MODE"] = "v2"
+    return jsonify({"success": True, "mode": "v2"})
 
 
 # ---------------------------------------------------------------------------

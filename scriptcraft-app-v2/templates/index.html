@@ -1139,15 +1139,10 @@
             </div>
             <div id="agentModeToggle" style="margin-left:auto;display:flex;align-items:center;gap:10px;padding:8px 14px;background:#1f2937;border-radius:10px;color:#e5e7eb;font-size:14px;">
                 <span style="font-weight:600;">Agent API:</span>
-                <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
-                    <input type="radio" name="agentMode" value="v1" {% if (agent_mode or 'v1') == 'v1' %}checked{% endif %} onchange="setAgentMode('v1')">
-                    <span>v1 Classic</span>
-                </label>
-                <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
-                    <input type="radio" name="agentMode" value="v2" {% if (agent_mode or 'v1') == 'v2' %}checked{% endif %} onchange="setAgentMode('v2')">
-                    <span>v2 Foundry (new)</span>
-                </label>
-                <span id="agentModeStatus" style="margin-left:6px;padding:2px 8px;border-radius:6px;background:#374151;font-size:12px;">{{ (agent_mode or 'v1')|upper }}</span>
+                <span title="Classic v1 Assistants is retired; this app runs on Microsoft Foundry v2 only." style="display:flex;align-items:center;gap:6px;">
+                    <span>🟣 Foundry v2</span>
+                </span>
+                <span id="agentModeStatus" style="margin-left:6px;padding:2px 8px;border-radius:6px;background:#7c3aed;font-size:12px;">V2</span>
             </div>
         </div>
         <script>
