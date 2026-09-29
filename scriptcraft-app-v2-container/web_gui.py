@@ -36,6 +36,18 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(1, str(REPO_ROOT))
     print(f"✅ Added to sys.path: {REPO_ROOT}")
 
+# Load all API keys from the single root .env (GOOGLE_API_KEY, XAI_API_KEY,
+# HEYGEN_API_KEY, HEYGEN_VOICE_ID, X_* ...). Does not override anything already
+# set in the real environment, so per-shell overrides still win.
+try:
+    from dotenv import load_dotenv
+    _env_file = REPO_ROOT / ".env"
+    if _env_file.exists():
+        load_dotenv(_env_file)
+        print(f"🔧 Loaded environment variables from {_env_file}")
+except ImportError:
+    pass  # python-dotenv not installed; rely on the real environment
+
 
 VERSION = "15.34-quotes-progress-mapping"
 
@@ -50,13 +62,6 @@ else:
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-# The Azure Storage SDK logs full HTTP request/response header dumps at INFO,
-# which floods the console (~40 lines per blob poll) and buries app logs. Quiet
-# it to WARNING so the polish/agent logs stay readable.
-for _noisy in ("azure.core.pipeline.policies.http_logging_policy",
-               "azure.storage", "azure"):
-    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 SCRIPTCRAFT_SETTINGS_PATH = Path.home() / ".scriptcraft" / \
     "web_gui_settings.json"
@@ -1826,12 +1831,27 @@ async def process_script_creation(session_id, topic, audience, tone,
             print(
                 f"🔍 DEBUG: ConsoleCapture active: {isinstance(sys.stdout, ConsoleCapture)}")
 
+            # Style memory: prepend recent saved scripts as a style reference so
+            # the Script Writer keeps new scripts consistent in voice, structure,
+            # and pacing. Built into a LOCAL copy of the brief only — the pure
+            # `description` is what gets persisted, so style refs never
+            # recursively feed themselves back into future generations.
+            topic_description = description or ""
+            try:
+                _style_block = _build_style_context_block()
+                if _style_block:
+                    topic_description = (
+                        (topic_description + _style_block)
+                        if topic_description else _style_block.strip())
+            except Exception as _e:
+                logger.warning(f"⚠️ style context build failed: {_e}")
+
             try:
                 print("🔍 DEBUG: Calling asyncio.wait_for with async method")
                 result = await asyncio.wait_for(
                     system.run_complete_script_workflow_sequential(
                         script_topic=topic,
-                        topic_description=description,
+                        topic_description=topic_description,
                         audience=audience,
                         tone=tone,
                         script_length=video_length,
@@ -2682,6 +2702,9 @@ async def process_script_creation(session_id, topic, audience, tone,
                 "script_title": resolved_script_title,
                 "script_id": _new_script_id,
                 "script_version": _new_script_version,
+                # The creative brief that steered this run, persisted alongside
+                # the script so it can be pulled back from the cloud later.
+                "brief": description,
                 "demo_packages": demo_packages,
                 "youtube_details": youtube_upload_details,
                 "thumbnail_results": thumbnail_results,
@@ -2820,6 +2843,7 @@ async def process_existing_script(
             checkboxes.get("flow_analysis", False),
             checkboxes.get("grok_videos", False),
             checkboxes.get("shorten_script", False),
+            checkboxes.get("grok_imagine", False),
         ])
 
         if total_steps == 0:
@@ -3165,6 +3189,25 @@ async def process_existing_script(
                 logger.error(f"❌ Shorten step error: {_shorten_err}")
                 streamer.send_update(f"⚠️ Shorten step error: {_shorten_err}", 14)
 
+        # OPTIONAL: Add 3-4 Grok Imagine still-image prompts per chapter, inline,
+        # so they can be copy-pasted into Grok Imagine. Runs after Shorten so the
+        # prompts match the final wording; tops up chapters that already have some.
+        if checkboxes.get("grok_imagine", False):
+            try:
+                streamer.send_update(
+                    "🖼️ Adding Grok Imagine prompts per chapter…", 13)
+                cleaned_script, _gi_added = _inject_grok_imagine_prompts(
+                    cleaned_script, video_title=script_title)
+                streamer.send_update(
+                    f"✅ Added {_gi_added} Grok Imagine prompt(s) across chapters"
+                    if _gi_added else
+                    "ℹ️ Grok Imagine: no chapters needed prompts (already at target)",
+                    14)
+            except Exception as _gi_err:
+                logger.warning(f"⚠️ Grok Imagine step error: {_gi_err}")
+                streamer.send_update(
+                    f"⚠️ Grok Imagine step error: {_gi_err}", 14)
+
         # HOOK-ONLY MODE: when only the Hook checkbox is set (no other section
         # generators), we generate 3 hook options and return them to the UI for
         # interactive selection. The user picks one in a modal, then
@@ -3172,7 +3215,7 @@ async def process_existing_script(
         # section and strips any prior OPENING HOOK OPTIONS block.
         _section_flags = [
             "youtube_details", "broll", "broll_images", "heygen", "curl",
-            "demo", "thumbnails", "flow_analysis", "grok_videos",
+            "demo", "thumbnails", "flow_analysis", "grok_videos", "grok_imagine",
         ]
         _hook_only_mode = (
             checkboxes.get("hook_summary", False)
@@ -3881,6 +3924,32 @@ async def process_existing_script(
                     )
                     if _hm:
                         _final_hook_text = _hm.group(1).strip()
+                        # Defensive: scripts sometimes carry a stray bold
+                        # transition line (e.g. **We will start with...**)
+                        # or a lingering `Host:` / `FINAL HOOK:` label
+                        # between the header and the actual hook prose. The
+                        # extraction regex above only consumes ONE optional
+                        # `Host:` line directly after the header, so any
+                        # intervening junk leaks into the capture and
+                        # inflates the `-hook` curl's word count. Peel off
+                        # any leading blank lines, bold-only lines, and
+                        # stray Host/FINAL HOOK label lines before further
+                        # processing.
+                        _peel_re = re.compile(
+                            r"^\s*(?:"
+                            r"\*{1,2}[^\n]+\*{1,2}"          # **bold-only line**
+                            r"|\*{0,2}\s*Host\s*:?\s*\*{0,2}"  # stray Host: label
+                            r"|\*{0,2}\s*(?:🎯\s*)?(?:FINAL\s+|OPENING\s+)?HOOK\s*:?\s*\*{0,2}"  # stray header
+                            r")\s*$",
+                            re.IGNORECASE,
+                        )
+                        _peeled_lines = _final_hook_text.split("\n")
+                        while _peeled_lines and (
+                            not _peeled_lines[0].strip()
+                            or _peel_re.match(_peeled_lines[0])
+                        ):
+                            _peeled_lines.pop(0)
+                        _final_hook_text = "\n".join(_peeled_lines).strip()
                         # PRIMARY terminator: a hook is ONE paragraph. Cut at
                         # the first BLANK line so any intro paragraph that
                         # follows the hook doesn't bleed into the HeyGen
@@ -4433,21 +4502,24 @@ def index():
 
 @app.route("/api/agent-mode", methods=["GET", "POST"])
 def agent_mode_api():
-    """Report the active Foundry agent API mode.
-
-    The classic v1 Assistants path has been retired — the app is v2-only. POST
-    requests for v1 are rejected; the mode is always 'v2'.
-    """
+    """Get the active Foundry agent API mode. v1 (classic Assistants) is retired —
+    the app is Foundry v2 only, so this always reports 'v2' and rejects any attempt
+    to switch to v1."""
     if request.method == "POST":
         data = request.get_json(silent=True) or {}
         requested = (data.get("mode") or "").strip().lower()
         if requested and requested != "v2":
-            return jsonify({"success": False, "error": "only 'v2' is supported; v1 is retired"}), 400
+            return jsonify({
+                "success": False,
+                "error": "v1 (classic Assistants) is disabled. This app runs on "
+                         "Foundry v2 only.",
+            }), 400
+        os.environ["FOUNDRY_API_MODE"] = "v2"
     return jsonify({"success": True, "mode": "v2"})
 
 
 # ---------------------------------------------------------------------------
-# Idea Generator (Claude Opus 5.1 + web search)
+# Idea Generator (Claude Opus 5 + web search)
 #
 # Brainstorm video-episode ideas from a free-text request, then expand the
 # chosen idea into a full creative brief in the channel's house format. Uses
@@ -4459,9 +4531,44 @@ def agent_mode_api():
 ANTHROPIC_MODEL = "claude-opus-4-8"
 
 # Model used specifically by the Idea Generator (idea brainstorm + brief). Claude
-# Opus 5.1 — the newest Opus tier — for the strongest creative/title ideation.
+# Opus 5 — the newest Opus tier — for the strongest creative/title ideation.
 # Kept separate from ANTHROPIC_MODEL so other Claude features are unaffected.
-IDEA_MODEL = "claude-opus-5-1"
+IDEA_MODEL = "claude-opus-5"
+
+# --- Idea Generator content lanes -------------------------------------------
+# Historically the Idea Generator hard-coded a "careers / resumes / layoffs"
+# weighting into its system prompt, so *every* batch drifted back to job-hunting
+# ideas no matter what was asked. The lane is now a per-request choice. "auto"
+# (the default) applies NO thematic weighting at all — the topic box and the
+# live trend signal decide the subject.
+IDEA_LANES = {
+    "auto": "",
+    "careers": (
+        "CONTENT LANE — CAREERS & WORK: weight ideas toward helping regular "
+        "people AI-proof and accelerate their careers (avoid layoffs, better "
+        "interviews/resumes, earn more, save time), while keeping range.\n\n"
+    ),
+    "everyday": (
+        "CONTENT LANE — EVERYDAY LIFE: weight ideas toward using AI in daily "
+        "life outside of work — home, money, family, health, travel, learning, "
+        "hobbies, admin drudgery. Do NOT default to job/resume/career ideas.\n\n"
+    ),
+    "news": (
+        "CONTENT LANE — AI NEWS & BIG MOVES: weight ideas toward reacting to "
+        "real, current, named AI events — launches, announcements, public "
+        "statements by major figures, industry shake-ups. Anchor every idea in "
+        "a specific verifiable thing that actually happened, name the people "
+        "and products involved, and explain what it means for a normal viewer. "
+        "Do NOT default to job/resume/career ideas.\n\n"
+    ),
+    "tools": (
+        "CONTENT LANE — TOOLS & HOW-TO: weight ideas toward hands-on demos, "
+        "comparisons, workflows and step-by-steps with specific named AI "
+        "tools. Do NOT default to job/resume/career ideas.\n\n"
+    ),
+}
+IDEA_LANE_DEFAULT = "auto"
+
 
 # Model used for the optional "final polish" pass on a finished script. Claude
 # Fable 5 is Anthropic's newest storytelling-tuned model; it rewrites the script
@@ -4621,22 +4728,95 @@ def _anthropic_complete(system: str, user: str, max_tokens: int = 4000,
     return "".join(parts).strip()
 
 
+def _json_loads_lenient(s: str):
+    """json.loads, but also tolerating trailing commas (,] or ,}). None on fail."""
+    try:
+        return json.loads(s)
+    except Exception:
+        try:
+            return json.loads(re.sub(r",\s*([\]}])", r"\1", s))
+        except Exception:
+            return None
+
+
+def _json_coerce_array(data):
+    """Return a list from a bare array or a {"ideas": [...]}-style wrapper."""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for k in ("ideas", "episodes", "results", "items", "data"):
+            v = data.get(k)
+            if isinstance(v, list):
+                return v
+        for v in data.values():
+            if isinstance(v, list):
+                return v
+    return None
+
+
+def _iter_balanced_spans(s: str, open_c: str, close_c: str):
+    """Yield each top-level balanced open_c..close_c span, ignoring brackets
+    that appear inside JSON string literals."""
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            continue
+        if ch == open_c:
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == close_c and depth > 0:
+            depth -= 1
+            if depth == 0 and start != -1:
+                yield s[start:i + 1]
+
+
 def _parse_json_array(text: str) -> list:
-    """Best-effort extraction of a JSON array from model output."""
+    """Best-effort extraction of a JSON array of objects from model output.
+
+    Tolerates markdown code fences, conversational preamble/suffix (even when it
+    contains stray brackets like "[trends]"), a {"ideas": [...]} wrapper, and
+    trailing commas — all of which the model occasionally emits despite being
+    told to return only a bare array."""
     if not text:
         return []
     t = text.strip()
-    if t.startswith("```"):
-        t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
-        t = re.sub(r"\s*```$", "", t).strip()
-    start, end = t.find("["), t.rfind("]")
-    if start != -1 and end != -1 and end > start:
-        t = t[start:end + 1]
-    try:
-        data = json.loads(t)
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
+    # Prefer the contents of a fenced code block if one is present anywhere.
+    fence = re.search(r"```(?:json|javascript|js)?\s*(.*?)```", t,
+                      re.DOTALL | re.IGNORECASE)
+    if fence:
+        t = fence.group(1).strip()
+    # 1) Whole-string parse (bare array or wrapper object).
+    arr = _json_coerce_array(_json_loads_lenient(t))
+    if arr is not None:
+        return arr
+    # 2) Scan for balanced [...] arrays anywhere; keep the largest that parses.
+    best = None
+    for span in _iter_balanced_spans(t, "[", "]"):
+        cand = _json_coerce_array(_json_loads_lenient(span))
+        if cand and (best is None or len(cand) > len(best)):
+            best = cand
+    if best is not None:
+        return best
+    # 3) Last resort: pull individual {…} objects that look like ideas.
+    objs = []
+    for m in re.finditer(r"\{[^{}]*\}", t, re.DOTALL):
+        d = _json_loads_lenient(m.group(0))
+        if isinstance(d, dict) and ("title" in d or "angle" in d):
+            objs.append(d)
+    return objs
 
 
 # Conversational lead-ins the model sometimes prepends after web search, even
@@ -4711,14 +4891,35 @@ def _load_idea_history() -> list:
     return []
 
 
-def _save_idea_batch(user_request: str, ideas: list) -> dict:
-    """Prepend a new {id, request, ideas, created_at} batch; cap the history."""
+def _find_idea_batch(batch_id: str):
+    """Return the saved batch dict with this id, or None."""
+    bid = (batch_id or "").strip()
+    if not bid:
+        return None
+    for b in _load_idea_history():
+        if b.get("id") == bid:
+            return b
+    return None
+
+
+def _save_idea_batch(user_request: str, ideas: list,
+                     source_document: dict = None) -> dict:
+    """Prepend a new {id, request, ideas, created_at} batch; cap the history.
+
+    `source_document`, when a file was attached, is {name, text} — the extracted
+    document text (trimmed) so it can later ground the brief and be injected into
+    the Topic Assistant / Script Writer prompts."""
     batch = {
         "id": str(uuid.uuid4()),
         "request": user_request,
         "ideas": ideas,
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
+    if source_document and (source_document.get("text") or "").strip():
+        batch["source_document"] = {
+            "name": (source_document.get("name") or "attachment")[:200],
+            "text": source_document["text"][:_IDEA_DOC_STORE_CHARS],
+        }
     history = [batch] + _load_idea_history()
     history = history[:_IDEAS_HISTORY_MAX]
     try:
@@ -4893,13 +5094,41 @@ def _fetch_top_youtube_ai_titles(limit: int = 10) -> list:
 # text document block. Capped so a huge upload can't blow the request budget.
 _IDEA_DOC_MAX_BYTES = 32 * 1024 * 1024   # 32 MB (Anthropic PDF request cap)
 _IDEA_TEXT_EXT = {".txt", ".md", ".markdown", ".rtf", ".csv"}
+# How much of the extracted document text we (a) persist on the saved idea
+# batch, and (b) inject into the Topic Assistant / Script Writer prompt. The
+# Foundry agents take plain text and have finite context, so the excerpt is
+# trimmed hard; the full text still powers the Claude idea/brief passes.
+_IDEA_DOC_STORE_CHARS = 60000     # cap kept in idea_generator.json per batch
+_IDEA_DOC_EXCERPT_CHARS = 8000    # cap injected into the script workflow
+
+
+def _extract_pdf_text(raw: bytes) -> str:
+    """Best-effort plain-text extraction from PDF bytes via pypdf. Returns ""
+    if pypdf is missing or the PDF has no extractable text (e.g. scanned)."""
+    try:
+        import io
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(raw))
+        parts = []
+        for page in reader.pages:
+            try:
+                parts.append(page.extract_text() or "")
+            except Exception:
+                continue
+        return "\n".join(p for p in parts if p).strip()
+    except Exception as e:
+        logger.info("PDF text extraction unavailable/failed: %s", e)
+        return ""
 
 
 def _idea_document_block(storage):
     """Turn an uploaded Werkzeug file into an Anthropic content block.
 
-    Returns (block, filename). Raises ValueError with a user-facing message on
-    an empty file, an oversize file, or an unsupported type.
+    Returns (block, filename, text) where `text` is a best-effort plain-text
+    rendering of the document for reuse by the text-based Topic Assistant /
+    Script Writer agents (empty string if none could be extracted). Raises
+    ValueError with a user-facing message on an empty file, an oversize file,
+    or an unsupported type.
     """
     import base64 as _b64
     name = (getattr(storage, "filename", "") or "attachment").strip()
@@ -4923,7 +5152,7 @@ def _idea_document_block(storage):
             "title": name[:200],
             "citations": {"enabled": False},
         }
-        return block, name
+        return block, name, _extract_pdf_text(raw)
     if ext in _IDEA_TEXT_EXT or ctype.startswith("text/"):
         try:
             text = raw.decode("utf-8", "replace")
@@ -4936,7 +5165,7 @@ def _idea_document_block(storage):
             "title": name[:200],
             "citations": {"enabled": False},
         }
-        return block, name
+        return block, name, text.strip()
     raise ValueError(
         "Unsupported attachment type. Upload a PDF or a text/markdown file.")
 
@@ -4950,13 +5179,16 @@ def api_ideas_generate():
     # (idea request fields + an optional file). Normalize both into `data`.
     idea_doc = None
     idea_doc_name = ""
+    idea_doc_text = ""
     if request.files and request.files.get("file"):
         data = {
             "request": request.form.get("request", ""),
             "adjacency_urls": request.form.get("adjacency_urls", ""),
+            "lane": request.form.get("lane", ""),
         }
         try:
-            idea_doc, idea_doc_name = _idea_document_block(request.files["file"])
+            idea_doc, idea_doc_name, idea_doc_text = _idea_document_block(
+                request.files["file"])
         except ValueError as e:
             return jsonify({"success": False, "error": str(e)}), 400
     else:
@@ -4967,6 +5199,14 @@ def api_ideas_generate():
     # subject). If neither, we fall back to a trend-driven brainstorm.
     has_doc = idea_doc is not None
     has_request = bool(user_request) or has_doc
+
+    # Content lane — which thematic bucket to weight toward. Defaults to "auto"
+    # (no weighting) so the generator no longer silently drags every batch back
+    # to the careers/resume lane.
+    lane_key = (data.get("lane") or IDEA_LANE_DEFAULT).strip().lower()
+    if lane_key not in IDEA_LANES:
+        lane_key = IDEA_LANE_DEFAULT
+    lane_block = IDEA_LANES[lane_key]
 
     # Optional adjacency targets: YouTube links the creator wants to be the
     # "natural next watch" to. We fetch each title + transcript and steer the
@@ -5020,19 +5260,17 @@ def api_ideas_generate():
 
     system = (
         "You are the creative producer for @AIwithRoz, a YouTube channel of "
-        "punchy, optimistic explainer videos about using AI to improve everyday "
-        "life and careers (2026, general audience). The brand is broad — 'AI for "
-        "everyday life' — but the strongest emotional lane is helping regular "
-        "people AI-proof and accelerate their careers (avoid layoffs, better "
-        "interviews/resumes, earn more, save time); weight ideas toward that "
-        "lane while keeping range.\n\n"
+        "punchy, optimistic explainer videos about using AI in real life "
+        "(2026, general audience). The brand is broad — 'AI for "
+        "everyday life'.\n\n"
+        + lane_block +
         "Bias every idea toward one of these PROVEN breakout formats:\n"
         "  • 'I Let AI ___ for a Week' (experiment/challenge — built-in suspense)\n"
-        "  • 'AI Teardown' (rebuild a viewer's resume/email/budget/plan, before→after)\n"
+        "  • 'AI Teardown' (rebuild something of the viewer's, before→after)\n"
         "  • 'What This Means for YOU' (react to a fresh AI drop, everyday-life lens)\n"
         "  • 'The 5-Minute AI Fix' (one annoying problem solved fast)\n"
         "  • 'Can AI Actually Do This?' (skeptic tests a bold claim)\n"
-        "  • 'AI Did My Job for a Day' (immersive, per role/vertical)\n\n"
+        "  • 'Who Actually Wins/Loses' (follow the consequences of a real AI move)\n\n"
         "TITLE CRAFT (this is what drives clicks): open a curiosity gap or real "
         "stakes, be specific, use a number when natural, keep the word 'AI' "
         "visible, aim for ~50–60 characters, and front-load the benefit. Every "
@@ -5040,7 +5278,7 @@ def api_ideas_generate():
         "the others — no near-duplicates. Use web search to ground ideas in "
         "real, current 2026 events, products, and announcements."
     )
-    if has_request:
+    if has_request and not has_doc:
         # Topic lock: the producer's topic is the subject of ALL ideas. The brand
         # lane / formats / trends are only styling — never swap the subject.
         system += (
@@ -5048,7 +5286,7 @@ def api_ideas_generate():
             "batch (below). Every one of the 10 ideas MUST be directly and "
             "obviously about THAT topic. The brand lane, breakout formats, and "
             "trending videos are ONLY styling and framing — never swap the "
-            "subject for the generic career lane or for whatever is trending. "
+            "subject for a different lane or for whatever is trending. "
             "Vary the angle and format across the 10 ideas; never the subject. "
             "If the topic is narrow, go DEEPER (sub-angles, objections, "
             "use-cases, comparisons, step-by-steps, myths, mistakes) rather than "
@@ -5118,8 +5356,8 @@ def api_ideas_generate():
         '  "angle": one sentence naming the format + the cold-open hook / why it earns the click\n'
         "Return only the JSON array."
     )
-    logger.info("💡 Idea generation requested: %r (top_youtube=%d, adjacency=%d, doc=%s)",
-                user_request, len(top_videos), len(adjacency),
+    logger.info("💡 Idea generation requested: %r (lane=%s, top_youtube=%d, adjacency=%d, doc=%s)",
+                user_request, lane_key, len(top_videos), len(adjacency),
                 idea_doc_name or "-")
     try:
         text = _anthropic_complete(system, user, max_tokens=4000,
@@ -5140,17 +5378,32 @@ def api_ideas_generate():
         if isinstance(i, dict) and str(i.get("title", "")).strip()
     ]
     if not clean:
-        logger.warning("⚠️ Idea generation returned no parseable ideas")
+        # Log a head + tail sample of the raw model output so a recurrence is
+        # diagnosable without guessing (parser hardened, but keep the receipts).
+        _raw = (text or "")
+        logger.warning(
+            "⚠️ Idea generation returned no parseable ideas "
+            "(raw %d chars). HEAD=%r TAIL=%r",
+            len(_raw), _raw[:400], _raw[-200:])
         return jsonify({
             "success": False,
             "error": "Claude did not return parseable ideas. Please try again.",
         }), 502
-    batch = _save_idea_batch(user_request, clean[:10])
-    logger.info("✅ Idea generation produced %d ideas (saved batch %s)",
-                len(clean[:10]), batch["id"][:8])
+    source_document = (
+        {"name": idea_doc_name, "text": idea_doc_text}
+        if (has_doc and idea_doc_text.strip()) else None
+    )
+    batch = _save_idea_batch(user_request, clean[:10],
+                             source_document=source_document)
+    logger.info("✅ Idea generation produced %d ideas (saved batch %s%s)",
+                len(clean[:10]), batch["id"][:8],
+                f", doc={idea_doc_name}" if source_document else "")
     return jsonify({
         "success": True, "ideas": clean[:10], "batch_id": batch["id"],
         "top_youtube": top_videos,
+        # Tell the UI whether this batch carries a forwardable source document
+        # (present only when text could be extracted — e.g. not a scanned PDF).
+        "source_document": ({"name": idea_doc_name} if source_document else None),
         "adjacency": [{"url": v["url"], "title": v["title"],
                        "channel": v["channel"],
                        "has_transcript": bool(v.get("transcript"))}
@@ -5185,6 +5438,23 @@ def api_ideas_describe():
     if not title:
         return jsonify({"success": False, "error": "Missing idea title."}), 400
 
+    # If this idea came from a batch that was grounded in an uploaded document,
+    # feed that document to Claude too so the brief is anchored in its content
+    # (facts, examples, story) — not just the title/angle.
+    src_batch = _find_idea_batch(data.get("batch_id"))
+    src_doc = (src_batch or {}).get("source_document") or {}
+    src_doc_text = (src_doc.get("text") or "").strip()
+    src_doc_name = (src_doc.get("name") or "").strip()
+    doc_blocks = None
+    if src_doc_text:
+        doc_blocks = [{
+            "type": "document",
+            "source": {"type": "text", "media_type": "text/plain",
+                       "data": src_doc_text},
+            "title": (src_doc_name or "source document")[:200],
+            "citations": {"enabled": False},
+        }]
+
     # Optional adjacency targets carried over from generation, so the brief is
     # also inspired by (and positioned next to) the videos the creator picked.
     adj_raw = data.get("adjacency_urls")
@@ -5201,9 +5471,19 @@ def api_ideas_describe():
         "energizing, optimistic YouTube explainer video about AI/technology "
         "aimed at a general 2026 audience. Match the example's exact structure "
         "and voice precisely."
+        + (
+            "\n\nSOURCE DOCUMENT: A file (shown at the start of the message) is "
+            "the basis for this episode. Ground the brief in its actual content "
+            "— its facts, arguments, examples, data, and story — and pull the "
+            "core message and 2026 touchpoints from it. Do not contradict it."
+            if doc_blocks else ""
+        )
     )
     user = (
         _adjacency_prompt_block(adjacency) +
+        (f"SOURCE DOCUMENT provided at the start of this message"
+         f'{f" (titled \"{src_doc_name}\")" if src_doc_name else ""} — anchor '
+         f"the brief in it.\n" if doc_blocks else "") +
         f"Original request: {user_request}\n"
         f"Chosen episode title: {title}\n"
         f"Angle: {angle}\n\n"
@@ -5222,10 +5502,13 @@ def api_ideas_describe():
         "Follow this example format closely (do not copy its content):\n\n"
         + IDEA_BRIEF_EXAMPLE
     )
-    logger.info("✍️ Brief requested for: %r", title)
+    logger.info("✍️ Brief requested for: %r%s", title,
+                f" (grounded in {src_doc_name or 'source doc'})" if doc_blocks else "")
     try:
         text = _anthropic_complete(system, user, max_tokens=2000,
-                                   use_web_search=False, model=IDEA_MODEL)
+                                   use_web_search=False, model=IDEA_MODEL,
+                                   documents=doc_blocks,
+                                   timeout=120.0 if doc_blocks else 60.0)
         text = _extract_brief(text)
     except Exception as e:
         logger.error(f"❌ Idea brief generation failed: {e}")
@@ -5339,6 +5622,16 @@ def _generate_x_post(mode: str, title: str = "", youtube_url: str = "",
     if link:
         text = f"{text}\n{link}"
     return text
+
+
+@app.route("/api/x/status", methods=["GET"])
+def api_x_status():
+    """Report whether @AIwithRoz X posting is configured (keys present)."""
+    return jsonify({
+        "success": True,
+        "configured": _x_credentials() is not None,
+        "account": X_ACCOUNT_HANDLE,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -5507,39 +5800,380 @@ def _restore_or_keep(rewritten: str, blocks, original: str) -> str:
     return restored
 
 
+# ---- Grok Imagine still-image prompts (editorial-illustration house style) ----
+# A Script Processing stage that injects [GROK IMAGINE / RESOLVE] production blocks
+# so the user can copy-paste them into Grok Imagine: one for the hook and 3-4 per
+# chapter. Prompts are symbolic editorial illustrations (no people/faces/hands) in
+# the channel's dark-navy house style. When a beat cites a quotable source (a
+# social media post, statement, testimony, or a named study/stat), the same block
+# also carries a [QUOTE CARD / RESOLVE] overlay line.
+GROK_IMAGINE_STYLE_SUFFIX = (
+    "Landscape 16:9, dark navy background, cinematic soft lighting, clean "
+    "modern editorial illustration, minimal or no text, no people, no faces, "
+    "no hands."
+)
+
+# Model used to author Grok Imagine prompts. Opus 5.5 (the newest Opus on this
+# account) writes noticeably more concrete, entity-grounded editorial scenes than
+# 4.8 for this task. Scoped to this feature so it doesn't change every other call.
+GROK_IMAGINE_MODEL = "claude-opus-5-5"
+
+GROK_IMAGINE_SYSTEM = (
+    "You are the art director for a YouTube channel about AI and technology. For "
+    "ONE beat of the spoken script, produce production overlays as a JSON object "
+    'with exactly two keys: "image_prompt" and "quote_card".\n'
+    "\n"
+    "IMAGE PROMPT — one still image for Grok Imagine, in the channel's house "
+    "style (match the reference prompts below in quality and specificity):\n"
+    "- Build ONE clear editorial-illustration scene from CONCRETE, recognizable "
+    "objects: desks, microphones, rulebooks, checkbooks, ballot boxes, gate keys, "
+    "moats, towers, maps, servers, documents, kill switches, timelines, coins.\n"
+    "- NAME the specific real entities the beat mentions and show them as labeled "
+    "logos, nameplates, or map locations — companies (OpenAI, Anthropic, xAI, "
+    "Meta, DeepSeek) as logos on towers or servers; a named law or bill as a "
+    "labeled folder; a person by their organization, NEVER a face (Sam Altman -> "
+    "an OpenAI nameplate at a Senate table); a place (California, Washington, the "
+    "EU) as that map or capitol lit.\n"
+    "- Arrange the objects so the COMPOSITION itself makes the point (a moat with "
+    "a raised drawbridge = a barrier only the big can cross; a kill switch wired "
+    "to empty boxes = a control that no longer works).\n"
+    "- Stay grounded and editorial — NOT ornate, surreal, or fantastical. Do not "
+    "cram several metaphors into one scene or invent baroque objects. Roughly "
+    "35-60 words.\n"
+    "- Hard rules: NO people, NO faces, NO hands, NO crowds, NO on-screen text or "
+    "captions. Do NOT add camera, aspect-ratio, lighting, or style notes — those "
+    "are appended automatically.\n"
+    "\n"
+    "REFERENCE PROMPTS (match this exact quality and grounded, entity-specific "
+    "style):\n"
+    "- Frontier labs building a moat: 'Three glowing corporate towers on a dark "
+    "plain bearing the OpenAI, Anthropic, and xAI logos, and around them a wide "
+    "moat filling with water, a single drawbridge raised, tiny dark startup tents "
+    "and an open source campfire stranded on the far bank.'\n"
+    "- Who profits from the panic: 'A dark boardroom table with an antique brass "
+    "microphone at its center, and around it five empty chairs, each with a small "
+    "object on the seat: a play button, a rulebook stamped with a seal, a "
+    "foundation checkbook, a campaign button, and a locked gate key, a world map "
+    "dim on the back wall.'\n"
+    "- A licensing ask before the Senate: 'A wooden Senate hearing table with a "
+    "single microphone and a nameplate bearing only the OpenAI logo, a framed "
+    "license certificate with a glowing threshold line propped on the table, an "
+    "EU flag beside a document with red strike-through lines behind it.'\n"
+    "- Open models spreading beyond control: 'A large red industrial kill switch "
+    "on a wall, its cable running to a stack of open cardboard boxes, but the "
+    "boxes are empty because hundreds of small glowing copies of the same file "
+    "are already flying out of a warehouse door into a dark sky.'\n"
+    "\n"
+    '2. "quote_card": a QUOTE CARD overlay ONLY when the beat cites a quotable '
+    "source — a social media post or tweet, an official statement, testimony, a "
+    "named study or statistic, or a public announcement. Otherwise null. NEVER "
+    "invent a quote, number, handle, or date. If the beat states the exact "
+    "quote/stat and its source, format as '<Source, context and date>: <exact "
+    "quote or statistic>'. If the beat references a social media post or "
+    "statement whose verbatim text is NOT given in the beat, instead return an "
+    "editor instruction to source it, e.g. 'Source and paste the exact post from "
+    "<person/handle> (<date/where>): screenshot or transcribe verbatim — verify "
+    "before render.'\n"
+    "\n"
+    "Output ONLY the JSON object, nothing else."
+)
+
+_GROK_IMAGINE_TAG = "[GROK IMAGINE"
+
+# A line that starts a chapter: "Heading: …" or "Chapter N …" (optionally
+# markdown-#/bold prefixed).
+_CH_BOUNDARY_RE = re.compile(
+    r'^[ \t]*(?:#{1,6}[ \t]*)?\*{0,2}[ \t]*Heading[ \t]*:'
+    r'|^[ \t]*(?:#{1,6}[ \t]*)?\*{0,2}[ \t]*Chapter[ \t]+\d+\b',
+    re.IGNORECASE)
+
+# Trailing non-spoken metadata sections (=== SECTION ===, SUPPORTING RESEARCH,
+# etc.) — injection stops here so prompts land only in real chapters.
+_GI_META_BOUNDARY_RE = re.compile(
+    r'^[ \t]*={3,}[ \t]*[A-Za-z]'
+    r'|^[ \t]*(?:SUPPORTING[ \t]+RESEARCH|FINAL[ \t]+PACKAGING'
+    r'|STRATEGY[ \t]+NOTES|YOUTUBE[ \t]+VIDEO[ \t]+DESCRIPTION)\b',
+    re.IGNORECASE | re.MULTILINE)
+
+# Non-spoken label lines to skip when picking beats: script metadata, hook/host
+# labels, and stage-direction tags. (Host is handled separately so an inline
+# "Host: <text>" line still counts as spoken.)
+_GI_SKIP_LABEL_RE = re.compile(
+    r'^\**\s*(?:Title|Script-?ID|Script-?Version|Script\s+Type|Duration|'
+    r'Generated|Audience|Tone|Heading|FINAL\s+HOOK|HOOK|Summary|Chapter\s+\d+|'
+    r'GROK\s+IMAGINE|QUOTE\s+CARD|PROMPT\s+OVERLAY|COLD\s+OPEN|PRODUCTION|'
+    r'VERIFY|VISUAL|B-?ROLL)\b',
+    re.IGNORECASE)
+
+
+def _gi_is_host_label(p: str) -> bool:
+    return bool(re.match(r'^\*{0,2}\s*Host\s*\*{0,2}\s*:?\s*\*{0,2}\s*$',
+                         (p or "").strip(), re.IGNORECASE))
+
+
+def _gi_is_spoken(p: str) -> bool:
+    """A spoken beat line eligible for a prompt: not a label/metadata/stage line,
+    not a separator, and long enough to be real dialogue."""
+    s = (p or "").strip()
+    if not s or _gi_is_host_label(s):
+        return False
+    if s.startswith("[") or s.startswith("==") or s.startswith("__"):
+        return False
+    if _GI_SKIP_LABEL_RE.match(s):
+        return False
+    # A leading "Host: " label doesn't disqualify the sentence after it.
+    body = re.sub(r'^\*{0,2}\s*Host\s*\*{0,2}\s*:\s*\*{0,2}\s*', '', s,
+                  flags=re.IGNORECASE)
+    return len(body.split()) >= 12
+
+
+def _gi_beat_text(p: str) -> str:
+    """Strip a leading Host: label so the model sees only the spoken sentence."""
+    return re.sub(r'^\*{0,2}\s*Host\s*\*{0,2}\s*:\s*\*{0,2}\s*', '',
+                  (p or "").strip(), flags=re.IGNORECASE).strip()
+
+
+def _grok_imagine_assets_for_beat(beat_text: str, section_title: str = "",
+                                  video_title: str = "") -> tuple:
+    """Return (image_prompt_with_suffix, quote_card_or_None) for a script beat.
+    The image prompt is always present on success; the quote card only when the
+    beat cites a quotable source. Returns ('', None) on failure so callers skip."""
+    base = (beat_text or "").strip()
+    if not base:
+        return "", None
+    parts = []
+    if video_title:
+        parts.append(f"VIDEO TITLE: {video_title}")
+    if section_title:
+        parts.append(f"SECTION: {section_title}")
+    parts.append("SCRIPT BEAT (depict its meaning as symbolic objects; add a "
+                 f"quote card only if it cites a quotable source): \"{base[:600]}\"")
+    try:
+        out = _anthropic_complete(
+            GROK_IMAGINE_SYSTEM, "\n".join(parts), max_tokens=1000,
+            use_web_search=False, timeout=60.0, model=GROK_IMAGINE_MODEL)
+    except Exception as e:
+        logger.warning(f"⚠️ Grok Imagine assets failed: {e}")
+        return "", None
+    raw = (out or "").strip()
+    raw = re.sub(r'^```[a-zA-Z]*\n', '', raw)
+    raw = re.sub(r'\n```\s*$', '', raw).strip()
+    img, quote = "", None
+    try:
+        mobj = re.search(r'\{.*\}', raw, re.DOTALL)
+        data = json.loads(mobj.group(0) if mobj else raw)
+        img = (data.get("image_prompt") or "").strip()
+        q = data.get("quote_card")
+        if q and str(q).strip().lower() not in ("null", "none", ""):
+            quote = str(q).strip()
+    except Exception:
+        # JSON was malformed/truncated. Recover the field values by regex rather
+        # than dumping the raw JSON text into the prompt.
+        if '"image_prompt"' in raw:
+            m_img = re.search(r'"image_prompt"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+            img = (m_img.group(1).encode().decode('unicode_escape')
+                   if m_img else "")
+            m_q = re.search(r'"quote_card"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+            if m_q:
+                qv = m_q.group(1).encode().decode('unicode_escape').strip()
+                if qv and qv.lower() not in ("null", "none"):
+                    quote = qv
+        else:
+            img = raw.strip('"').strip()  # non-JSON reply: treat as the prompt
+    img = img.strip().strip('"').strip()
+    if not img:
+        return "", None
+    if not img.endswith((".", "!", "?")):
+        img += "."
+    return f"{img} {GROK_IMAGINE_STYLE_SUFFIX}", quote
+
+
+def _new_grok_imagine_block(image_prompt: str, quote_card: str = None) -> str:
+    """Format the copy-paste production block: a GROK IMAGINE line, plus a QUOTE
+    CARD line when the beat cited a quotable source."""
+    out = ["[PRODUCTION BEGIN]", f"[GROK IMAGINE / RESOLVE] {image_prompt}"]
+    if quote_card:
+        out.append(f"[QUOTE CARD / RESOLVE] {quote_card}")
+    out.append("[PRODUCTION END]")
+    return "\n".join(out)
+
+
+def _gi_inject_hook(preamble_lines: list, video_title: str) -> tuple:
+    """Add ONE Grok Imagine block for the hook at the top of the script, before
+    the first chapter — unless the preamble already has a GROK IMAGINE block.
+    Line-based insertion so the title/metadata block keeps its formatting.
+    Returns (new_lines, added_count)."""
+    text = "\n".join(preamble_lines)
+    if _GROK_IMAGINE_TAG.lower() in text.lower():
+        return list(preamble_lines), 0  # hook already illustrated — top-up: skip
+    hook_idx = next((i for i, ln in enumerate(preamble_lines)
+                     if _gi_is_spoken(ln)), None)
+    if hook_idx is None:
+        return list(preamble_lines), 0
+    img, quote = _grok_imagine_assets_for_beat(
+        _gi_beat_text(preamble_lines[hook_idx]), "Hook", video_title)
+    if not img:
+        return list(preamble_lines), 0
+    block = _new_grok_imagine_block(img, quote).split("\n")
+    new = (list(preamble_lines[:hook_idx]) + block + [""]
+           + list(preamble_lines[hook_idx:]))
+    return new, 1
+
+
+def _gi_process_chapter(body: str, chap_title: str, video_title: str,
+                        max_workers: int) -> tuple:
+    """Inject 3-4 blocks into one chapter body, topping up to target. Returns
+    (new_body, added_count, changed). ``changed`` is False when the caller should
+    keep the original chapter lines verbatim (nothing to add)."""
+    # Tokenize into ordered items; [PRODUCTION …] blocks stay whole. Spoken text
+    # is one paragraph per line here (docx-extracted / processed scripts join
+    # paragraphs with a single \n), so split host segments per line.
+    items = []
+    for kind, text in _split_by_production(body):
+        if kind == "production":
+            items.append(("prod", text.strip()))
+            continue
+        for para in text.split("\n"):
+            p = para.strip()
+            if p:
+                items.append(("para", p))
+
+    existing = sum(1 for k, t in items
+                   if k == "prod" and _GROK_IMAGINE_TAG.lower() in t.lower())
+    spoken_words = sum(len(t.split()) for k, t in items
+                       if k == "para" and _gi_is_spoken(t))
+    target = 4 if spoken_words >= 220 else 3
+    needed = max(0, target - existing)
+    if spoken_words == 0 or needed <= 0:
+        return body, 0, False
+
+    beat_idxs = []
+    for i, (k, t) in enumerate(items):
+        if len(beat_idxs) >= needed:
+            break
+        if k != "para" or not _gi_is_spoken(t):
+            continue
+        if i > 0 and items[i - 1][0] == "prod":
+            continue
+        beat_idxs.append(i)
+    if not beat_idxs:
+        return body, 0, False
+
+    def _one(i):
+        return i, _grok_imagine_assets_for_beat(
+            _gi_beat_text(items[i][1]), chap_title, video_title)
+    results = {}
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        workers = max(1, min(max_workers, len(beat_idxs)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, pair in ex.map(_one, beat_idxs):
+                results[i] = pair
+    except Exception as e:
+        logger.warning(f"⚠️ Grok Imagine batch failed ({e}); sequential")
+        for i in beat_idxs:
+            results[i] = _grok_imagine_assets_for_beat(
+                _gi_beat_text(items[i][1]), chap_title, video_title)
+
+    out_items, added = [], 0
+    for i, (k, t) in enumerate(items):
+        pair = results.get(i)
+        if pair and pair[0]:
+            out_items.append(("prod", _new_grok_imagine_block(pair[0], pair[1])))
+            added += 1
+        out_items.append((k, t))
+    if not added:
+        return body, 0, False
+    return "\n\n".join(t for _, t in out_items), added, True
+
+
+def _inject_grok_imagine_prompts(script: str, video_title: str = "",
+                                 max_workers: int = 6) -> tuple:
+    """Insert Grok Imagine blocks: one for the hook and 3-4 per chapter, topping
+    up sections that already have some. A block also carries a QUOTE CARD line
+    when its beat cites a quotable source. Trailing metadata sections are left
+    untouched. Returns (updated_script, added_count). Never raises.
+    """
+    if not script or not script.strip():
+        return script, 0
+
+    # Inject only into the spoken body — never into trailing metadata sections.
+    m = _GI_META_BOUNDARY_RE.search(script)
+    main, tail = (script[:m.start()], script[m.start():]) if m else (script, "")
+
+    lines = main.split("\n")
+    boundaries = [i for i, ln in enumerate(lines) if _CH_BOUNDARY_RE.match(ln)]
+
+    added_total = 0
+    # Hook: the preamble before the first chapter (whole script if no chapters).
+    pre_end = boundaries[0] if boundaries else len(lines)
+    new_lines, n = _gi_inject_hook(lines[:pre_end], video_title)
+    added_total += n
+    if not boundaries:
+        return "\n".join(new_lines) + tail, added_total
+
+    for bi, start in enumerate(boundaries):
+        end = boundaries[bi + 1] if bi + 1 < len(boundaries) else len(lines)
+        heading = lines[start]
+        body = "\n".join(lines[start + 1:end])
+        chap_title = re.sub(
+            r'^\s*(?:#{1,6}\s*)?\*{0,2}\s*Heading\s*:\s*', '', heading,
+            flags=re.IGNORECASE).strip(" *#")
+        new_body, added, changed = _gi_process_chapter(
+            body, chap_title, video_title, max_workers)
+        if not changed:
+            new_lines.extend(lines[start:end])  # leave chapter exactly as-is
+            continue
+        added_total += added
+        new_lines.append(heading)
+        new_lines.append("")
+        new_lines.extend(new_body.split("\n"))
+        new_lines.append("")  # keep chapters visually separated
+
+    return "\n".join(new_lines) + tail, added_total
+
+
 def _call_polish_model(text_to_polish: str, header: str,
                        extra: str = "") -> tuple:
-    """Run one polish pass (Opus 4.8, NO web search) over ``text_to_polish``.
+    """Run one Fable-5 (fallback Opus) polish pass over ``text_to_polish``.
     ``extra`` prepends run-specific instructions (e.g. the sentinel rule).
-    Returns ``(polished_text, model_used)``; raises on empty output.
+    Returns ``(polished_text, model_used)``; raises if no model responds.
 
-    A no-search polish is one bounded API call (~30-120s depending on length)
-    with no multi-round pause loop — fast and predictable, which is what a
-    background job needs.
+    NO web search: the "make it current" web-search pass was the slow/flaky part
+    (a full-script polish with search ran ~2-5 min and could stall). A no-search
+    Fable pass is one bounded API call (~10-60s), fast and predictable.
     """
     user = (
         f"{header}{extra}Here is the finished script to polish and elevate. "
         f"Return the full polished script only:\n\n{text_to_polish}"
     )
-    logger.info("🪄 polish: calling %s (no web search)", ANTHROPIC_MODEL)
-    out = _anthropic_complete(
-        _POLISH_SYSTEM, user, max_tokens=16000,
-        use_web_search=False, model=ANTHROPIC_MODEL, timeout=200.0,
-    )
-    out = _strip_reminder_tags(out)
-    if not out:
-        raise RuntimeError("Script polish returned empty output.")
-    return out, ANTHROPIC_MODEL
+    import anthropic
+    for model in (POLISH_MODEL, ANTHROPIC_MODEL):
+        try:
+            logger.info("🪄 polish: calling %s (no web search)", model)
+            out = _anthropic_complete(
+                _POLISH_SYSTEM, user, max_tokens=16000,
+                use_web_search=False, model=model, timeout=200.0,
+            )
+            out = _strip_reminder_tags(out)
+            if out:
+                return out, model
+        except anthropic.NotFoundError:
+            # Model isn't available on this key — try the next one.
+            logger.warning("Polish model %s not available; falling back", model)
+            continue
+    raise RuntimeError("Script polish failed — no usable Claude model responded.")
 
 
 def _polish_script(script: str, title: str = "", audience: str = "",
                    production_type: str = "") -> tuple:
-    """Run the finished script through a final polish pass.
+    """Run the finished script through Fable 5 for a final polish pass.
 
     Only the Host narration OUTSIDE [PRODUCTION BEGIN]…[PRODUCTION END] blocks is
     ever rewritten: production blocks are extracted, the surrounding script is
     polished, then the blocks are restored byte-for-byte. Returns
-    (polished_text, model_used).
+    (polished_text, model_used). Falls back to ANTHROPIC_MODEL if POLISH_MODEL
+    isn't available on the account.
     """
     ctx = []
     if title:
@@ -5587,31 +6221,9 @@ def _polish_script(script: str, title: str = "", audience: str = "",
     return "".join(out_parts), model_used
 
 
-def _polish_job_blob(job_id: str) -> str:
-    return f"polish-jobs/{_safe_blob_id(job_id)}.json"
-
-
-def _polish_job_write(job_id: str, payload: dict) -> bool:
-    """Persist a polish job's state to blob storage (shared across workers)."""
-    return _artifacts_upload_bytes(
-        _polish_job_blob(job_id),
-        json.dumps(payload).encode("utf-8"),
-        "application/json",
-    )
-
-
 @app.route("/api/script/polish", methods=["POST"])
 def api_script_polish():
-    """Kick off a Fable-5 (fallback Opus) polish as a BACKGROUND job.
-
-    A polish over a full-length script with web search takes a few minutes.
-    Behind the cloud ingress a single long request gets cut off (~200s idle /
-    connection drop) and the result is lost even though the backend finished —
-    which is exactly what was happening. So we return a job_id immediately and
-    run the polish in a daemon thread that writes the result to BLOB storage.
-    Blob is shared across the 2 gunicorn workers, so the client can poll
-    GET /api/script/polish/result on any worker. Falls back to a synchronous
-    response when blob artifacts aren't configured (e.g. local dev)."""
+    """Final polish of the finished script via Claude Fable 5 (fallback Opus)."""
     data = request.get_json(silent=True) or {}
     script = (data.get("script") or "").strip()
     if not script:
@@ -5622,92 +6234,17 @@ def api_script_polish():
     title = (data.get("title") or "").strip()
     audience = (data.get("audience") or "").strip()
     production_type = (data.get("production_type") or "").strip()
-
-    # No blob store (local dev) — just do it synchronously; there's no ingress
-    # in front to cut the connection.
-    if not _artifacts_enabled():
-        try:
-            polished, model = _polish_script(
-                script, title=title, audience=audience,
-                production_type=production_type)
-            return jsonify({"success": True, "polished_script": polished,
-                            "model": model})
-        except Exception as e:
-            logger.error(f"❌ Script polish failed: {e}")
-            return jsonify({"success": False, "error": str(e)}), 500
-
-    job_id = uuid.uuid4().hex
-    _polish_job_write(job_id, {"status": "running"})
-
-    def _work():
-        logger.info("🧵 polish worker ENTER job=%s (%d chars)",
-                    job_id, len(script))
-        # Checkpoint the phase into the blob itself so progress is observable via
-        # the poll endpoint even if the container logs are lagging/unavailable.
-        try:
-            _polish_job_write(job_id, {"status": "running",
-                                       "phase": "worker_entered"})
-        except BaseException:
-            pass
-        try:
-            polished, model = _polish_script(
-                script, title=title, audience=audience,
-                production_type=production_type)
-            logger.info("✨ Script polished with %s (%d → %d chars)",
-                        model, len(script), len(polished))
-            ok = _polish_job_write(job_id, {
-                "status": "done", "success": True,
-                "polished_script": polished, "model": model})
-            logger.info("🧵 polish worker WROTE result job=%s ok=%s", job_id, ok)
-            if not ok:
-                # Retry the result write once — a dropped write would strand the
-                # job at "running" forever.
-                _polish_job_write(job_id, {
-                    "status": "done", "success": True,
-                    "polished_script": polished, "model": model})
-        except BaseException as e:
-            logger.error("❌ Script polish failed job=%s: %r", job_id, e)
-            try:
-                _polish_job_write(job_id, {
-                    "status": "done", "success": False, "error": str(e)})
-            except BaseException as e2:
-                logger.error("❌ polish result write failed job=%s: %r",
-                             job_id, e2)
-
-    logger.info("🧵 polish job START job=%s (%d chars, artifacts=%s)",
-                job_id, len(script), _artifacts_enabled())
-    _threading.Thread(target=_work, daemon=True,
-                      name=f"polish-{job_id[:8]}").start()
-    return jsonify({"success": True, "job_id": job_id, "status": "running"})
-
-
-@app.route("/api/script/polish/result", methods=["GET"])
-def api_script_polish_result():
-    """Poll a background polish job's result by job_id (see api_script_polish)."""
-    job_id = (request.args.get("job_id") or "").strip()
-    if not job_id:
-        return jsonify({"success": False, "error": "missing job_id"}), 400
-    if not _artifacts_enabled():
-        return jsonify({"success": False,
-                        "error": "no artifact store for polish jobs"}), 400
     try:
-        raw = _artifacts_container().download_blob(
-            _polish_job_blob(job_id)).readall()
-        payload = json.loads(raw)
-    except Exception:
-        # Not written yet / not found — treat as still running.
-        return jsonify({"status": "running"})
-    return jsonify(payload)
-
-
-@app.route("/api/x/status", methods=["GET"])
-def api_x_status():
-    """Report whether @AIwithRoz X posting is configured (keys present)."""
-    return jsonify({
-        "success": True,
-        "configured": _x_credentials() is not None,
-        "account": X_ACCOUNT_HANDLE,
-    })
+        polished, model = _polish_script(
+            script, title=title, audience=audience,
+            production_type=production_type,
+        )
+    except Exception as e:
+        logger.error(f"❌ Script polish failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    logger.info("✨ Script polished with %s (%d → %d chars)",
+                model, len(script), len(polished))
+    return jsonify({"success": True, "polished_script": polished, "model": model})
 
 
 @app.route("/api/x/generate", methods=["POST"])
@@ -6215,10 +6752,33 @@ def create():
     # Get form data
     data = request.get_json() or {}
     topic = data.get("topic", "AI in daily life")
-    # The creative brief from the Create Script dialog. Without it the Topic
-    # Assistant and Script Writer fall back to "use the topic title as a
-    # guide" and invent an episode from the title alone.
+    # The creative brief from the Create Script dialog. This is the single most
+    # important steering input the workflow gets — without it the Topic
+    # Assistant and Script Writer fall back to "use the topic title as a guide"
+    # and invent an episode from the title alone.
     description = (data.get("description") or "").strip()
+    # If this run came from an Idea-Generator batch that was grounded in an
+    # uploaded document, append a trimmed excerpt of that document to the brief.
+    # The description is the one channel that reaches BOTH the Topic Assistant
+    # and the Script Writer, so this puts the source material in front of both.
+    src_batch = _find_idea_batch(data.get("source_batch_id"))
+    src_doc = (src_batch or {}).get("source_document") or {}
+    src_doc_text = (src_doc.get("text") or "").strip()
+    if src_doc_text:
+        excerpt = src_doc_text[:_IDEA_DOC_EXCERPT_CHARS]
+        truncated = len(src_doc_text) > _IDEA_DOC_EXCERPT_CHARS
+        src_name = (src_doc.get("name") or "attachment")
+        doc_block = (
+            f"\n\n--- SOURCE DOCUMENT: {src_name} "
+            f"(ground the script in this; do not contradict it) ---\n"
+            f"{excerpt}"
+            + ("\n…[excerpt truncated]…" if truncated else "")
+            + "\n--- END SOURCE DOCUMENT ---\n"
+        )
+        description = (description + doc_block) if description else doc_block.strip()
+        logger.info("📎 Injected source document '%s' (%d chars) into the brief "
+                    "for the Topic Assistant + Script Writer",
+                    src_name, len(excerpt))
     audience = data.get("audience", "general")
     tone = data.get("tone", "professional")
     video_length = data.get("video_length", "medium")
@@ -6263,6 +6823,12 @@ def create():
 
     logger.info(f"🎬 Starting script creation: {session_id}")
     logger.info(f"📝 Topic: {topic}, Audience: {audience}, Tone: {tone}")
+    if description:
+        logger.info(f"📋 Brief: {len(description)} chars — steering the "
+                    f"Topic Assistant and Script Writer")
+    else:
+        logger.warning("⚠️ NO BRIEF SUPPLIED — the workflow will invent an "
+                       "episode from the topic title alone")
     logger.info(f"📋 Checkboxes: {checkboxes}")
     if quick_test:
         logger.info(f"⚡ QUICK TEST MODE: 1 chapter only")
@@ -6555,10 +7121,67 @@ def process_script():
             data.get("broll_table_override") or "").strip() or None
         script_filename = (data.get("script_filename") or "").strip()
         script_dir = (data.get("script_dir") or "").strip()
+        # Optional title supplied by the frontend after the user was
+        # prompted because the script had no recognizable title line.
+        provided_title = (data.get("script_title") or "").strip()
 
         if not script_content.strip():
             logger.warning("❌ Empty script received")
             return jsonify({"success": False, "error": "Please provide a script to process"})
+
+        # Title check: every script must carry a recognizable title line
+        # (`# Title`, `## Title`, `Title:`, or `TITLE:`) within its first
+        # ~30 non-blank lines. If one is missing AND the frontend hasn't
+        # already prompted the user for one, ask for it before kicking
+        # off the (long-running) pipeline. The frontend handles the
+        # `needs_title` response by prompting and resending.
+        def _script_has_title(text: str) -> bool:
+            import re as _re_t
+            head_lines = []
+            for _ln in text.splitlines():
+                _s = _ln.strip()
+                if not _s:
+                    continue
+                head_lines.append(_s)
+                if len(head_lines) >= 30:
+                    break
+            for _s in head_lines:
+                if _re_t.match(r"^#{1,6}\s+\S", _s):
+                    return True
+                if _re_t.match(r"^(?:\*{0,2}\s*)?TITLE\s*:\s*\S", _s,
+                               _re_t.IGNORECASE):
+                    return True
+            return False
+
+        if provided_title:
+            # Prepend the supplied title as a level-1 markdown heading so
+            # downstream extractors that look for `# Title` find it. If
+            # the user already typed a `#`/`TITLE:` prefix, strip it
+            # first and re-add a clean `# `.
+            import re as _re_t2
+            _clean_title = _re_t2.sub(
+                r"^\s*(?:#{1,6}\s*|TITLE\s*:\s*)", "", provided_title,
+                flags=_re_t2.IGNORECASE,
+            ).strip()
+            if _clean_title:
+                script_content = f"# {_clean_title}\n\n{script_content.lstrip()}"
+                logger.info(
+                    f"📝 Prepended user-provided title to script: "
+                    f"{_clean_title!r}"
+                )
+        elif not _script_has_title(script_content):
+            logger.warning(
+                "❌ Script has no title line — asking frontend to prompt user"
+            )
+            return jsonify({
+                "success": False,
+                "needs_title": True,
+                "error": (
+                    "This script has no TITLE line. Please add one (e.g. "
+                    "`# My Video Title` or `TITLE: My Video Title`) at the "
+                    "top of the script, or enter a title when prompted."
+                ),
+            }), 400
 
         logger.info(f"📋 Checkboxes: {checkboxes}")
         if heygen_template_id:
@@ -6765,14 +7388,26 @@ def finalize_hook():
         stripped = _strip_sections(stripped, _final_hdr)
 
         # Also strip a stray "**Host:**" / "Host:" line if it was left behind
-        # immediately after we removed a FINAL HOOK header.
-        stripped = _re.sub(
-            r"(?:^|\n)\s*\*{0,2}\s*Host\s*:\s*\*{0,2}\s*\n+([^\n]+\n)(?=\s*\n|$)",
-            "\n",
+        # immediately after we removed a FINAL HOOK header. Only operate on
+        # the very top of the script (before the first chapter / heading), and
+        # only remove the bare Host: label line itself — NEVER the prose line
+        # that follows it (that prose is the first sentence of a chapter).
+        _lead_match = _re.match(
+            r"\A([\s\S]*?)(?=\n\s*(?:#{1,6}\s|Heading\s*:|\*{1,2}\s*(?:Chapter|Part|Section)\b))",
             stripped,
-            count=0,
             flags=_re.IGNORECASE,
         )
+        if _lead_match:
+            _lead = _lead_match.group(1)
+            _tail = stripped[_lead_match.end():]
+            _lead = _re.sub(
+                r"(?:^|\n)\s*\*{0,2}\s*Host\s*:\s*\*{0,2}\s*(?=\n)",
+                "\n",
+                _lead,
+                count=1,
+                flags=_re.IGNORECASE,
+            )
+            stripped = _lead + _tail
         stripped = stripped.lstrip("\n")
 
         hook_block = (
@@ -7110,7 +7745,10 @@ def heygen_test_generate():
         if not template_id:
             return jsonify({"error": "No template ID provided"}), 400
 
-        url = f"https://api.heygen.com/v2/template/{template_id}/generate"
+        # HeyGen V3 (New AI Studio) template generate endpoint. The request_body
+        # is built V3-shaped by the frontend (variables flattened to
+        # {type, content}); the legacy V2 /v2/template/{id}/generate is deprecated.
+        url = f"https://api.heygen.com/v3/templates/{template_id}"
         headers = {
             "accept": "application/json",
             "content-type": "application/json",
@@ -8192,9 +8830,9 @@ GROK_PROMPT_ENGINEER_SYSTEM = (
     "symbols, labels, and gentle motion. No quotes, no preamble, no lists."
 )
 
-# A second, dedicated style for the b-roll table's "Grok Chalk Prompt" column:
-# ALWAYS a rough white-chalk-on-black hand-drawn sketch of the scene (a
-# chalkboard / whiteboard-animation look) so it reads as handwritten.
+# The "Grok Chalk Prompt" column is the SAME visual as the cinematic prompt,
+# redrawn as rough white chalk on black — so the two columns always match, just
+# in different styles. It is given the already-chosen cinematic prompt as input.
 GROK_CHALK_PROMPT_ENGINEER_SYSTEM = (
     "You are a prompt engineer for grok-imagine-video (ONE short ~4-6s SILENT "
     "clip). You are GIVEN a visual scene that has already been chosen. Redraw "
@@ -9557,6 +10195,41 @@ def youtube_recent_videos():
         })
     except Exception as e:
         logger.error(f"❌ youtube_recent_videos error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/youtube/published-videos", methods=["GET"])
+def youtube_published_videos():
+    """List the @AIwithRoz channel's published (uploaded) videos, newest first.
+
+    Powers the "Promote a published video" browser in the Post to X composer so
+    any older episode can be turned into a promo at any time. Returns an empty
+    list (not an error) when YouTube isn't authorized yet, so the composer can
+    show a friendly hint instead of failing.
+    """
+    try:
+        import youtube_publisher as yp
+        if not yp.is_authorized():
+            return jsonify({
+                "success": True,
+                "authorized": False,
+                "videos": [],
+                "message": ("Connect the YouTube account first (Publish tab) "
+                            "to browse published videos."),
+            })
+        try:
+            max_results = int(request.args.get("max", 100))
+        except (TypeError, ValueError):
+            max_results = 100
+        max_results = max(1, min(max_results, 200))
+        videos = yp.list_published_videos(max_results=max_results)
+        return jsonify({
+            "success": True,
+            "authorized": True,
+            "videos": videos,
+        })
+    except Exception as e:
+        logger.error(f"❌ youtube_published_videos error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -11059,11 +11732,17 @@ def execute_curl():
                     import json
                     response_data = json.loads(result.stdout)
 
-                    # Extract job ID if available (HeyGen specific)
+                    # Extract job ID if available (HeyGen specific).
+                    # HeyGen V3 (/v3/templates/{id}) returns the video id at
+                    # data.id; the legacy V2 endpoint used data.video_id. Check
+                    # both so polling starts regardless of endpoint version.
                     job_id = None
                     if isinstance(response_data, dict):
                         data_obj = response_data.get('data') or {}
-                        job_id = (data_obj.get('video_id') if isinstance(data_obj, dict) else None) or \
+                        if not isinstance(data_obj, dict):
+                            data_obj = {}
+                        job_id = data_obj.get('video_id') or \
+                            data_obj.get('id') or \
                             response_data.get('video_id') or \
                             response_data.get('job_id') or \
                             response_data.get('id')
@@ -12315,8 +12994,24 @@ def _persist_version_artifacts(script_id: str, version_id: str, result: dict,
                     "timecode": b.get("timecode", ""),
                 })
 
+        # The initial generated script body + the creative brief that produced
+        # it, so both can be pulled back from the cloud (and recent scripts can
+        # seed style context for future generations). A reprocess run bumps the
+        # version and carries no brief — carry the newest prior brief forward so
+        # every version's manifest stays self-contained (single-read listing).
+        enhanced_script = (result.get("enhanced_script")
+                           or result.get("script") or "")
+        brief = (result.get("brief") or "").strip()
+        if not brief:
+            try:
+                brief = (_read_latest_brief_for_script(script_id) or "").strip()
+            except Exception:
+                brief = ""
+
         manifest = {
             "script_id": sid, "version_id": vid, "script_title": title,
+            "enhanced_script": enhanced_script,
+            "brief": brief,
             "broll_table": result.get("broll_table"),
             "broll_rows": result.get("broll_rows"),
             "youtube_details": result.get("youtube_details"),
@@ -12436,6 +13131,181 @@ def api_script_artifacts_latest_broll():
     if not data:
         return jsonify({"success": True, "found": False})
     return jsonify({"success": True, "found": True, **data})
+
+
+def _read_latest_brief_for_script(script_id: str) -> "Optional[str]":
+    """Newest persisted creative brief for a Script-ID, across ALL versions.
+
+    Only the create run carries a brief; reprocess runs bump the version with
+    no brief. Walk every version manifest newest-written first and return the
+    first non-empty brief. Mirrors _read_latest_broll_table_for_script.
+    """
+    if not _artifacts_enabled() or not script_id:
+        return None
+    sid = _safe_blob_id(script_id)
+    try:
+        cc = _artifacts_container()
+        blobs = [
+            b for b in cc.list_blobs(name_starts_with=f"{sid}/versions/")
+            if b.name.endswith("/artifacts.json")
+            and getattr(b, "last_modified", None)
+        ]
+        blobs.sort(key=lambda b: b.last_modified, reverse=True)
+        for b in blobs:
+            try:
+                manifest = json.loads(cc.download_blob(b.name).readall())
+            except Exception:
+                continue
+            brief = manifest.get("brief")
+            if brief and str(brief).strip():
+                return str(brief)
+    except Exception as e:
+        logger.warning(f"⚠️ latest brief lookup failed for {script_id}: {e}")
+    return None
+
+
+# How many recent scripts to expose in the cloud picker / feed as style memory,
+# and how much of each script to include as a style sample (chars).
+_CLOUD_SCRIPTS_MAX = 50
+_STYLE_CONTEXT_SCRIPTS = 8
+_STYLE_CONTEXT_CHARS_PER_SCRIPT = 2000
+
+
+def _list_cloud_scripts(limit: int = _CLOUD_SCRIPTS_MAX) -> list:
+    """List saved scripts in the cloud, newest first, one entry per Script-ID.
+
+    Walks every version manifest, groups by Script-ID, and keeps the
+    newest-written version per script. Returns lightweight cards:
+    {script_id, version_id, title, created, has_script, has_brief, word_count}.
+    """
+    if not _artifacts_enabled():
+        return []
+    try:
+        cc = _artifacts_container()
+        # Newest artifacts.json per Script-ID (first path segment).
+        newest: "dict[str, object]" = {}
+        for b in cc.list_blobs():
+            name = getattr(b, "name", "") or ""
+            if not name.endswith("/artifacts.json") or "/versions/" not in name:
+                continue
+            if not getattr(b, "last_modified", None):
+                continue
+            sid = name.split("/", 1)[0]
+            cur = newest.get(sid)
+            if cur is None or b.last_modified > cur.last_modified:
+                newest[sid] = b
+        # Newest scripts first; cap how many manifests we actually download.
+        ordered = sorted(
+            newest.values(), key=lambda b: b.last_modified, reverse=True)
+        truncated = len(ordered) > limit
+        ordered = ordered[:limit]
+        cards = []
+        for b in ordered:
+            try:
+                m = json.loads(cc.download_blob(b.name).readall())
+            except Exception:
+                continue
+            script_text = (m.get("enhanced_script") or "").strip()
+            cards.append({
+                "script_id": m.get("script_id") or b.name.split("/", 1)[0],
+                "version_id": m.get("version_id"),
+                "title": (m.get("script_title") or "Untitled").strip(),
+                "created": b.last_modified.isoformat(),
+                "has_script": bool(script_text),
+                "has_brief": bool((m.get("brief") or "").strip()),
+                "word_count": len(script_text.split()) if script_text else 0,
+            })
+        if truncated:
+            logger.info(
+                f"ℹ️ Cloud script list truncated to newest {limit} "
+                f"(of {len(newest)} total scripts)")
+        return cards
+    except Exception as e:
+        logger.warning(f"⚠️ list cloud scripts failed: {e}")
+        return []
+
+
+@app.route("/api/cloud-scripts", methods=["GET"])
+def api_cloud_scripts():
+    """List saved scripts in the cloud for the Load-from-Cloud picker."""
+    if not _artifacts_enabled():
+        return jsonify({"success": True, "enabled": False, "scripts": []})
+    try:
+        limit = int(request.args.get("limit", _CLOUD_SCRIPTS_MAX))
+    except (TypeError, ValueError):
+        limit = _CLOUD_SCRIPTS_MAX
+    scripts = _list_cloud_scripts(max(1, min(limit, 200)))
+    return jsonify({"success": True, "enabled": True,
+                    "scripts": scripts, "count": len(scripts)})
+
+
+def _recent_scripts_for_style_context(
+        limit: int = _STYLE_CONTEXT_SCRIPTS,
+        exclude_script_id: str = "") -> list:
+    """The newest saved scripts (title + trimmed body) to seed style memory for
+    a new generation. Returns [{title, excerpt}] newest first, skipping the
+    current Script-ID and any script with no body. Best-effort; never raises.
+    """
+    if not _artifacts_enabled():
+        return []
+    exclude = _safe_blob_id(exclude_script_id) if exclude_script_id else ""
+    out = []
+    try:
+        cc = _artifacts_container()
+        newest: "dict[str, object]" = {}
+        for b in cc.list_blobs():
+            name = getattr(b, "name", "") or ""
+            if not name.endswith("/artifacts.json") or "/versions/" not in name:
+                continue
+            if not getattr(b, "last_modified", None):
+                continue
+            sid = name.split("/", 1)[0]
+            if exclude and sid == exclude:
+                continue
+            cur = newest.get(sid)
+            if cur is None or b.last_modified > cur.last_modified:
+                newest[sid] = b
+        ordered = sorted(
+            newest.values(), key=lambda b: b.last_modified, reverse=True)
+        for b in ordered:
+            if len(out) >= limit:
+                break
+            try:
+                m = json.loads(cc.download_blob(b.name).readall())
+            except Exception:
+                continue
+            body = (m.get("enhanced_script") or "").strip()
+            if not body:
+                continue
+            out.append({
+                "title": (m.get("script_title") or "Untitled").strip(),
+                "excerpt": body[:_STYLE_CONTEXT_CHARS_PER_SCRIPT],
+            })
+    except Exception as e:
+        logger.warning(f"⚠️ recent scripts (style context) lookup failed: {e}")
+    return out
+
+
+def _build_style_context_block(exclude_script_id: str = "") -> str:
+    """A delimited style-reference block built from recent saved scripts, or ''
+    when style memory is unavailable/empty. Fed to the Script Writer so new
+    scripts stay consistent in voice, structure, and pacing with recent work.
+    """
+    recent = _recent_scripts_for_style_context(
+        exclude_script_id=exclude_script_id)
+    if not recent:
+        return ""
+    parts = [
+        "\n\n--- STYLE REFERENCE: recent scripts (match their voice, "
+        "structure, and pacing; do NOT copy their topics or content) ---"
+    ]
+    for i, r in enumerate(recent, 1):
+        parts.append(f"\n[Recent script {i} — \"{r['title']}\"]\n{r['excerpt']}")
+    parts.append("\n--- END STYLE REFERENCE ---\n")
+    logger.info(
+        f"🎨 Style memory: seeded {len(recent)} recent script(s) as "
+        f"style context for this generation")
+    return "".join(parts)
 
 
 def _list_finished_videos_from_blob():
@@ -13593,4 +14463,10 @@ if __name__ == "__main__":
     else:
         logger.info("💻 Running in Local mode")
 
-    app.run(host="0.0.0.0", port=port, debug=False)
+    # threaded=True is REQUIRED: the app uses long-lived SSE progress streams
+    # (/progress/<id>). Werkzeug's dev server is single-threaded by default, so an
+    # open SSE connection occupies the ONLY worker thread and blocks every other
+    # request (e.g. /api/script/polish) until it closes — the browser just spins
+    # forever. Threading lets concurrent requests (SSE + polish + polling) be
+    # served at once, matching the gunicorn thread pool used in the container.
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)

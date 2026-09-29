@@ -36,3 +36,8 @@ tweepy>=4.14.0
 
 # Fetch transcripts of adjacency-target YouTube videos for the Idea Generator
 youtube-transcript-api>=1.0.0
+
+# Extract text from a PDF attached as the basis for the 10 generated ideas
+# (Idea Generator "attach a PDF/text file" feature). Lazy-imported; without it
+# the PDF-attach path degrades to empty text instead of crashing.
+pypdf>=4.0.0

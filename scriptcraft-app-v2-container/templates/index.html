@@ -379,35 +379,6 @@
             background: #334155;
         }
         
-        /* Inline text button for a script tab header (e.g. Polish with Fable 5).
-           Sits next to the "✅ Main Script" heading; not an icon-only toolbar box. */
-        .script-hdr-btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 6px 12px;
-            font-size: 14px;
-            font-weight: 600;
-            color: #e2e8f0;
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            cursor: pointer;
-            line-height: 1.2;
-            white-space: nowrap;
-            vertical-align: middle;
-            /* Nudge up a few px so it doesn't bump the content box border below. */
-            position: relative;
-            top: -4px;
-            transition: background 0.15s, border-color 0.15s, color 0.15s;
-        }
-        .script-hdr-btn:hover {
-            background: #334155;
-            border-color: #0ea5e9;
-            color: #ffffff;
-        }
-        .script-hdr-btn:disabled { opacity: 0.6; cursor: default; }
-
         .toolbar-btn {
             display: flex;
             flex-direction: column;
@@ -453,6 +424,36 @@
             color: #0ea5e9;
         }
         
+        /* Compact inline action buttons that sit in the Main Script header,
+           lined up horizontally with the duration badge (not the big top
+           toolbar buttons — those are icon-only 48px boxes). */
+        .script-hdr-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            font-size: 14px;
+            font-weight: 600;
+            color: #e2e8f0;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            cursor: pointer;
+            line-height: 1.2;
+            white-space: nowrap;
+            vertical-align: middle;
+            /* Nudge up a few px so it doesn't bump the content box border below. */
+            position: relative;
+            top: -4px;
+            transition: background 0.15s, border-color 0.15s, color 0.15s;
+        }
+        .script-hdr-btn:hover {
+            background: #334155;
+            border-color: #0ea5e9;
+            color: #ffffff;
+        }
+        .script-hdr-btn:disabled { opacity: 0.6; cursor: default; }
+
         /* Mobile-only short label letter; hidden on desktop. */
         .label-mobile-voice { display: none; }
 
@@ -1138,13 +1139,35 @@
             </div>
             <div id="agentModeToggle" style="margin-left:auto;display:flex;align-items:center;gap:10px;padding:8px 14px;background:#1f2937;border-radius:10px;color:#e5e7eb;font-size:14px;">
                 <span style="font-weight:600;">Agent API:</span>
-                <span id="agentModeStatus" style="padding:2px 8px;border-radius:6px;background:#7c3aed;font-size:12px;">V2 Foundry</span>
+                <span title="Classic v1 Assistants is retired; this app runs on Microsoft Foundry v2 only." style="display:flex;align-items:center;gap:6px;">
+                    <span>🟣 Foundry v2</span>
+                </span>
+                <span id="agentModeStatus" style="margin-left:6px;padding:2px 8px;border-radius:6px;background:#7c3aed;font-size:12px;">V2</span>
             </div>
         </div>
         <script>
-        // Agent mode is locked to v2 (Foundry). v1 has been retired.
         async function setAgentMode(mode) {
-            return; // no-op; v2-only
+            const status = document.getElementById('agentModeStatus');
+            const prev = status.textContent;
+            status.textContent = '...';
+            try {
+                const r = await fetch('/api/agent-mode', {
+                    method: 'POST',
+                    headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({mode: mode})
+                });
+                const j = await r.json();
+                if (j.success) {
+                    status.textContent = (j.mode || mode).toUpperCase();
+                    status.style.background = mode === 'v2' ? '#7c3aed' : '#374151';
+                } else {
+                    status.textContent = prev;
+                    alert('Failed to switch mode: ' + (j.error || 'unknown'));
+                }
+            } catch (e) {
+                status.textContent = prev;
+                alert('Error switching mode: ' + e);
+            }
         }
         </script>
         
@@ -1164,14 +1187,14 @@
                     <span class="toolbar-icon">🧪</span>
                     <span class="toolbar-text">Test Generate</span>
                 </button>
-                <button class="toolbar-btn" onclick="toggleIdeaGenPanel()" title="Brainstorm episode ideas with Claude Opus 5.1, then turn one into a script">
+                <button class="toolbar-btn" onclick="toggleIdeaGenPanel()" title="Brainstorm episode ideas with Claude Opus 5, then turn one into a script">
                     <span class="toolbar-icon">💡</span>
                     <span class="toolbar-text">Idea Generator</span>
                 </button>
             </div>
-
+            
             <div class="toolbar-divider"></div>
-
+            
             <div class="toolbar-section">
                 <span class="toolbar-label">Export</span>
                 <button class="toolbar-btn" onclick="exportToWord()" id="wordBtn" style="display:none;" title="Export to Word">
@@ -1254,7 +1277,7 @@
         </div>
 
         <!-- ============================================================
-             💡 Idea Generator (Claude Opus 5.1 + web search)
+             💡 Idea Generator (Claude Opus 5 + web search)
              Brainstorm episode ideas from a free-text request, pick one, and
              send a full creative brief into the Create Script dialog.
              ============================================================ -->
@@ -1262,7 +1285,7 @@
             <div onclick="toggleIdeaGenPanel()" style="display:flex; align-items:center; gap:10px; padding:14px 18px; cursor:pointer; user-select:none; background:linear-gradient(90deg,#1e1b4b,#0f172a);">
                 <span style="font-size:1.2em;">💡</span>
                 <span style="font-weight:700; color:#e2e8f0; font-size:1.02em;">Idea Generator</span>
-                <span style="color:#94a3b8; font-size:0.82em;">— brainstorm episode ideas with Claude Opus 5.1, then turn one into a script</span>
+                <span style="color:#94a3b8; font-size:0.82em;">— brainstorm episode ideas with Claude Opus 5, then turn one into a script</span>
                 <span id="ideaGenChevron" style="margin-left:auto; color:#94a3b8; font-size:1.1em;">▸</span>
             </div>
             <div id="ideaGenBody" style="display:none; padding:16px 18px 20px;">
@@ -1272,8 +1295,19 @@
                     <button onclick="clearIdeaHistory()" title="Delete all saved idea sets" style="padding:6px 10px; background:#374151; color:#cbd5e1; border:none; border-radius:6px; font-size:0.8em; cursor:pointer; white-space:nowrap;">Clear</button>
                 </div>
                 <div style="display:flex; gap:10px; align-items:flex-start;">
-                    <textarea id="ideaGenRequest" rows="2" placeholder="Optional — leave blank to use the current top 10 AI videos on YouTube, or steer it (e.g. 'focus on AI agents')" style="flex:1; padding:10px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-size:0.95em; resize:vertical; box-sizing:border-box;"></textarea>
+                    <textarea id="ideaGenRequest" rows="2" placeholder="Optional — leave blank to use the current top 10 AI videos on YouTube, or steer it (e.g. 'Elon Musk's AI posts on X this week')" style="flex:1; padding:10px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-size:0.95em; resize:vertical; box-sizing:border-box;"></textarea>
                     <button id="ideaGenBtn" onclick="generateIdeas()" style="white-space:nowrap; padding:10px 16px; background:#6366f1; color:#fff; border:none; border-radius:6px; font-weight:600; cursor:pointer;">Generate 10 Ideas</button>
+                </div>
+                <div style="margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <label for="ideaGenLane" style="color:#cbd5e1; font-size:0.85em; white-space:nowrap;">🎚️ Content lane</label>
+                    <select id="ideaGenLane" style="padding:7px 10px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-size:0.85em;">
+                        <option value="auto" selected>Auto — no bias (let the topic/trends decide)</option>
+                        <option value="news">AI news &amp; big moves (launches, announcements, key figures)</option>
+                        <option value="everyday">Everyday life (home, money, family, health, travel)</option>
+                        <option value="tools">Tools &amp; how-to (demos, comparisons, workflows)</option>
+                        <option value="careers">Careers &amp; work (resumes, interviews, layoffs)</option>
+                    </select>
+                    <span style="color:#94a3b8; font-size:0.8em;">Auto no longer forces career/resume ideas.</span>
                 </div>
                 <div style="margin-top:10px;">
                     <label style="display:block; color:#cbd5e1; font-size:0.85em; margin-bottom:4px;">🎯 Be adjacent to these videos <span style="color:#94a3b8;">(optional — paste YouTube links, one per line; I'll pull each title + transcript so your ideas ride their audience)</span></label>
@@ -1304,7 +1338,10 @@
             #ideaGenList .idea-angle { color:#94a3b8; font-size:0.85em; margin-top:2px; }
         </style>
         <script>
-            let _ideaGenState = { ideas: [], selectedIndex: -1, request: '', adjacencyUrls: '', adjacency: [], batches: [], historyLoaded: false };
+            let _ideaGenState = { ideas: [], selectedIndex: -1, request: '', adjacencyUrls: '', adjacency: [], batches: [], historyLoaded: false, batchId: '', sourceDocName: '' };
+            // The source document (from an Idea-Gen batch) to forward into the
+            // Topic Assistant + Script Writer on the next Create Script run.
+            window._pendingSource = null;
 
             // Load saved idea sets and populate the "Recent" dropdown. On first
             // open, also restore the most recent set so it's there next time.
@@ -1343,6 +1380,8 @@
                 _ideaGenState.ideas = b.ideas || [];
                 _ideaGenState.request = b.request || '';
                 _ideaGenState.selectedIndex = -1;
+                _ideaGenState.batchId = b.id || '';
+                _ideaGenState.sourceDocName = (b.source_document && b.source_document.name) || '';
                 document.getElementById('ideaGenRequest').value = b.request || '';
                 renderIdeas();
                 document.getElementById('ideaGenUseRow').style.display = 'none';
@@ -1394,15 +1433,9 @@
                 if (statusEl) {
                     statusEl.style.display = 'block';
                     statusEl.innerHTML = '✨ Claude Fable 5 is polishing the script '
-                        + '(web search on — a full script can take 1–3 min)…';
+                        + '(web search on — this can take ~30-90s)…';
                 }
-                const sleep = (ms) => new Promise(res => setTimeout(res, ms));
                 try {
-                    // Kick off the polish. The server runs it as a BACKGROUND job
-                    // (a multi-minute request would be cut off by the cloud
-                    // ingress and lost), returning a job_id we then poll. Local
-                    // dev has no blob store, so it may answer synchronously with
-                    // the polished script directly — handle both.
                     const r = await fetch('/api/script/polish', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -1413,64 +1446,24 @@
                             production_type: (window.lastResultPayload && window.lastResultPayload.production_type) || ''
                         })
                     });
-                    let data = null;
-                    try { data = await r.json(); } catch (_e) { data = null; }
-                    if (!data || !data.success) {
-                        statusEl.textContent = '❌ ' + ((data && data.error) || 'Polish failed to start');
+                    const data = await r.json();
+                    if (!data.success) {
+                        statusEl.textContent = '❌ ' + (data.error || 'Polish failed');
                         return;
                     }
-
-                    // Synchronous reply (local dev): result is already here.
-                    if (data.polished_script) {
-                        _applyPolishResult(script, data, statusEl);
-                        return;
-                    }
-
-                    // Background job: poll for the result (up to ~10 min).
-                    const jobId = data.job_id;
-                    if (!jobId) {
-                        statusEl.textContent = '❌ Polish failed — no job id returned.';
-                        return;
-                    }
-                    const deadline = Date.now() + 10 * 60 * 1000;
-                    while (Date.now() < deadline) {
-                        await sleep(5000);
-                        let s = null;
-                        try {
-                            const pr = await fetch('/api/script/polish/result?job_id='
-                                + encodeURIComponent(jobId), { cache: 'no-store' });
-                            s = await pr.json();
-                        } catch (_e) { s = null; }   // transient — keep polling
-                        if (!s) continue;
-                        if (s.status === 'running') continue;
-                        if (s.success && s.polished_script) {
-                            _applyPolishResult(script, s, statusEl);
-                        } else {
-                            statusEl.textContent = '❌ ' + (s.error || 'Polish failed');
-                        }
-                        return;
-                    }
-                    statusEl.textContent = '⌛ Polish is taking longer than expected — '
-                        + 'try again in a moment.';
+                    // Stash the pre-polish version so the user can undo.
+                    window._prePolishScript = script;
+                    window.currentScript = data.polished_script || script;
+                    try { renderMarkdownContent(window.currentScript, null, null, null); } catch (_e) {}
+                    const revertBtn = document.getElementById('revertPolishBtn');
+                    if (revertBtn) revertBtn.style.display = '';
+                    statusEl.innerHTML = '✅ Polished with <strong>' + (data.model || 'Claude')
+                        + '</strong>. Exports and downloads now use the polished version. '
+                        + 'Use “Undo Polish” to revert.';
                 } catch (e) {
                     statusEl.textContent = '❌ ' + e;
                 } finally {
                     _stopBtnTimer(btn, timer);
-                }
-            }
-
-            // Apply a successful polish result: stash the pre-polish script for
-            // undo, swap in the polished version, re-render, and update status.
-            function _applyPolishResult(prevScript, data, statusEl) {
-                window._prePolishScript = prevScript;
-                window.currentScript = data.polished_script || prevScript;
-                try { renderMarkdownContent(window.currentScript, null, null, null); } catch (_e) {}
-                const revertBtn = document.getElementById('revertPolishBtn');
-                if (revertBtn) revertBtn.style.display = '';
-                if (statusEl) {
-                    statusEl.innerHTML = '✅ Polished with <strong>' + (data.model || 'Claude')
-                        + '</strong>. Exports and downloads now use the polished version. '
-                        + 'Use “Undo Polish” to revert.';
                 }
             }
 
@@ -1534,6 +1527,7 @@
                 const inp = document.getElementById('ideaGenRequest');
                 const req = (inp.value || '').trim();
                 const adjUrls = ((document.getElementById('ideaGenAdjacency') || {}).value || '').trim();
+                const lane = ((document.getElementById('ideaGenLane') || {}).value || 'auto');
                 const fileEl = document.getElementById('ideaGenFile');
                 const file = (fileEl && fileEl.files && fileEl.files[0]) ? fileEl.files[0] : null;
                 const statusEl = document.getElementById('ideaGenStatus');
@@ -1543,27 +1537,28 @@
                 _ideaGenState.adjacencyUrls = adjUrls;
                 const timer = _startBtnTimer(btn, 'Generating');
                 statusEl.innerHTML = (file
-                    ? '📎 Reading ' + (file.name || 'your file') + ' &amp; brainstorming with Claude Opus 5.1 (~25-50s)…'
+                    ? '📎 Reading ' + (file.name || 'your file') + ' &amp; brainstorming with Claude Opus 5 (~25-50s)…'
                     : adjUrls
-                    ? '🎯 Fetching your adjacency videos (title + transcript) &amp; brainstorming with Claude Opus 5.1 (~20-40s)…'
-                    : '🔎 Pulling the top AI videos on YouTube &amp; brainstorming with Claude Opus 5.1 (~15-30s)…');
+                    ? '🎯 Fetching your adjacency videos (title + transcript) &amp; brainstorming with Claude Opus 5 (~20-40s)…'
+                    : '🔎 Pulling the top AI videos on YouTube &amp; brainstorming with Claude Opus 5 (~15-30s)…');
                 listEl.innerHTML = '';
                 document.getElementById('ideaGenUseRow').style.display = 'none';
                 try {
                     let r;
                     if (file) {
-                        // Multipart when a file is attached — the request text and
-                        // adjacency ride along as form fields.
+                        // Multipart when a file is attached — the request text,
+                        // adjacency, and lane ride along as form fields.
                         const fd = new FormData();
                         fd.append('file', file);
                         fd.append('request', req);
                         fd.append('adjacency_urls', adjUrls);
+                        fd.append('lane', lane);
                         r = await fetch('/api/ideas/generate', { method: 'POST', body: fd });
                     } else {
                         r = await fetch('/api/ideas/generate', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ request: req, adjacency_urls: adjUrls })
+                            body: JSON.stringify({ request: req, adjacency_urls: adjUrls, lane: lane })
                         });
                     }
                     const data = await r.json();
@@ -1571,6 +1566,8 @@
                     _ideaGenState.ideas = data.ideas || [];
                     _ideaGenState.adjacency = data.adjacency || [];
                     _ideaGenState.selectedIndex = -1;
+                    _ideaGenState.batchId = data.batch_id || '';
+                    _ideaGenState.sourceDocName = (data.source_document && data.source_document.name) || (file ? (file.name || '') : '');
                     renderIdeas();
                     const _ty = (data.top_youtube || []).length;
                     const _adj = (data.adjacency || []);
@@ -1634,7 +1631,7 @@
                     const r = await fetch('/api/ideas/describe', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ title: idea.title, angle: idea.angle, request: _ideaGenState.request, adjacency_urls: _ideaGenState.adjacencyUrls })
+                        body: JSON.stringify({ title: idea.title, angle: idea.angle, request: _ideaGenState.request, adjacency_urls: _ideaGenState.adjacencyUrls, batch_id: _ideaGenState.batchId })
                     });
                     const data = await r.json();
                     if (!data.success) { statusEl.textContent = '❌ ' + (data.error || 'Failed to write brief'); return; }
@@ -1645,9 +1642,16 @@
                         if (typeof refreshOutputDirPreview === 'function') refreshOutputDirPreview();
                     }
                     if (descEl) descEl.value = data.description || '';
+                    // Carry the batch's source document (if any) into the next
+                    // Create Script run so the Topic Assistant + Script Writer get
+                    // it too. Shown as a removable chip in the dialog.
+                    window._pendingSource = _ideaGenState.sourceDocName
+                        ? { batchId: _ideaGenState.batchId, name: _ideaGenState.sourceDocName }
+                        : null;
+                    if (typeof renderSourceDocIndicator === 'function') renderSourceDocIndicator();
                     // Remember which idea produced this brief so the Create Script
                     // dialog can regenerate it on demand without re-selecting.
-                    _ideaGenState.lastBriefIdea = { title: idea.title, angle: idea.angle, request: _ideaGenState.request };
+                    _ideaGenState.lastBriefIdea = { title: idea.title, angle: idea.angle, request: _ideaGenState.request, batchId: _ideaGenState.batchId };
                     const regenRow = document.getElementById('ideaBriefRegenRow');
                     if (regenRow) regenRow.style.display = 'flex';
                     statusEl.innerHTML = '✅ Sent to Create Script — review the title &amp; brief, then generate.';
@@ -1674,7 +1678,7 @@
                     const r = await fetch('/api/ideas/describe', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ title: idea.title, angle: idea.angle, request: idea.request, adjacency_urls: _ideaGenState.adjacencyUrls })
+                        body: JSON.stringify({ title: idea.title, angle: idea.angle, request: idea.request, adjacency_urls: _ideaGenState.adjacencyUrls, batch_id: (idea.batchId || _ideaGenState.batchId) })
                     });
                     const data = await r.json();
                     if (!data.success) { if (statusEl) statusEl.textContent = '❌ ' + (data.error || 'Failed to write brief'); return; }
@@ -1685,6 +1689,24 @@
                 } finally {
                     _stopBtnTimer(btn, timer);
                 }
+            }
+
+            // Show/hide the "source document will be passed to the agents" chip
+            // in the Create Script dialog based on window._pendingSource.
+            function renderSourceDocIndicator() {
+                const box = document.getElementById('sourceDocIndicator');
+                const nameEl = document.getElementById('sourceDocName');
+                if (!box) return;
+                if (window._pendingSource && window._pendingSource.name) {
+                    if (nameEl) nameEl.textContent = window._pendingSource.name;
+                    box.style.display = 'flex';
+                } else {
+                    box.style.display = 'none';
+                }
+            }
+            function clearSourceDoc() {
+                window._pendingSource = null;
+                renderSourceDocIndicator();
             }
         </script>
 
@@ -1701,6 +1723,20 @@
                     <button onclick="closeXPostModal()" style="margin-left:auto; background:transparent; color:#94a3b8; border:none; font-size:1.4em; cursor:pointer;">×</button>
                 </div>
                 <div id="xPostSubtitle" style="color:#94a3b8; font-size:0.85em; margin-bottom:12px;"></div>
+
+                <!-- Browse & promote any previously-published AIwithRoz video -->
+                <div style="border:1px solid #334155; border-radius:8px; padding:10px 12px; margin-bottom:12px; background:#0b1220;">
+                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span style="color:#cbd5e1; font-size:0.88em; font-weight:600;">📺 Promote a published video</span>
+                        <button id="xBrowseBtn" onclick="toggleXVideoBrowser()" style="margin-left:auto; padding:6px 12px; background:#1d4ed8; color:#fff; border:none; border-radius:6px; font-size:0.85em; font-weight:600; cursor:pointer;">Browse published videos</button>
+                    </div>
+                    <div id="xVideoBrowser" style="display:none; margin-top:10px;">
+                        <input id="xVideoSearch" type="text" oninput="renderXVideoList()" placeholder="🔎 Filter by title…" style="width:100%; box-sizing:border-box; padding:8px 10px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-size:0.9em; margin-bottom:8px;">
+                        <div id="xVideoList" style="max-height:230px; overflow:auto; border:1px solid #1e293b; border-radius:6px;"></div>
+                        <div id="xVideoBrowserStatus" style="color:#94a3b8; font-size:0.8em; margin-top:6px;"></div>
+                    </div>
+                    <div id="xSelectedVideo" style="display:none; margin-top:8px; color:#93c5fd; font-size:0.85em;"></div>
+                </div>
 
                 <div id="xPostTopicRow" style="display:none; margin-bottom:12px;">
                     <label style="color:#cbd5e1; font-size:0.88em; display:block; margin-bottom:4px;">What should this post be about?</label>
@@ -1726,6 +1762,97 @@
         </div>
         <script>
             let _xPostCtx = { mode: 'random', title: '', youtube_url: '' };
+            let _xPublishedVideos = null;   // cached list from the API
+            let _xVideosLoading = false;
+
+            // Toggle the "Browse published videos" panel; lazy-load on first open.
+            async function toggleXVideoBrowser() {
+                const panel = document.getElementById('xVideoBrowser');
+                const showing = panel.style.display !== 'none';
+                if (showing) { panel.style.display = 'none'; return; }
+                panel.style.display = 'block';
+                if (_xPublishedVideos === null && !_xVideosLoading) {
+                    await loadXPublishedVideos();
+                } else {
+                    renderXVideoList();
+                }
+            }
+
+            // Fetch the channel's published videos once and cache them.
+            async function loadXPublishedVideos() {
+                _xVideosLoading = true;
+                const status = document.getElementById('xVideoBrowserStatus');
+                const list = document.getElementById('xVideoList');
+                status.textContent = 'Loading published videos…';
+                list.innerHTML = '';
+                try {
+                    const r = await fetch('/api/youtube/published-videos').then(x => x.json());
+                    if (!r.success) throw new Error(r.error || 'Failed to load videos');
+                    if (r.authorized === false) {
+                        _xPublishedVideos = [];
+                        status.innerHTML = '⚠️ ' + (r.message || 'YouTube not connected yet.');
+                        return;
+                    }
+                    _xPublishedVideos = r.videos || [];
+                    status.textContent = _xPublishedVideos.length + ' videos loaded.';
+                    renderXVideoList();
+                } catch (e) {
+                    status.textContent = '❌ ' + (e.message || e);
+                } finally {
+                    _xVideosLoading = false;
+                }
+            }
+
+            // Render the (optionally filtered) list of published videos.
+            function renderXVideoList() {
+                const list = document.getElementById('xVideoList');
+                if (!_xPublishedVideos) { list.innerHTML = ''; return; }
+                const q = (document.getElementById('xVideoSearch').value || '').trim().toLowerCase();
+                const rows = _xPublishedVideos.filter(v => !q || (v.title || '').toLowerCase().includes(q));
+                if (!rows.length) {
+                    list.innerHTML = '<div style="padding:10px; color:#94a3b8; font-size:0.85em;">No matching videos.</div>';
+                    return;
+                }
+                list.innerHTML = rows.map((v, i) => {
+                    const idx = _xPublishedVideos.indexOf(v);
+                    const date = (v.published_at || '').slice(0, 10);
+                    const priv = v.privacy_status && v.privacy_status !== 'public'
+                        ? ' <span style="color:#fca5a5;">(' + v.privacy_status + ')</span>' : '';
+                    const thumb = v.thumbnail
+                        ? '<img src="' + v.thumbnail + '" alt="" style="width:64px; height:36px; object-fit:cover; border-radius:3px; flex-shrink:0;">'
+                        : '<div style="width:64px; height:36px; background:#1e293b; border-radius:3px; flex-shrink:0;"></div>';
+                    return '<div onclick="selectXVideo(' + idx + ')" style="display:flex; gap:9px; align-items:center; padding:7px 9px; cursor:pointer; border-bottom:1px solid #1e293b;" onmouseover="this.style.background=\'#111c33\'" onmouseout="this.style.background=\'transparent\'">'
+                        + thumb
+                        + '<div style="min-width:0;"><div style="color:#e2e8f0; font-size:0.86em; line-height:1.25; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">' + (v.title || '(untitled)') + priv + '</div>'
+                        + '<div style="color:#64748b; font-size:0.76em;">' + date + '</div></div></div>';
+                }).join('');
+            }
+
+            // Pick a published video: switch to episode-promo mode and auto-draft.
+            function selectXVideo(idx) {
+                const v = (_xPublishedVideos || [])[idx];
+                if (!v) return;
+                _xPostCtx = { mode: 'episode', title: v.title || '', youtube_url: v.url || '' };
+                document.getElementById('xPostTopicRow').style.display = 'none';
+                document.getElementById('xVideoBrowser').style.display = 'none';
+                const sel = document.getElementById('xSelectedVideo');
+                sel.style.display = 'block';
+                sel.innerHTML = '✅ Promoting: <strong style="color:#dbeafe;">' + (v.title || '(untitled)')
+                    + '</strong> — <a href="' + v.url + '" target="_blank" style="color:#60a5fa;">' + v.url + '</a>'
+                    + '<br><span style="color:#94a3b8;">Link is appended automatically. Drafting a promo…</span>';
+                document.getElementById('xPostSubtitle').innerHTML =
+                    'Promoting a published video. The YouTube link is appended automatically.';
+                regenerateXPost();
+            }
+
+            // Reset the video-browser UI to its collapsed, unselected state.
+            function resetXVideoBrowser() {
+                document.getElementById('xVideoBrowser').style.display = 'none';
+                document.getElementById('xSelectedVideo').style.display = 'none';
+                const search = document.getElementById('xVideoSearch');
+                if (search) search.value = '';
+                renderXVideoList();
+            }
 
             // Open the X compose modal. mode 'episode' prefills from a just-
             // published video {title, youtube_url} and auto-drafts; mode
@@ -1739,6 +1866,7 @@
                 document.getElementById('xPostStatus').textContent = '';
                 textEl.value = '';
                 updateXCharCount();
+                resetXVideoBrowser();
                 if (_xPostCtx.mode === 'episode') {
                     document.getElementById('xPostTopicRow').style.display = 'none';
                     sub.innerHTML = 'Promoting: <strong style="color:#e2e8f0;">' + (_xPostCtx.title || 'your new video') + '</strong><br>The YouTube link is appended automatically.';
@@ -1766,10 +1894,19 @@
                 // the first version for episode promos.
                 const _seed = (seedText || '').trim();
                 if (_seed) {
-                    textEl.value = _seed;
+                    // Generation appends the video link server-side; since we're
+                    // skipping generation here, append it to the seed ourselves
+                    // (unless the seed already contains it).
+                    let seeded = _seed;
+                    const _url = (_xPostCtx.youtube_url || '').trim();
+                    if (_url && seeded.indexOf(_url) === -1) {
+                        seeded = seeded + '\n' + _url;
+                    }
+                    textEl.value = seeded;
                     updateXCharCount();
-                    document.getElementById('xPostStatus').textContent =
-                        '✅ Seeded from your YouTube Community Post — edit, or ✨ regenerate with Claude.';
+                    document.getElementById('xPostStatus').textContent = _url
+                        ? '✅ Seeded from your YouTube Community Post (link added) — edit, or ✨ regenerate with Claude.'
+                        : '✅ Seeded from your YouTube Community Post — edit, or ✨ regenerate with Claude.';
                 } else if (_xPostCtx.mode === 'episode') {
                     regenerateXPost();
                 }
@@ -1942,10 +2079,20 @@
                 // the first version for episode promos.
                 const _seed = (seedText || '').trim();
                 if (_seed) {
-                    textEl.value = _seed;
+                    // Generation appends the video link server-side; since we're
+                    // skipping generation here, append it to the seed ourselves
+                    // (unless the seed already contains it) so LinkedIn renders
+                    // the video preview card.
+                    let seeded = _seed;
+                    const _url = (_liPostCtx.youtube_url || '').trim();
+                    if (_url && seeded.indexOf(_url) === -1) {
+                        seeded = seeded + '\n' + _url;
+                    }
+                    textEl.value = seeded;
                     updateLiCharCount();
-                    document.getElementById('liPostStatus').textContent =
-                        '✅ Seeded from your YouTube Community Post — edit, or ✨ regenerate with Claude.';
+                    document.getElementById('liPostStatus').textContent = _url
+                        ? '✅ Seeded from your YouTube Community Post (link added) — edit, or ✨ regenerate with Claude.'
+                        : '✅ Seeded from your YouTube Community Post — edit, or ✨ regenerate with Claude.';
                 } else if (_liPostCtx.mode === 'episode') {
                     regenerateLinkedInPost();
                 }
@@ -2581,6 +2728,8 @@
                 <input type="checkbox" id="checkFlowAnalysis">
                 <input type="checkbox" id="checkThumbnails"><!-- legacy; always unchecked -->
                 <input type="checkbox" id="checkDemoScript">
+                <input type="checkbox" id="checkGrokImagine"><!-- Grok Imagine prompts stage -->
+
 
                 <!-- HeyGen config (moves into modal in Phase 2) -->
                 <input type="text" id="heygenTemplateId" value="92c09f8e9a1c4f078f7ae53886b7ad80">
@@ -2617,6 +2766,10 @@
                             <div id="ideaBriefRegenRow" style="display:none; align-items:center; gap:10px; margin-top:6px;">
                                 <button type="button" id="ideaBriefRegenBtn" onclick="regenerateBriefInModal()" title="Ask Claude to write a fresh brief from the selected idea, replacing the description above" style="padding:7px 12px; background:#6366f1; color:#fff; border:none; border-radius:6px; font-size:0.85em; font-weight:600; cursor:pointer; white-space:nowrap;">🔄 Regenerate brief from idea</button>
                                 <span id="ideaBriefRegenStatus" style="color:#94a3b8; font-size:0.82em;"></span>
+                            </div>
+                            <div id="sourceDocIndicator" style="display:none; align-items:center; gap:8px; margin-top:8px; padding:7px 10px; background:#0f2a1e; border:1px solid #1f6f47; border-radius:6px;">
+                                <span style="color:#86efac; font-size:0.84em;">📎 Source document will be passed to the Topic Assistant &amp; Script Writer: <strong id="sourceDocName" style="color:#dcfce7;"></strong></span>
+                                <button type="button" onclick="clearSourceDoc()" title="Don't pass the document into this script run" style="margin-left:auto; padding:4px 9px; background:#374151; color:#cbd5e1; border:none; border-radius:6px; font-size:0.78em; cursor:pointer;">✕ Remove</button>
                             </div>
                         </div>
                     </div>
@@ -4497,7 +4650,12 @@ Time management content here...`;
             // and the rest of the script is silently dropped. Detect that and
             // splice in the chapter bodies.
             try {
-                const chapterRe = /(^|\n)\s*(?:#{1,6}\s*)?(?:\*\*)?\s*Chapter\s+\d+\b[^\n]*\n/gi;
+                // Accept: `Chapter N`, `## Chapter N`, `**Chapter N**`, AND
+                // `Heading: Chapter N - ...` (the format produced by the
+                // process-existing-script pipeline). Without the `Heading:`
+                // allowance, processed scripts only count the hook's Host:
+                // block and silently drop ~3000+ words of chapter prose.
+                const chapterRe = /(^|\n)\s*(?:#{1,6}\s*)?(?:\*\*)?\s*(?:Heading\s*:\s*)?Chapter\s+\d+\b[^\n]*\n/gi;
                 const chapterStarts = [];
                 let cm;
                 while ((cm = chapterRe.exec(text)) !== null) {
@@ -4507,7 +4665,7 @@ Time management content here...`;
                     // End-of-chapter-prose terminator: next Chapter heading,
                     // Summary:, SUPPORTING RESEARCH, ===, YOUTUBE/HEYGEN section,
                     // or end-of-text.
-                    const endRe = /\n\s*(?:(?:#{1,6}\s*)?(?:\*\*)?\s*Chapter\s+\d+\b|Summary\s*:|SUPPORTING\s+RESEARCH|===|🎬\s*HEYGEN|YOUTUBE\s+VIDEO\s+DESCRIPTION|Generated\s+by\s+LineDrive)/i;
+                    const endRe = /\n\s*(?:(?:#{1,6}\s*)?(?:\*\*)?\s*(?:Heading\s*:\s*)?Chapter\s+\d+\b|Summary\s*:|SUPPORTING\s+RESEARCH|===|🎬\s*HEYGEN|YOUTUBE\s+VIDEO\s+DESCRIPTION|Generated\s+by\s+LineDrive)/i;
                     const chapterBodies = [];
                     for (let k = 0; k < chapterStarts.length; k++) {
                         const start = chapterStarts[k];
@@ -5214,11 +5372,12 @@ Time management content here...`;
             const thumbnailsChecked = document.getElementById('checkThumbnails')?.checked || false;
             const demoChecked = document.getElementById('checkDemoScript')?.checked || false;
             const shortenChecked = document.getElementById('checkShortenScript')?.checked || false;
-            
+            const grokImagineChecked = document.getElementById('checkGrokImagine')?.checked || false;
+
             // Validate: at least one checkbox must be selected
-            if (!scriptChecked && !youtubeChecked && !heygenChecked && 
+            if (!scriptChecked && !youtubeChecked && !heygenChecked &&
                 !brollChecked && !brollImagesChecked && !grokVideosChecked &&
-                !hookSummaryChecked && !flowAnalysisChecked && !thumbnailsChecked && !demoChecked && !shortenChecked) {
+                !hookSummaryChecked && !flowAnalysisChecked && !thumbnailsChecked && !demoChecked && !shortenChecked && !grokImagineChecked) {
                 alert('Please select at least one output to generate!');
                 return;
             }
@@ -5244,7 +5403,14 @@ Time management content here...`;
                 alert('Please enter a script to process!');
                 return;
             }
-            
+
+            // Remind the user to confirm/set the current output path before the run.
+            const __pathOk = await remindSetCurrentPath();
+            if (!__pathOk) {
+                alert('Cancelled — set your output path, then process again.');
+                return;
+            }
+
             // Get checkbox selections (curl auto-enabled with heygen)
             const heygenChecked = document.getElementById('checkHeyGenReady')?.checked || false;
             const brollChecked = document.getElementById('checkBRollTable')?.checked || false;
@@ -5262,7 +5428,8 @@ Time management content here...`;
                 thumbnails: document.getElementById('checkThumbnails')?.checked || false,
                 demo: document.getElementById('checkDemoScript')?.checked || false,
                 shorten_script: document.getElementById('checkShortenScript')?.checked || false,
-                shorten_percent: document.getElementById('shortenPercent')?.value || '25'
+                shorten_percent: document.getElementById('shortenPercent')?.value || '25',
+                grok_imagine: document.getElementById('checkGrokImagine')?.checked || false
             };
             
             // Get metadata
@@ -5289,29 +5456,60 @@ Time management content here...`;
                 const grokApiKey = (document.getElementById('grokApiKey')?.value || '').trim();
                 
                 // Start the processing job and get session ID
-                const response = await fetch('/process-script', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        script: script,
-                        topic: topic,
-                        audience: audience,
-                        videoLength: videoLength,
-                        checkboxes: checkboxes,
-                        heygen_template_id: heygenTemplateId,
-                        heygen_api_key: heygenApiKey,
-                        heygen_voice_id: heygenVoiceId,
-                        grok_api_key: grokApiKey,
-                        // Pre-loaded artifacts let the backend skip the corresponding
-                        // agents (Load .docx/.md from the YouTube / B-Roll tabs).
-                        youtube_details_override: window._currentYoutubeDetails || null,
-                        broll_table_override: window._currentBrollTable || null,
-                        script_filename: window.currentScriptFilename || '',
-                        script_dir: (document.getElementById('spsShortenOutputDir')?.value || '').trim()
-                    })
-                });
-                
-                const data = await response.json();
+                const _processScriptRequest = async (titleOverride) => {
+                    return await fetch('/process-script', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            script: script,
+                            topic: topic,
+                            audience: audience,
+                            videoLength: videoLength,
+                            checkboxes: checkboxes,
+                            heygen_template_id: heygenTemplateId,
+                            heygen_api_key: heygenApiKey,
+                            heygen_voice_id: heygenVoiceId,
+                            grok_api_key: grokApiKey,
+                            // Pre-loaded artifacts let the backend skip the corresponding
+                            // agents (Load .docx/.md from the YouTube / B-Roll tabs).
+                            youtube_details_override: window._currentYoutubeDetails || null,
+                            broll_table_override: window._currentBrollTable || null,
+                            script_filename: window.currentScriptFilename || '',
+                            script_dir: (document.getElementById('spsShortenOutputDir')?.value || '').trim(),
+                            script_title: titleOverride || ''
+                        })
+                    });
+                };
+
+                let response = await _processScriptRequest('');
+                let data = await response.json();
+
+                // Title check: if the backend says no TITLE was found in the
+                // script, prompt the user for one and retry once.
+                if (!data.success && data.needs_title) {
+                    const userTitle = window.prompt(
+                        'This script has no TITLE line.\n\n' +
+                        'Enter a video title to use for this run (it will be ' +
+                        'prepended to the script as `# Title`):',
+                        ''
+                    );
+                    if (userTitle && userTitle.trim()) {
+                        addProgressMessage(
+                            `📝 Using user-provided title: ${userTitle.trim()}`,
+                            'info'
+                        );
+                        response = await _processScriptRequest(userTitle.trim());
+                        data = await response.json();
+                    } else {
+                        progressDiv.style.display = 'none';
+                        resultDiv.innerHTML = '<h3>⚠️ Cancelled</h3><p>A title is required. ' +
+                            'Add a `# Title` or `TITLE:` line to the top of your script and try again.</p>';
+                        resultDiv.className = 'result error';
+                        resultDiv.style.display = 'block';
+                        updateFooterProgress(0, 'Ready');
+                        return;
+                    }
+                }
                 
                 if (!data.success || !data.session_id) {
                     progressDiv.style.display = 'none';
@@ -5509,7 +5707,7 @@ Time management content here...`;
                                 brollRows: brollRows,
                                 youtubeDetails: youtubeDetails
                             };
-                            
+
                             resultDiv.innerHTML = resultHTML;
                             resultDiv.className = 'result';
                             resultDiv.style.display = 'block';
@@ -5647,6 +5845,7 @@ Time management content here...`;
             const modal = document.getElementById('createScriptModal');
             if (modal) {
                 modal.style.display = 'flex';
+                if (typeof renderSourceDocIndicator === 'function') renderSourceDocIndicator();
                 setTimeout(() => {
                     const t = document.getElementById('createTopic');
                     if (t) t.focus();
@@ -5705,6 +5904,13 @@ Time management content here...`;
                 return;
             }
 
+            // Remind the user to confirm/set the current output path before the run.
+            const __pathOk = await remindSetCurrentPath();
+            if (!__pathOk) {
+                addProgressMessage('❌ Cancelled — set your output path, then run again.', 'error');
+                return;
+            }
+
             progressDiv.style.display = 'block';
             progressText.textContent = quickTest ? '⚡ Quick test: Creating 1-chapter script...' : '🎬 Creating your script with AI...';
             resultDiv.style.display = 'none';
@@ -5740,7 +5946,7 @@ Time management content here...`;
                 const response = await fetch('/create', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
+                    body: JSON.stringify({
                         topic: topic,
                         description: description,
                         duration: duration,
@@ -5749,7 +5955,8 @@ Time management content here...`;
                         production_type: productionType,
                         quick_test: quickTest,
                         checkboxes: checkboxes,
-                        grok_api_key: grokApiKey
+                        grok_api_key: grokApiKey,
+                        source_batch_id: (window._pendingSource && window._pendingSource.batchId) || ''
                     })
                 });
                 
@@ -5930,6 +6137,7 @@ Time management content here...`;
                         window.currentEDLFilename = edlFilename;
                         window.currentCurlCommands = curlCommands;
                         window.currentScriptTitle = scriptTitle;
+                        window.lastResultPayload = message;
                         if (message.script_id) window.currentScriptId = message.script_id;
                         if (message.script_version) window.currentScriptVersion = message.script_version;
                         window.currentBrollImages = brollImages || [];
@@ -5992,7 +6200,7 @@ Time management content here...`;
                                 brollRows: brollRows,
                                 youtubeDetails: youtubeDetails
                             };
-                            
+
                             resultDiv.innerHTML = resultHTML;
                             
                             // Render markdown content
@@ -6708,8 +6916,10 @@ Time management content here...`;
         // at the new template ID. Called from selectHeyGenTemplate().
         function applyTemplateIdToCurls(newTemplateId) {
             if (!newTemplateId) return;
-            const re = /\/v2\/template\/[A-Za-z0-9_-]+\/generate/g;
-            const replacement = '/v2/template/' + newTemplateId + '/generate';
+            // Match the V3 endpoint (/v3/templates/{id}) as well as any lingering
+            // legacy V2 URL (/v2/template/{id}/generate); rewrite both to V3.
+            const re = /\/v2\/template\/[A-Za-z0-9_-]+\/generate|\/v3\/templates\/[A-Za-z0-9_-]+/g;
+            const replacement = '/v3/templates/' + newTemplateId;
             const pres = document.querySelectorAll('pre[id^="curlCmd"]');
             pres.forEach(p => {
                 const original = p.textContent || '';
@@ -7541,6 +7751,126 @@ Thank you for watching!`;
             if (ver && ver.youtube_details) _restored.push('YouTube details');
             if (_restored.length && typeof addProgressMessage === 'function') {
                 addProgressMessage('📂 Restored for this script: ' + _restored.join(', ') + '.', 'success');
+            }
+        }
+
+        // ---- Load from Cloud: pick a previously generated script (+ its brief)
+        // saved to Azure, instead of loading a file from disk. Backed by
+        // /api/cloud-scripts (list) + /api/script-artifacts/version (load). ----
+        function _cloudPickerEl() {
+            let el = document.getElementById('cloudScriptPicker');
+            if (el) return el;
+            el = document.createElement('div');
+            el.id = 'cloudScriptPicker';
+            el.style.cssText = 'display:none; position:fixed; inset:0; z-index:10000; background:rgba(2,6,23,0.72); align-items:flex-start; justify-content:center;';
+            el.innerHTML =
+                '<div style="background:#0f172a; border:1px solid #334155; border-radius:10px; width:min(720px,92vw); max-height:82vh; margin-top:6vh; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.5);">'
+                + '<div style="display:flex; align-items:center; gap:10px; padding:14px 18px; border-bottom:1px solid #1e293b;">'
+                + '<span style="font-size:1.3em;">☁️</span><strong style="flex:1; color:#e2e8f0;">Load a script from the cloud</strong>'
+                + '<button onclick="closeCloudScriptPicker()" style="background:#334155; color:#e2e8f0; border:none; border-radius:6px; padding:6px 12px; cursor:pointer;">✕</button>'
+                + '</div>'
+                + '<div style="padding:8px 18px; color:#94a3b8; font-size:0.82em;">Newest first. Picking a script loads it into the editor and restores its brief + artifacts.</div>'
+                + '<div id="cloudScriptList" style="overflow:auto; padding:8px 12px 16px;"></div>'
+                + '</div>';
+            el.addEventListener('click', (e) => { if (e.target === el) closeCloudScriptPicker(); });
+            document.body.appendChild(el);
+            return el;
+        }
+
+        function closeCloudScriptPicker() {
+            const el = document.getElementById('cloudScriptPicker');
+            if (el) el.style.display = 'none';
+        }
+
+        async function openCloudScriptPicker() {
+            const el = _cloudPickerEl();
+            const list = document.getElementById('cloudScriptList');
+            el.style.display = 'flex';
+            list.innerHTML = '<div style="color:#93c5fd; padding:20px; text-align:center;">⏳ Loading your cloud scripts…</div>';
+            try {
+                const r = await fetch('/api/cloud-scripts');
+                const d = await r.json();
+                if (!d.success) throw new Error(d.error || 'Failed to list');
+                if (d.enabled === false) {
+                    list.innerHTML = '<div style="color:#f59e0b; padding:20px; text-align:center;">Cloud storage is not configured, so there are no cloud scripts to load.</div>';
+                    return;
+                }
+                const scripts = d.scripts || [];
+                if (!scripts.length) {
+                    list.innerHTML = '<div style="color:#94a3b8; padding:20px; text-align:center;">No saved scripts found in the cloud yet. Generate a script and it will appear here.</div>';
+                    return;
+                }
+                const esc = (s) => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                list.innerHTML = scripts.map((s) => {
+                    let when = s.created || '';
+                    try { when = new Date(s.created).toLocaleString(); } catch (_) {}
+                    const badges = [];
+                    if (s.word_count) badges.push(s.word_count + ' words');
+                    if (s.has_brief) badges.push('brief');
+                    const meta = [when].concat(badges).filter(Boolean).join(' · ');
+                    return '<button type="button" onclick="loadCloudScript(\'' + encodeURIComponent(s.script_id) + '\',\'' + encodeURIComponent(s.version_id || '') + '\')"'
+                        + ' style="display:block; width:100%; text-align:left; background:#1e293b; border:1px solid #334155; border-radius:8px; padding:11px 14px; margin:6px 0; cursor:pointer; color:#e2e8f0;"'
+                        + ' onmouseover="this.style.borderColor=\'#8b5cf6\'" onmouseout="this.style.borderColor=\'#334155\'">'
+                        + '<div style="font-weight:600;">' + esc(s.title) + (s.has_script ? '' : ' <span style="color:#f59e0b; font-size:0.8em;">(no body)</span>') + '</div>'
+                        + '<div style="color:#94a3b8; font-size:0.78em; margin-top:3px;">' + esc(meta) + '</div>'
+                        + '</button>';
+                }).join('');
+            } catch (e) {
+                list.innerHTML = '<div style="color:#ef4444; padding:20px; text-align:center;">❌ ' + (e.message || 'Failed to load cloud scripts') + '</div>';
+            }
+        }
+
+        async function loadCloudScript(scriptIdEnc, versionIdEnc) {
+            const scriptId = decodeURIComponent(scriptIdEnc || '');
+            const versionId = decodeURIComponent(versionIdEnc || '');
+            if (!scriptId) return;
+            closeCloudScriptPicker();
+            spsSetLoadBusy(true, '⏳ Loading script from the cloud…');
+            try {
+                const r = await fetch('/api/script-artifacts/version?script_id='
+                    + encodeURIComponent(scriptId) + '&version_id=' + encodeURIComponent(versionId));
+                const d = await r.json();
+                if (!d.success || !d.found || !d.artifacts) {
+                    throw new Error('This script has no stored content in the cloud.');
+                }
+                const m = d.artifacts;
+                const text = (m.enhanced_script || '').trim();
+                if (!text) throw new Error('This script was saved without a script body.');
+
+                // Mirror the file-load path so downstream stages behave identically.
+                window.currentScriptId = scriptId;
+                window.currentScriptVersion = versionId;
+                const ta = document.getElementById('scriptInput');
+                if (ta) ta.value = text;
+                _syncScriptIdsFromText(text);
+                window.currentScriptFilename = '';
+                window._spsScriptLoaded = true;
+                if (m.script_title) window.currentScriptTitle = m.script_title;
+
+                // Restore the brief into the Create Script description field.
+                const descEl = document.getElementById('createDescription');
+                if (descEl && (m.brief || '').trim()) descEl.value = m.brief;
+
+                const checkScript = document.getElementById('checkScript');
+                if (checkScript && checkScript.checked) { checkScript.checked = false; toggleScriptInput(); }
+                try {
+                    if (typeof spsSetStageStatus === 'function' && window._spsStages && window._spsStages.load) spsSetStageStatus('load', 'done');
+                    if (typeof spsRefreshLoadStatus === 'function') spsRefreshLoadStatus();
+                    if (typeof spsUpdateRunFooter === 'function') spsUpdateRunFooter();
+                    if (typeof updateScriptInputDurationBadge === 'function') updateScriptInputDurationBadge();
+                    if (typeof refreshOutputDirPreview === 'function') refreshOutputDirPreview();
+                    if (typeof switchScriptInputTab === 'function') switchScriptInputTab('preview');
+                } catch (_) {}
+
+                await displayLoadedScriptResult(text);
+                if (typeof addProgressMessage === 'function') {
+                    addProgressMessage('☁️ Loaded "' + (window.currentScriptTitle || 'script') + '" from the cloud'
+                        + ((m.brief || '').trim() ? ' (brief restored).' : '.'), 'success');
+                }
+            } catch (e) {
+                alert('❌ Error loading from cloud: ' + (e.message || e));
+            } finally {
+                spsSetLoadBusy(false);
             }
         }
 
@@ -9659,6 +9989,37 @@ Thank you for watching!`;
             });
         }
 
+        // Reminder shown before EVERY script run (Create or Process). Unlike
+        // ensureOutputDirSet — which only prompts when no path is set at all —
+        // this always surfaces the current output path so the user can confirm
+        // it's the right project folder (or go change it) before artifacts are
+        // written. Returns true to proceed, false to cancel (opens the picker).
+        async function remindSetCurrentPath() {
+            // No local filesystem picker in the container/cloud build or mobile.
+            if (window.IS_CONTAINER) return true;
+            try {
+                if (window.matchMedia && window.matchMedia('(max-width: 768px)').matches) return true;
+            } catch (e) { /* ignore */ }
+            let current = '';
+            try {
+                const resp = await fetch('/api/output-dir');
+                const data = await resp.json();
+                current = (data && data.success && (data.output_dir || '').trim()) || '';
+            } catch (e) { /* ignore */ }
+            const proceed = window.confirm(
+                '📁 Reminder — check your output path\n\n' +
+                'This run will save all artifacts to:\n\n' +
+                (current || '(not set)') + '\n\n' +
+                'OK = continue with this path\n' +
+                'Cancel = change the path first'
+            );
+            if (!proceed) {
+                await openOutputDirModal();   // let them set/verify, then re-run
+                return false;
+            }
+            return true;
+        }
+
         function closeOutputDirModal() {
             const modal = document.getElementById('outputDirModal');
             if (modal) modal.style.display = 'none';
@@ -9714,16 +10075,6 @@ Thank you for watching!`;
 
         // ---------- Directory Browser ----------
         function openDirBrowser(targetInputId) {
-            // In the hosted/cloud container build there is no local filesystem to
-            // browse and /api/browse-dirs is disabled (returns 503). Instead of
-            // letting the user hit a dead endpoint, explain that the output
-            // location is managed automatically.
-            if (window.IS_CONTAINER) {
-                alert('Folder browsing is not available in the cloud version. '
-                    + 'Generated files are saved automatically and can be downloaded '
-                    + 'from the results. Leave this field blank.');
-                return;
-            }
             const modal = document.getElementById('dirBrowserModal');
             if (!modal) return;
             // Remember which input the user is browsing for so dirBrowserSelect()
@@ -9877,22 +10228,6 @@ Thank you for watching!`;
         }
 
         document.addEventListener('DOMContentLoaded', loadOutputDir);
-
-        // In the hosted/cloud container build there is no local filesystem to
-        // pick, so hide the output-directory picker UI. Files are saved to the
-        // server's default run folder and offered as downloads in the results.
-        document.addEventListener('DOMContentLoaded', function () {
-            if (!window.IS_CONTAINER) return;
-            const idsToHide = [
-                'spsShortenOutputDirRow',
-                'spsShortenOutputDirHelp',
-                'outputDirBtn',
-            ];
-            idsToHide.forEach(function (id) {
-                const el = document.getElementById(id);
-                if (el) el.style.display = 'none';
-            });
-        });
 
         // ============================================================
         // Icon-only mode for the WORKFLOW CHECKBOX ROW only.
@@ -10403,24 +10738,23 @@ Thank you for watching!`;
         if (!apiKey) { resultEl.textContent = '❌ API Key is required'; return; }
         if (!scriptText) { resultEl.textContent = '❌ Script text is required'; return; }
 
-        // Build the request body exactly as sent to HeyGen
+        // Build the request body exactly as sent to HeyGen (V3 New AI Studio).
+        // Text variables are flattened to {type, content}; the legacy V2
+        // {name, properties:{content}} wrapper is gone.
         var requestBody = {
             caption: false,
             title: title || 'Test Video',
             variables: {
                 script: {
-                    name: 'script',
                     type: 'text',
-                    properties: {
-                        content: scriptText
-                    }
+                    content: scriptText
                 }
             }
         };
 
-        // Show the equivalent curl command
+        // Show the equivalent curl command (V3 endpoint: /v3/templates/{id}).
         var curlCmd = 'curl --request POST \\\n' +
-            "     --url 'https://api.heygen.com/v2/template/" + templateId + "/generate' \\\n" +
+            "     --url 'https://api.heygen.com/v3/templates/" + templateId + "' \\\n" +
             "     --header 'accept: application/json' \\\n" +
             "     --header 'content-type: application/json' \\\n" +
             "     --header 'x-api-key: " + apiKey + "' \\\n" +
@@ -10616,6 +10950,7 @@ Thank you for watching!`;
               <p style="margin:0 0 10px 0; color:#94a3b8; font-size:0.85em;">By default this processes the script currently open in the editor — no need to save it to Word and re-load. <br>To process a <em>different</em> script, load an existing <code>.md</code> / <code>.docx</code> file below. <br><span style="color:#cbd5e1;">Need a brand-new script? Close this dialog and use <strong>🚀 Create Script</strong> on the toolbar instead.</span></p>
               <div style="display:flex; gap:8px; flex-wrap:wrap;">
                 <button type="button" onclick="document.getElementById('fileInput').click()" style="background:#0ea5e9; color:#fff; border:none; padding:8px 14px; border-radius:5px; cursor:pointer; font-weight:600;">📂 Load a different file…</button>
+                <button type="button" onclick="openCloudScriptPicker()" title="Pull a previously generated script (and its brief) back from the cloud instead of the file system" style="background:#8b5cf6; color:#fff; border:none; padding:8px 14px; border-radius:5px; cursor:pointer; font-weight:600;">☁️ Load from Cloud</button>
               </div>
               <!-- Load progress bar: shown while a script + its Grok videos load
                    (restoring many clips from Azure can take several seconds). -->
@@ -10666,12 +11001,12 @@ Thank you for watching!`;
                   <option value="target">to video length</option>
                 </select>
               </div>
-              <div id="spsShortenOutputDirRow" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px;">
+              <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px;">
                 <label for="spsShortenOutputDir" style="color:#cbd5e1; font-size:0.85em; white-space:nowrap;">Save shortened script to:</label>
                 <input type="text" id="spsShortenOutputDir" placeholder="(blank = run output folder)" style="flex:1; min-width:240px; background:#0f172a; color:#e2e8f0; border:1px solid #334155; border-radius:4px; padding:6px 8px; font-size:0.85em;">
                 <button type="button" onclick="openDirBrowser('spsShortenOutputDir')" title="Browse folders" style="padding:6px 10px; background:#1e293b; border:1px solid #334155; color:#e2e8f0; border-radius:4px; cursor:pointer; font-size:0.82em; white-space:nowrap;">📂 Browse…</button>
               </div>
-              <p id="spsShortenOutputDirHelp" style="margin:6px 0 0 0; font-size:0.75em; color:#94a3b8;">Writes <code>{loaded-filename}_shortened.md</code> and <code>.docx</code> into this folder. Leave blank to save into the current run's output folder.</p>
+              <p style="margin:6px 0 0 0; font-size:0.75em; color:#94a3b8;">Writes <code>{loaded-filename}_shortened.md</code> and <code>.docx</code> into this folder. Leave blank to save into the current run's output folder.</p>
               <div data-sps-result="shorten" style="margin-top:10px; font-size:0.85em; color:#10b981; display:none;"></div>
             </div>
           </div>
@@ -10741,11 +11076,25 @@ Thank you for watching!`;
             </div>
           </div>
 
-          <!-- Stage 8: HeyGen Script & Curl -->
+          <!-- Stage 8: Grok Imagine Prompts -->
+          <div class="sps-stage" data-sps-stage="grok_imagine" style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden;">
+            <div class="sps-stage-header" onclick="spsToggleStage('grok_imagine')" style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; user-select:none;">
+              <span style="font-size:1.3em;">🖼️</span>
+              <strong style="flex:1;">Stage 8 — Grok Imagine Prompts</strong>
+              <span class="sps-stage-status" data-sps-status="grok_imagine" style="font-size:0.8em; color:#64748b;">Pending</span>
+              <span class="sps-stage-caret" style="color:#64748b;">▸</span>
+            </div>
+            <div class="sps-stage-body" data-sps-body="grok_imagine" style="display:none; padding:12px 14px; border-top:1px solid #0f172a;">
+              <p style="margin:0 0 10px 0; color:#94a3b8; font-size:0.85em;">Insert <strong>3–4 Grok Imagine prompts per chapter</strong> directly into the script as <code>[PRODUCTION BEGIN] / [GROK IMAGINE / RESOLVE] … [PRODUCTION END]</code> blocks — symbolic editorial illustrations in the channel's dark-navy house style (no people, faces, or hands) that you can copy-paste straight into Grok Imagine. Chapters that already have prompts are topped up to the target, not duplicated. The updated script appears in the <strong>Script</strong> tab of the results (and in exports / cloud save), ready to copy into Grok Imagine.</p>
+              <div data-sps-result="grok_imagine" style="margin-top:10px; font-size:0.85em; color:#10b981; display:none;"></div>
+            </div>
+          </div>
+
+          <!-- Stage 9: HeyGen Script & Curl -->
           <div class="sps-stage" data-sps-stage="heygen" style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden;">
             <div class="sps-stage-header" onclick="spsToggleStage('heygen')" style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; user-select:none;">
               <span style="font-size:1.3em;">🎬</span>
-              <strong style="flex:1;">Stage 8 — HeyGen Script &amp; Curl Commands</strong>
+              <strong style="flex:1;">Stage 9 — HeyGen Script &amp; Curl Commands</strong>
               <span class="sps-stage-status" data-sps-status="heygen" style="font-size:0.8em; color:#64748b;">Pending</span>
               <span class="sps-stage-caret" style="color:#64748b;">▸</span>
             </div>
@@ -10759,11 +11108,11 @@ Thank you for watching!`;
             </div>
           </div>
 
-          <!-- Stage 9: Demo Scripts -->
+          <!-- Stage 10: Demo Scripts -->
           <div class="sps-stage" data-sps-stage="demo" style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden;">
             <div class="sps-stage-header" onclick="spsToggleStage('demo')" style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; user-select:none;">
               <span style="font-size:1.3em;">🧪</span>
-              <strong style="flex:1;">Stage 9 — Demo Scripts</strong>
+              <strong style="flex:1;">Stage 10 — Demo Scripts</strong>
               <span class="sps-stage-status" data-sps-status="demo" style="font-size:0.8em; color:#64748b;">Pending</span>
               <span class="sps-stage-caret" style="color:#64748b;">▸</span>
             </div>
@@ -10803,6 +11152,7 @@ Thank you for watching!`;
       load:         { label: 'Load Script',                       icon: '📁', status: 'pending' },
       flow:         { label: 'Script Flow Quality',               icon: '🔄', status: 'pending' },
       shorten:      { label: 'Shorten Script',                    icon: '✂️', status: 'pending' },
+      grok_imagine: { label: 'Grok Imagine Prompts',              icon: '🖼️', status: 'pending' },
       hook:         { label: 'Hook & Summary',                    icon: '🎯', status: 'pending' },
       broll_table:  { label: 'B-Roll Table & Shutterstock Links', icon: '🎥', status: 'pending' },
       broll_images: { label: 'B-Roll Images',                     icon: '🎨', status: 'pending' },
@@ -10810,7 +11160,7 @@ Thank you for watching!`;
       heygen:       { label: 'HeyGen Script & Curl Commands',     icon: '🎬', status: 'pending' },
       demo:         { label: 'Demo Scripts',                      icon: '🧪', status: 'pending' },
     };
-    const _SPS_ORDER = ['load','flow','shorten','hook','broll_table','broll_images','grok','heygen','demo'];
+    const _SPS_ORDER = ['load','flow','shorten','hook','broll_table','broll_images','grok','grok_imagine','heygen','demo'];
 
     function _spsStatusColor(status) {
       switch (status) {
@@ -10972,6 +11322,7 @@ Thank you for watching!`;
     const _SPS_STAGE_TO_LEGACY = {
       flow:         ['checkFlowAnalysis'],
       shorten:      ['checkShortenScript'],
+      grok_imagine: ['checkGrokImagine'],
       hook:         ['checkHookSummary'],
       broll_table:  ['checkBRollTable'],
       broll_images: ['checkBRollTable', 'checkBRollImages'],
@@ -11035,7 +11386,7 @@ Thank you for watching!`;
       }
 
       // Reset all legacy stage checkboxes, then set the ones the user picked.
-      const allLegacy = ['checkFlowAnalysis','checkHookSummary','checkShortenScript','checkBRollTable','checkBRollImages','checkGrokVideos','checkHeyGenReady','checkDemoScript','checkYouTubeDetails','checkThumbnails'];
+      const allLegacy = ['checkFlowAnalysis','checkHookSummary','checkShortenScript','checkGrokImagine','checkBRollTable','checkBRollImages','checkGrokVideos','checkHeyGenReady','checkDemoScript','checkYouTubeDetails','checkThumbnails'];
       allLegacy.forEach(id => { const el = document.getElementById(id); if (el) el.checked = false; });
       checkedList.forEach(key => {
         (_SPS_STAGE_TO_LEGACY[key] || []).forEach(id => {
@@ -11198,6 +11549,23 @@ Thank you for watching!`;
           const hostBlocks = txt.match(/(?:^|\n)\s*(?:#{1,6}\s*)?\**\s*host\s*\**\s*:\s*([\s\S]*?)(?=\n\s*(?:#{1,6}\s+\S|(?:#{1,6}\s*)?(?:\*\*[^*\n]{1,40}\*\*\s*:|host\s*:|heading\s*:|chapter\s+\d|visual\s+cue\s*:|b-?roll\s*:)|---+|===+)|$)/gi) || [];
           let hostWords = 0;
           hostBlocks.forEach(b => { hostWords += (b.replace(/^[^:]*:/, '').match(/\S+/g) || []).length; });
+          // Chapter-aware augment: many scripts (esp. docx-loaded) only have
+          // a single `Host:` marker in the FINAL HOOK. Chapter bodies are
+          // plain prose under `(Heading:\s+)?Chapter N - ...` markers but
+          // are ALSO spoken content. Count their words too so the runtime
+          // estimate isn't ~hook-only.
+          const chapterRe = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*{0,2})\s*(?:Heading\s*:\s*)?Chapter\s+\d+\b[^\n]*\n([\s\S]*?)(?=\n\s*(?:#{1,6}\s*)?(?:\*{0,2})\s*(?:Heading\s*:\s*)?Chapter\s+\d+\b|\n\s*(?:#{1,6}\s+)?(?:SUPPORTING\s+RESEARCH|YOUTUBE\s+UPLOAD|VISUAL\s+CUES?|B-?ROLL)\b|\n\s*={3,}\s*\n|$)/gi;
+          let chapterWords = 0;
+          let cm;
+          while ((cm = chapterRe.exec(txt)) !== null) {
+            const body = (cm[1] || '')
+              .replace(/^\s*(?:Heading\s*:|Visual\s+Cue\s*:|B-?Roll\s*:)[^\n]*$/gim, '')
+              .replace(/^\s*(?:\*{0,2})\s*Host\s*:(?:\*{0,2})\s*$/gim, '');
+            chapterWords += (body.match(/\S+/g) || []).length;
+          }
+          if (chapterWords > hostWords * 1.5) {
+            hostWords += chapterWords;
+          }
           const wpm = 150;
           const mins = hostWords / wpm;
           const m = Math.floor(mins);
@@ -12394,6 +12762,29 @@ Thank you for watching!`;
           modal.addEventListener(evt, updateYouTubeAccordionSummaries, true));
       })();
 
+      // Derive a human-readable title from a video file path and write
+      // it into the YouTube Title field. Used whenever the user picks a
+      // new video file in the publish dialog so the title auto-syncs to
+      // the filename (overwrites any existing title — the user can still
+      // edit it before publishing).
+      function _setYouTubeTitleFromVideoPath(path) {
+        if (!path) return;
+        const titleEl = document.getElementById('ytTitle');
+        if (!titleEl) return;
+        // Take just the filename, drop the extension.
+        const base = path.split(/[\\/]/).pop() || '';
+        const stem = base.replace(/\.[^.]+$/, '');
+        // Normalize: replace _, -, . with spaces and collapse whitespace.
+        // Preserve the casing the user typed in their filename.
+        const cleaned = stem.replace(/[._\-]+/g, ' ').replace(/\s+/g, ' ').trim();
+        if (cleaned) {
+          titleEl.value = cleaned;
+          // Trigger input event so accordion summaries / char-count
+          // listeners update.
+          titleEl.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
+
       // Browse for a local video file using the OS native file picker
       // (via the backend). The browser cannot expose real file paths for
       // security reasons, so we ask the server to show an Open dialog and
@@ -12407,6 +12798,7 @@ Thank you for watching!`;
             throw new Error(j.error || 'pick failed');
           }
           document.getElementById('ytVideoPath').value = j.path;
+          _setYouTubeTitleFromVideoPath(j.path);
           loadYouTubeThumbnails(j.path);
           _setYouTubeVideoPreview(j.path, j.size_bytes);
         } catch (e) {
@@ -12465,12 +12857,14 @@ Thank you for watching!`;
           sel.onchange = () => {
             const v = sel.value;
             document.getElementById('ytVideoPath').value = v;
+            _setYouTubeTitleFromVideoPath(v);
             loadYouTubeThumbnails(v);
           };
           // Pre-fill with most recent.
           if (!document.getElementById('ytVideoPath').value) {
             document.getElementById('ytVideoPath').value = r.videos[0].path;
             sel.value = r.videos[0].path;
+            _setYouTubeTitleFromVideoPath(r.videos[0].path);
           }
           loadYouTubeThumbnails(document.getElementById('ytVideoPath').value);
         } catch (e) { /* non-fatal */ }

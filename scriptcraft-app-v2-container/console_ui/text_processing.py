@@ -507,6 +507,24 @@ def extract_heygen_host_script(script_content: str) -> str:
         if skip_until_next_section:
             continue
 
+        # Treat a "Heading: ..." line as a chapter boundary: save any
+        # in-progress host paragraph, then re-enter host mode so the
+        # chapter's prose paragraphs are collected as spoken content.
+        # Without this, scripts that use `Heading: Chapter N - ...` as
+        # chapter markers (the docx-extracted / processed format) drop
+        # all chapter prose because they only have ONE explicit `Host:`
+        # (in the FINAL HOOK).
+        if re.match(r"^\s*\*{0,2}\s*Heading\s*:", stripped, re.IGNORECASE):
+            if current_paragraph:
+                paragraph_text = " ".join(current_paragraph)
+                if paragraph_text:
+                    host_paragraphs.append(paragraph_text)
+                current_paragraph = []
+            in_host_section = True
+            if debug:
+                print(f"[DEBUG] Found Heading: chapter boundary")
+            continue
+
         # Check if this line starts with a "Host" speaker label, in any form:
         # Host:, **Host:**, **Host**:, **Host**, *Host* (bold markers anywhere,
         # colon optional).
@@ -689,8 +707,9 @@ def generate_heygen_curl_commands(
 ) -> str:
     """
     Generate HeyGen API curl commands from script content.
-    Uses the v2 template generate endpoint per:
-    https://docs.heygen.com/reference/generate-from-template-v2
+    Uses the V3 (New AI Studio) template generate endpoint per:
+    https://developers.heygen.com/reference/generate-video-from-template
+    (the legacy V2 /v2/template/{id}/generate endpoint is being deprecated).
 
     Args:
         script_content: Full script markdown content
@@ -768,6 +787,23 @@ def generate_heygen_curl_commands(
 
     heygen_content = heygen_match.group(1).strip()
 
+    # Cut trailing production/metadata sections that follow the LAST chapter
+    # (=== SUPPORTING RESEARCH ===, === FINAL PACKAGING ===, === STRATEGY NOTES
+    # ===, === YOUTUBE VIDEO DESCRIPTION ===, and any other "=== SECTION ==="
+    # header). The primary chapter regex bounds the final chapter with \Z, so
+    # without this cut these non-spoken sections get swallowed into the last
+    # chapter's curl and split across its parts (the reported Chapter-7 bug).
+    _meta_cut = re.search(
+        r'^[ \t]*={3,}[ \t]*[A-Za-z]'                 # "=== SECTION ===" header
+        r'|^[ \t]*(?:SUPPORTING[ \t]+RESEARCH'        # or a known bare section
+        r'|FINAL[ \t]+PACKAGING'
+        r'|STRATEGY[ \t]+NOTES'
+        r'|YOUTUBE[ \t]+VIDEO[ \t]+DESCRIPTION)\b',
+        heygen_content, re.IGNORECASE | re.MULTILINE,
+    )
+    if _meta_cut:
+        heygen_content = heygen_content[:_meta_cut.start()].rstrip()
+
     # Parse chapters
     chapters = []
 
@@ -776,8 +812,14 @@ def generate_heygen_curl_commands(
         words = title.split()
         return ' '.join(words[:3])
 
-    # Try to find structured chapters with "Heading:" markers
-    chapter_pattern = r'Heading:\s+(.+?)\n\n(.+?)(?=\nHeading:|$)'
+    # Try to find structured chapters with "Heading:" markers.
+    # IMPORTANT: docx-extracted scripts join paragraphs with a single `\n`
+    # (one paragraph per line) so the title and the first body paragraph
+    # are separated by just one newline, not a blank line. Use `\n+` so
+    # both the docx single-newline and markdown blank-line forms match.
+    chapter_pattern = (
+        r'Heading:[ \t]+([^\n]+)\n+(.+?)(?=\n+Heading:[ \t]+|\Z)'
+    )
     chapter_matches = list(re.finditer(
         chapter_pattern, heygen_content, re.DOTALL))
 
@@ -931,17 +973,22 @@ def generate_heygen_curl_commands(
 
     # Build the curl with json.dumps for bullet-proof JSON escaping,
     # then shell-escape the resulting payload for bash single quotes.
+    # HeyGen template variable name — must match the text variable defined in
+    # the Studio template. Keep in sync with the frontend "test generate" form.
+    heygen_var_name = "script"
+
     def build_curl(title_text: str, content_text: str) -> str:
+        # HeyGen V3 (New AI Studio) template generate payload. The text variable
+        # is flattened to {type, content} — the legacy V2 wrapper
+        # ({name, properties:{content}}) is gone. `variables` is keyed by the
+        # template's variable name.
         payload = {
             "caption": False,
             "title": title_text,
             "variables": {
-                "script": {
-                    "name": "script",
+                heygen_var_name: {
                     "type": "text",
-                    "properties": {
-                        "content": content_text,
-                    },
+                    "content": content_text,
                 }
             },
         }
@@ -949,7 +996,7 @@ def generate_heygen_curl_commands(
         data_for_bash = shell_single_quote(data_json)
         return (
             "curl --request POST \\\n"
-            f"     --url 'https://api.heygen.com/v2/template/{template_id}/generate' \\\n"
+            f"     --url 'https://api.heygen.com/v3/templates/{template_id}' \\\n"
             "     --header 'accept: application/json' \\\n"
             "     --header 'content-type: application/json' \\\n"
             f"     --header 'x-api-key: {api_key}' \\\n"
@@ -961,6 +1008,23 @@ def generate_heygen_curl_commands(
     # If the hook is long enough, split it in half at a sentence boundary;
     # otherwise duplicate it so HeyGen always gets two hook variants.
     if final_hook_text and final_hook_text.strip():
+        # Defensive: peel off leading blank lines, bold-only transition
+        # lines (e.g. **We will start with...**), and stray Host: /
+        # FINAL HOOK: label lines that may have leaked into the hook
+        # capture upstream. These inflate the hook curl's word count.
+        _peel_re = re.compile(
+            r"^\s*(?:"
+            r"\*{1,2}[^\n]+\*{1,2}"
+            r"|\*{0,2}\s*Host\s*\*{0,2}\s*:?\s*\*{0,2}"
+            r"|\*{0,2}\s*(?:🎯\s*)?FINAL\s+HOOK\s*:?\s*\*{0,2}"
+            r")\s*$",
+            re.IGNORECASE,
+        )
+        _peeled = final_hook_text.split("\n")
+        while _peeled and (not _peeled[0].strip()
+                           or _peel_re.match(_peeled[0])):
+            _peeled.pop(0)
+        final_hook_text = "\n".join(_peeled).strip()
         # Defensive: truncate at the first script-structure marker so we never
         # bleed Heading:/Visual Cue:/Chapter lines into the hook curl.
         _hook_raw = re.split(
