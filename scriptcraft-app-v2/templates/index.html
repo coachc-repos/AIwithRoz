@@ -1156,6 +1156,28 @@
             .vg-title { font-size: 1em; }
         }
     </style>
+    {% if container_mode %}
+    <style>
+        /* Cloud / container build: hide every feature that requires local
+           desktop apps (DaVinci Resolve) or local file-system access. The
+           matching backend routes are already disabled (503) by container_app.py;
+           this removes their UI so nothing dead is clickable. !important beats
+           the inline display toggles some of these buttons receive from JS. */
+        [onclick*="openResolveInspector"],
+        [onclick*="openSwipeTestModal"],
+        [onclick*="testThumbnails"],
+        [onclick*="createResolveProject"],
+        [onclick*="createDaVinciWithVideos"],
+        [onclick*="openOutputDirModal"],
+        [onclick*="saveAllOutputs"],
+        [onclick*="openYouTubePipelineModal"],
+        [onclick*="openDirBrowser"],
+        #davinciBtn, #davinciButton, #outputDirBtn, #saveAllOutputsBtn,
+        #testThumbBtn, #outputDirStrip {
+            display: none !important;
+        }
+    </style>
+    {% endif %}
 </head>
 <body>
     <div class="container">

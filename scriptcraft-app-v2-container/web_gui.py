@@ -49,7 +49,7 @@ except ImportError:
     pass  # python-dotenv not installed; rely on the real environment
 
 
-VERSION = "15.34-quotes-progress-mapping"
+VERSION = "15.35-ui-overhaul-unified-keys"
 
 # Verify Google API key availability for thumbnail generation.
 if "GOOGLE_API_KEY" in os.environ and os.environ.get("GOOGLE_API_KEY"):
@@ -100,6 +100,7 @@ def _hydrate_env_from_settings() -> None:
             "heygen_api_key": "HEYGEN_API_KEY",
             "heygen_voice_id": "HEYGEN_VOICE_ID",
             "grok_api_key": "XAI_API_KEY",
+            "anthropic_api_key": "ANTHROPIC_API_KEY",
         }
         for setting_key, env_var in mapping.items():
             val = (s.get(setting_key) or "").strip()
@@ -1539,6 +1540,20 @@ class ConsoleCapture:
         elif "All 6 agents initialized successfully" in message:
             return 10
 
+        # ========== PRO single-pass path (8-90%) ==========
+        elif "Pro mode" in message:
+            return 8
+        elif "PRO SINGLE-PASS SCRIPT WRITER" in message:
+            return 12
+        elif ("writing the ENTIRE script" in message
+              or "Pro writer:" in message
+              or "Loading the golden reference" in message):
+            return 18
+        elif "📝 writing" in message:  # streaming word-count ticks
+            return 55
+        elif "Pro script complete" in message:
+            return 90
+
         # ========== STEP 1: TOPIC ENHANCEMENT (10-20%) ==========
         elif "STEP 1: Topic Enhancement" in message or "Topic Enhancement & Chapter Planning" in message:
             return 12
@@ -1771,7 +1786,7 @@ async def process_script_creation(session_id, topic, audience, tone,
                                   quick_test=False, checkboxes=None,
                                   heygen_template_id="", heygen_api_key="",
                                   heygen_voice_id="", grok_api_key="",
-                                  description=""):
+                                  description="", script_format="teaching"):
     """Clean script creation with only console capture"""
     logger.info(f"🎬 SCRIPT CREATION STARTED: session={session_id}")
     if quick_test:
@@ -1814,10 +1829,19 @@ async def process_script_creation(session_id, topic, audience, tone,
             streamer.send_update(
                 "🧪 Console capture test - starting script creation", 5)
 
-            # Initialize system (this will be captured)
-            print("🔧 Creating EnhancedAutoGenSystem...")
-            system = EnhancedAutoGenSystem(verbose=True)
-            print("🔧 All 6 agents initialized successfully")
+            # Initialize system (this will be captured). Pro mode uses no
+            # agents, so run it quietly (verbose=False) and print a Pro-specific
+            # line instead of the multi-agent initialization chatter.
+            _is_pro = (script_format == "pro")
+            if _is_pro:
+                system = EnhancedAutoGenSystem(
+                    verbose=False, script_format=script_format)
+            else:
+                print("🔧 Creating EnhancedAutoGenSystem...")
+                system = EnhancedAutoGenSystem(
+                    verbose=True, script_format=script_format)
+                print(f"🔧 All 6 agents initialized successfully "
+                      f"(format: {script_format})")
 
             # Run the workflow with timeout to prevent hanging
             print("🚀 Starting script workflow with 20-minute timeout...")
@@ -1857,6 +1881,7 @@ async def process_script_creation(session_id, topic, audience, tone,
                         script_length=video_length,
                         max_chapters=1 if quick_test else 8,
                         hook_summary=checkboxes.get("hook_summary", False),
+                        script_format=script_format,
                     ),
                     # 20 minutes - accounts for Script Writer (~5min) + Script Review (~12min)
                     timeout=1200
@@ -1918,8 +1943,11 @@ async def process_script_creation(session_id, topic, audience, tone,
             print(f"✅ Script Reviewed by Script Reviewer")
             print(f"✅ Sequential Workflow Completed Successfully")
 
-            # Use script content directly (no boilerplate intro).
-            raw_script_content = result["script_content"]
+            # Use script content directly (no boilerplate intro). Tidy the raw
+            # writer output first: drop [Visual Cue: …] blocks (visuals are added
+            # later by the Grok Imagine stage) and collapse the blank lines the
+            # writer puts between every sentence into single-spaced Host blocks.
+            raw_script_content = _tidy_generated_script(result["script_content"])
 
             # Enhanced script with bold tool formatting (EXACT COPY - NO TIMEOUTS!)
             from console_ui.text_processing import (
@@ -2985,7 +3013,10 @@ async def process_existing_script(
 
         # Clean the script
         streamer.send_update("🧹 Cleaning script formatting...", 10)
-        cleaned_script = script_content
+        # Drop [Visual Cue: …] blocks (added later via Grok Imagine) and collapse
+        # between-sentence blank lines into single-spaced Host blocks before the
+        # house-format pass below.
+        cleaned_script = _tidy_generated_script(script_content)
 
         # Remove separator lines
         cleaned_script = re.sub(r'^[_\-=~]+\s*$', '', cleaned_script,
@@ -4529,11 +4560,24 @@ def agent_mode_api():
 # ---------------------------------------------------------------------------
 
 ANTHROPIC_MODEL = "claude-opus-4-8"
+# Highest-quality Claude for the interactive Refine feature and the single-pass
+# "Pro" script writer. Opus 5.5 is this environment's top alias (also used by
+# IDEA_MODEL / GROK_IMAGINE_MODEL) and accepts output_config.effort + adaptive
+# thinking. Run both at effort="max" per the user's explicit request.
+REFINE_MODEL = "claude-opus-5-5"
 
 # Model used specifically by the Idea Generator (idea brainstorm + brief). Claude
-# Opus 5 — the newest Opus tier — for the strongest creative/title ideation.
+# Opus 5.5 — the newest Opus tier — for the strongest creative/title ideation.
 # Kept separate from ANTHROPIC_MODEL so other Claude features are unaffected.
-IDEA_MODEL = "claude-opus-5"
+IDEA_MODEL = "claude-opus-5-5"
+
+# The Idea Generator also brainstorms with Grok (xAI) alongside Claude, so each
+# batch carries two independent model perspectives (grouped in the UI). Override
+# with IDEA_GROK_MODEL in .env. grok-4.5 is the default: it's a fast (~10s),
+# capable tier — the newer grok-4.6/4.7 are reasoning-heavy and take 45s–3min,
+# which would gate the whole request. Grok is best-effort — if it fails, Claude's
+# ideas are still returned.
+IDEA_GROK_MODEL = os.getenv("IDEA_GROK_MODEL", "grok-4.5").strip() or "grok-4.5"
 
 # --- Idea Generator content lanes -------------------------------------------
 # Historically the Idea Generator hard-coded a "careers / resumes / layoffs"
@@ -4633,7 +4677,8 @@ def _get_anthropic_client(timeout: float = 60.0):
 def _anthropic_complete(system: str, user: str, max_tokens: int = 4000,
                         use_web_search: bool = True, max_searches: int = 4,
                         model: str = None, timeout: float = 60.0,
-                        documents=None) -> str:
+                        documents=None, effort: str = None,
+                        thinking: bool = False) -> str:
     """Run one Claude turn, draining the server-side web_search loop.
 
     `model` defaults to ANTHROPIC_MODEL (Opus 4.8). `timeout` (seconds) bounds
@@ -4661,14 +4706,15 @@ def _anthropic_complete(system: str, user: str, max_tokens: int = 4000,
     else:
         user_content = user
 
-    def _run(with_tools: bool):
+    def _run(with_tools: bool, with_extras: bool = True):
         # The server runs the web_search loop and returns pause_turn if it hits
         # its iteration cap; re-send to resume. Cap our own resumes as a guard.
         messages = [{"role": "user", "content": user_content}]
         resp = None
         logger.info(
-            "🤖 Claude %s | web_search=%s | calling…",
+            "🤖 Claude %s | web_search=%s | effort=%s | calling…",
             _model, "on" if with_tools else "off",
+            (effort if (with_extras and effort) else "default"),
         )
         for attempt in range(1, 7):
             kwargs = dict(
@@ -4679,6 +4725,12 @@ def _anthropic_complete(system: str, user: str, max_tokens: int = 4000,
             )
             if with_tools:
                 kwargs["tools"] = [_web_search_tool(max_searches)]
+            # Reasoning effort + adaptive thinking (GA on recent Opus). Stripped
+            # on a BadRequestError below if a model/endpoint rejects them.
+            if with_extras and effort:
+                kwargs["output_config"] = {"effort": effort}
+            if with_extras and thinking:
+                kwargs["thinking"] = {"type": "adaptive"}
             resp = client.messages.create(**kwargs)
             # Surface what the model actually did this round-trip.
             searches = [
@@ -4702,6 +4754,27 @@ def _anthropic_complete(system: str, user: str, max_tokens: int = 4000,
 
     try:
         resp = _run(use_web_search)
+    except anthropic.BadRequestError as e:
+        _msg = str(e).lower()
+        if (effort or thinking) and (
+            "effort" in _msg or "output_config" in _msg or "thinking" in _msg
+        ):
+            # Model/endpoint doesn't accept effort/thinking — retry without them.
+            logger.warning(
+                "Claude: effort/thinking rejected (%s); retrying without them",
+                str(e)[:100],
+            )
+            try:
+                resp = _run(use_web_search, with_extras=False)
+            except Exception:
+                resp = _run(False, with_extras=False)
+        elif use_web_search:
+            logger.warning(
+                "Claude bad request on search path (%s); retrying WITHOUT "
+                "web search", str(e)[:100])
+            resp = _run(False)
+        else:
+            raise
     except Exception as e:
         # Web search can stall or rate-limit. On ANY failure of the search
         # path (timeout, rate limit, connection), fall back to a fast
@@ -4929,6 +5002,36 @@ def _save_idea_batch(user_request: str, ideas: list,
     except Exception as e:
         logger.error(f"❌ Could not save idea history: {e}")
     return batch
+
+
+def _save_brief_to_batch(batch_id: str, title: str, brief: str,
+                         idea_format: str = "") -> None:
+    """Persist a generated brief back onto its idea in the saved history, so
+    recalling the batch brings the brief back (no regeneration needed)."""
+    bid = (batch_id or "").strip()
+    if not bid or not (brief or "").strip():
+        return
+    try:
+        history = _load_idea_history()
+        changed = False
+        for b in history:
+            if b.get("id") != bid:
+                continue
+            for idea in (b.get("ideas") or []):
+                if (idea.get("title") or "").strip() == (title or "").strip():
+                    idea["brief"] = brief
+                    if idea_format:
+                        idea["brief_format"] = idea_format
+                    b["last_brief_title"] = title
+                    changed = True
+                    break
+            break
+        if changed:
+            with open(_IDEAS_HISTORY_PATH, "w", encoding="utf-8") as f:
+                json.dump(history, f, indent=2)
+            logger.info("💾 Saved brief onto idea %r in batch %s", title, bid)
+    except Exception as e:
+        logger.warning(f"⚠️ could not save brief to batch: {e}")
 
 
 def _extract_youtube_id(url: str):
@@ -5170,6 +5273,37 @@ def _idea_document_block(storage):
         "Unsupported attachment type. Upload a PDF or a text/markdown file.")
 
 
+def _grok_complete(system: str, user: str, model: str = None,
+                   temperature: float = 0.8) -> str:
+    """Run one Grok (xAI) chat turn and return its text. Raises on failure.
+
+    Used by the Idea Generator so Grok brainstorms alongside Claude. `model`
+    defaults to IDEA_GROK_MODEL. Grok has no server-side web-search loop here, so
+    the caller grounds it through the prompt (the live trend list, adjacency
+    context, and any attached document's text) — the same signals Claude gets.
+    """
+    api_key = _resolve_xai_api_key()
+    if not api_key:
+        raise RuntimeError(
+            "xAI/Grok is not configured. Set XAI_API_KEY (or GROK_API_KEY) in "
+            "the root .env.")
+    try:
+        import xai_sdk
+        from xai_sdk.chat import system as _xai_system, user as _xai_user
+    except ImportError as e:
+        raise RuntimeError(f"xai_sdk is not installed: {e}")
+    _model = model or IDEA_GROK_MODEL
+    logger.info("🤖 Grok %s | calling…", _model)
+    client = xai_sdk.Client(api_key=api_key)
+    chat = client.chat.create(model=_model, temperature=temperature)
+    chat.append(_xai_system(system))
+    chat.append(_xai_user(user))
+    resp = chat.sample()
+    out = (getattr(resp, "content", "") or "").strip()
+    logger.info("✅ Grok %s returned %d chars", _model, len(out))
+    return out
+
+
 @app.route("/api/ideas/generate", methods=["POST"])
 def api_ideas_generate():
     """Brainstorm 10 distinct video-episode ideas, grounded by default in the
@@ -5185,6 +5319,7 @@ def api_ideas_generate():
             "request": request.form.get("request", ""),
             "adjacency_urls": request.form.get("adjacency_urls", ""),
             "lane": request.form.get("lane", ""),
+            "idea_format": request.form.get("idea_format", ""),
         }
         try:
             idea_doc, idea_doc_name, idea_doc_text = _idea_document_block(
@@ -5308,6 +5443,27 @@ def api_ideas_generate():
                "focus on." if user_request else "")
         )
 
+    # Optional idea FORMAT (structure). Forces every idea — and its downstream
+    # brief — into a list / "N levels of" shape. "auto" leaves format free.
+    idea_format = (data.get("idea_format") or "auto").strip().lower()
+    if idea_format == "list":
+        system += (
+            "\n\nFORMAT REQUIREMENT — RANKED LIST / COUNTDOWN (this overrides "
+            "format variety): EVERY one of the 10 ideas MUST be a ranked list or "
+            "countdown video. Each title names a specific number and reads like "
+            "'Top 10 AI Tools …', 'The 7 Best …', or '10 AI … Ranked'. Vary the "
+            "number (5, 7, 10, 12) and the noun across ideas, but the SHAPE is "
+            "always a list of concrete, real, nameable items."
+        )
+    elif idea_format == "levels":
+        system += (
+            "\n\nFORMAT REQUIREMENT — 'N LEVELS OF' (this overrides format "
+            "variety): EVERY one of the 10 ideas MUST be a tiered 'levels' video "
+            "that escalates from basic to advanced. Each title reads like 'The 7 "
+            "Levels of …', 'The 5 Stages of …', or 'AI …: From Level 1 to Level "
+            "7'. Vary N (5, 7) and the subject across ideas."
+        )
+
     if has_doc:
         src = f' (titled "{idea_doc_name}")' if idea_doc_name else ""
         topic_line = (
@@ -5359,48 +5515,91 @@ def api_ideas_generate():
     logger.info("💡 Idea generation requested: %r (lane=%s, top_youtube=%d, adjacency=%d, doc=%s)",
                 user_request, lane_key, len(top_videos), len(adjacency),
                 idea_doc_name or "-")
-    try:
-        text = _anthropic_complete(system, user, max_tokens=4000,
-                                   use_web_search=True, max_searches=4,
-                                   model=IDEA_MODEL,
-                                   documents=[idea_doc] if idea_doc else None,
-                                   timeout=120.0 if idea_doc else 60.0)
-        ideas = _parse_json_array(text)
-    except Exception as e:
-        logger.error(f"❌ Idea generation failed: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
 
-    # Keep only well-formed entries.
-    clean = [
-        {"title": str(i.get("title", "")).strip(),
-         "angle": str(i.get("angle", "")).strip()}
-        for i in ideas
-        if isinstance(i, dict) and str(i.get("title", "")).strip()
-    ]
+    # Brainstorm with BOTH Claude Opus 5.5 and Grok (xAI), concurrently, so each
+    # batch carries two independent model perspectives (grouped by source in the
+    # UI). Each returns up to 10 ideas. Either model failing is non-fatal — we
+    # return whatever the other produced, and surface the failure as a warning.
+    _CLAUDE_SOURCE = "Claude Opus 5.5"
+    _GROK_SOURCE = "Grok"
+
+    def _clean_ideas(raw_text: str, source: str) -> list:
+        parsed = _parse_json_array(raw_text)
+        return [
+            {"title": str(i.get("title", "")).strip(),
+             "angle": str(i.get("angle", "")).strip(),
+             "source": source}
+            for i in parsed
+            if isinstance(i, dict) and str(i.get("title", "")).strip()
+        ][:10]
+
+    def _gen_claude():
+        # Claude gets the PDF as a native document block (best grounding).
+        raw = _anthropic_complete(system, user, max_tokens=4000,
+                                  use_web_search=True, max_searches=4,
+                                  model=IDEA_MODEL,
+                                  documents=[idea_doc] if idea_doc else None,
+                                  timeout=120.0 if idea_doc else 60.0)
+        return _clean_ideas(raw, _CLAUDE_SOURCE), raw
+
+    def _gen_grok():
+        # Grok can't take the PDF block, so inline the extracted text (if any)
+        # into its prompt so it's grounded in the same source as Claude.
+        grok_user = user
+        if has_doc and idea_doc_text.strip():
+            grok_user = (
+                f'SOURCE DOCUMENT (titled "{idea_doc_name or "attachment"}") — '
+                'base every idea on this:\n"""\n'
+                + idea_doc_text[:_IDEA_DOC_STORE_CHARS]
+                + '\n"""\n\n' + user)
+        raw = _grok_complete(system, grok_user, model=IDEA_GROK_MODEL)
+        return _clean_ideas(raw, _GROK_SOURCE), raw
+
+    import concurrent.futures as _futures
+    claude_ideas, grok_ideas = [], []
+    warnings = []
+    claude_raw = grok_raw = ""
+    with _futures.ThreadPoolExecutor(max_workers=2) as _ex:
+        _fut_c = _ex.submit(_gen_claude)
+        _fut_g = _ex.submit(_gen_grok)
+        try:
+            claude_ideas, claude_raw = _fut_c.result()
+        except Exception as e:
+            logger.error(f"❌ Claude idea generation failed: {e}")
+            warnings.append(f"Claude Opus 5.5 failed: {e}")
+        try:
+            grok_ideas, grok_raw = _fut_g.result()
+        except Exception as e:
+            logger.error(f"❌ Grok idea generation failed: {e}")
+            warnings.append(f"Grok failed: {e}")
+
+    # Claude group first, then Grok — the UI groups by source in this order.
+    clean = claude_ideas + grok_ideas
     if not clean:
         # Log a head + tail sample of the raw model output so a recurrence is
         # diagnosable without guessing (parser hardened, but keep the receipts).
-        _raw = (text or "")
+        _raw = (claude_raw or grok_raw or "")
         logger.warning(
             "⚠️ Idea generation returned no parseable ideas "
             "(raw %d chars). HEAD=%r TAIL=%r",
             len(_raw), _raw[:400], _raw[-200:])
         return jsonify({
             "success": False,
-            "error": "Claude did not return parseable ideas. Please try again.",
+            "error": ("Idea generation failed. " + " ".join(warnings)) if warnings
+            else "No parseable ideas were returned. Please try again.",
         }), 502
     source_document = (
         {"name": idea_doc_name, "text": idea_doc_text}
         if (has_doc and idea_doc_text.strip()) else None
     )
-    batch = _save_idea_batch(user_request, clean[:10],
-                             source_document=source_document)
-    logger.info("✅ Idea generation produced %d ideas (saved batch %s%s)",
-                len(clean[:10]), batch["id"][:8],
+    batch = _save_idea_batch(user_request, clean, source_document=source_document)
+    logger.info("✅ Idea generation produced %d ideas (Claude=%d, Grok=%d; batch %s%s)",
+                len(clean), len(claude_ideas), len(grok_ideas), batch["id"][:8],
                 f", doc={idea_doc_name}" if source_document else "")
     return jsonify({
-        "success": True, "ideas": clean[:10], "batch_id": batch["id"],
+        "success": True, "ideas": clean, "batch_id": batch["id"],
         "top_youtube": top_videos,
+        "warnings": warnings,
         # Tell the UI whether this batch carries a forwardable source document
         # (present only when text could be extracted — e.g. not a scanned PDF).
         "source_document": ({"name": idea_doc_name} if source_document else None),
@@ -5466,6 +5665,26 @@ def api_ideas_describe():
         adj_urls = []
     adjacency = _youtube_adjacency_context(adj_urls) if adj_urls else []
 
+    # Format carried from idea generation — make the brief a list / levels video.
+    idea_format = (data.get("idea_format") or "auto").strip().lower()
+    fmt_block = ""
+    if idea_format == "list":
+        fmt_block = (
+            "FORMAT (REQUIRED): This is a RANKED LIST / COUNTDOWN episode. The "
+            "brief MUST make that explicit — state the exact number of items "
+            "(from the title), that the video lists or counts down ALL of them, "
+            "one item per segment, each with what it is, who it is for, and the "
+            "one catch. Name real, specific items. This is a list, not a general "
+            "explainer.\n\n"
+        )
+    elif idea_format == "levels":
+        fmt_block = (
+            "FORMAT (REQUIRED): This is an 'N LEVELS OF' episode. The brief MUST "
+            "make that explicit — state the number of levels (from the title), "
+            "that it escalates from basic to advanced, one level per segment, "
+            "each a clear step up from the last.\n\n"
+        )
+
     system = (
         "You are a creative director writing a production brief for an "
         "energizing, optimistic YouTube explainer video about AI/technology "
@@ -5487,6 +5706,7 @@ def api_ideas_describe():
         f"Original request: {user_request}\n"
         f"Chosen episode title: {title}\n"
         f"Angle: {angle}\n\n"
+        + fmt_block +
         "Write a detailed creative brief for this episode.\n\n"
         "Wrap your output EXACTLY like this — a line containing only "
         "===BRIEF===, then the brief, then a line containing only ===END===. "
@@ -5521,6 +5741,8 @@ def api_ideas_describe():
             "error": "Claude returned an empty brief. Please try again.",
         }), 502
     logger.info("✅ Brief generated (%d chars)", len(text))
+    # Persist the brief back onto its idea so recalling the batch brings it back.
+    _save_brief_to_batch(data.get("batch_id"), title, text, idea_format)
     return jsonify({"success": True, "title": title, "description": text})
 
 
@@ -5892,8 +6114,185 @@ _CH_BOUNDARY_RE = re.compile(
 _GI_META_BOUNDARY_RE = re.compile(
     r'^[ \t]*={3,}[ \t]*[A-Za-z]'
     r'|^[ \t]*(?:SUPPORTING[ \t]+RESEARCH|FINAL[ \t]+PACKAGING'
-    r'|STRATEGY[ \t]+NOTES|YOUTUBE[ \t]+VIDEO[ \t]+DESCRIPTION)\b',
+    r'|STRATEGY[ \t]+NOTES|YOUTUBE[ \t]+VIDEO[ \t]+DESCRIPTION'
+    r'|ARTICLES[ \t]+MENTIONED)\b',
     re.IGNORECASE | re.MULTILINE)
+
+# Title of the trailing, non-spoken section that collects every URL lifted out of
+# the spoken dialogue. The leading "=== … ===" form is deliberately chosen: the
+# HeyGen/curl extractor (text_processing._meta_cut) cuts any "=== SECTION ==="
+# header and everything after it, so the avatar never reads these links aloud and
+# they never reach the curl `content`.
+_ARTICLES_SECTION_TITLE = "=== ARTICLES MENTIONED IN THE SCRIPT ==="
+
+# Inline links the Script Writer sometimes embeds in spoken dialogue — most often
+# Claude web-search citations like "([webapps.ilo.org](https://…))". Matched in
+# three forms, stripped from the narration, and relocated to the Articles section.
+_CITATION_LINK_RE = re.compile(
+    r'\s*\(\s*\[([^\]]+)\]\((https?://[^)\s]+)\)\s*\)')   # ([label](url))
+_MD_LINK_RE = re.compile(r'\[([^\]]+)\]\((https?://[^)\s]+)\)')   # [label](url)
+_BARE_URL_RE = re.compile(r'<?(https?://[^\s<>)\]]+)>?')          # bare http(s)://…
+
+
+def _lift_links_from_spoken(text: str, sink: list) -> str:
+    """Strip every URL/citation from one spoken line, recording ``(label, url)``
+    pairs in ``sink`` (order preserved). Returns the cleaned, speakable text.
+
+    - ``([label](url))`` citations are removed whole (label is just a domain).
+    - ``[label](url)`` keeps the human-readable label, drops the link.
+    - bare ``http(s)://…`` URLs are removed outright.
+    """
+    def _cite(m):
+        sink.append((m.group(1).strip(), m.group(2).strip()))
+        return ''
+    def _md(m):
+        sink.append((m.group(1).strip(), m.group(2).strip()))
+        return m.group(1)
+    def _bare(m):
+        url = m.group(1).rstrip('.,;:')
+        sink.append((url, url))
+        return ''
+    text = _CITATION_LINK_RE.sub(_cite, text)
+    text = _MD_LINK_RE.sub(_md, text)
+    text = _BARE_URL_RE.sub(_bare, text)
+    # Repair the gaps the removals leave behind.
+    text = re.sub(r'\(\s*\)', '', text)             # empty "()" left by a citation
+    text = re.sub(r'[ \t]{2,}', ' ', text)          # collapsed double spaces
+    text = re.sub(r'\s+([.,;:!?])', r'\1', text)    # space before punctuation
+    return text.strip()
+
+
+def _voice_safe_punctuation(text: str) -> str:
+    """Replace punctuation HeyGen's TTS voices badly — em-dashes, en-dashes, and
+    arrows — with voice-friendly equivalents, so the avatar never trips on a dash.
+
+    Deterministic enforcement of the "voice-friendly punctuation" rule that lives
+    in every Script-Writer agent prompt but that the models do NOT reliably obey
+    (the teaching, list, and predictions prompts all forbid em-dashes, yet the
+    output still contains them). Applied to SPOKEN host dialogue only, so URLs,
+    production blocks, and the research/quotes tail are untouched.
+
+      "9–5"              -> "9 to 5"      (number range)
+      "A → B"            -> "A to B"      (arrow)
+      "tools — ChatGPT"  -> "tools, ChatGPT"  (spaced dash = pause)
+      "neural—network"   -> "neural-network"  (compound word)
+    """
+    if not text:
+        return text
+    t = text
+    # Arrows → "to"
+    t = re.sub(r'\s*[→➔➡⇒]\s*', ' to ', t)
+    # Number ranges joined by a figure/en/em dash → "to"
+    t = re.sub(r'(?<=\d)\s*[‒–—―]\s*(?=\d)', ' to ', t)
+    # Spaced em/en dash used as a parenthetical or pause → comma
+    t = re.sub(r'\s+[‒–—―]+\s+', ', ', t)
+    # Any remaining em/en/figure dash (e.g. a compound word) → plain hyphen
+    t = re.sub(r'[‒–—―]+', '-', t)
+    # Clean up any comma doubling we may have introduced
+    t = re.sub(r'\s*,\s*,', ',', t)
+    return t
+
+
+def _tidy_generated_script(script: str) -> str:
+    """Tidy a freshly-written script into the house format:
+
+      1. Drop ``[Visual Cue: …]`` blocks — visuals are added later by the Grok
+         Imagine stage, so the written script should not carry them.
+      2. Collapse the blank lines the Script Writer puts between every sentence
+         so each Host block reads as one single-spaced paragraph (one sentence
+         per line) — the same shape the processed / beat format expects. Chapter
+         headings, trailing metadata sections, and bracketed production blocks
+         (``[GROK IMAGINE …]``, ``[PRODUCTION …]``) keep their own spacing.
+      3. Lift every inline URL/citation out of the spoken dialogue (the avatar
+         must never read a link aloud) into a trailing ``=== ARTICLES MENTIONED
+         IN THE SCRIPT ===`` section, which the HeyGen/curl extractor excludes.
+         Links inside the quotes/research tail and production blocks are left
+         where they are.
+
+    Best-effort — returns the input unchanged on any error.
+    """
+    if not script or not script.strip():
+        return script
+    try:
+        # 1) Remove [Visual Cue: …] blocks (may wrap across lines; a cue never
+        #    contains its own ']', so a non-greedy match stops at its close).
+        text = re.sub(r'[ \t]*\[\s*Visual\s+Cue\s*:.*?\]',
+                      '', script, flags=re.IGNORECASE | re.DOTALL)
+        # …and any bare 'VISUAL CUE:' / '**Visual Cue:**' label lines.
+        text = re.sub(r'(?im)^[ \t]*\**[ \t]*visual\s+cue[ \t]*:.*$', '', text)
+
+        # 2) Collapse between-sentence blank lines inside Host blocks only, and
+        #    3) lift inline URLs out of spoken lines into `links`.
+        lines = text.split("\n")
+        out, in_spoken, in_bracket = [], False, False
+        links = []
+        for ln in lines:
+            stripped = ln.strip()
+            # Keep multi-line bracketed blocks ([GROK IMAGINE …], [PRODUCTION …])
+            # verbatim and never collapse inside them.
+            if in_bracket:
+                out.append(ln)
+                if "]" in ln:
+                    in_bracket = False
+                continue
+            if _CH_BOUNDARY_RE.match(ln) or _GI_META_BOUNDARY_RE.match(ln):
+                in_spoken = False
+                while out and out[-1].strip() == "":
+                    out.pop()
+                if out:
+                    out.append("")            # exactly one blank before a section
+                out.append(ln)
+                continue
+            # A pure "===" fence or a non-chapter "#" heading also ends the spoken
+            # region (e.g. the "=== … ===" / "# 📊 SUPPORTING RESEARCH" quote-tail
+            # fence) — so links in that tail are left alone, not lifted.
+            if re.match(r'^\s*={3,}\s*$', ln) or re.match(r'^\s*#{1,6}\s+\S', ln):
+                in_spoken = False
+                out.append(ln)
+                continue
+            if re.match(r'^\s*\*{0,2}\s*Host\s*\*{0,2}\s*:\s*\*{0,2}\s*$', ln,
+                        re.IGNORECASE):
+                in_spoken = True
+                out.append(ln)
+                continue
+            if stripped.startswith("["):       # a production / grok block
+                out.append(ln)
+                if stripped.count("[") > stripped.count("]"):
+                    in_bracket = True
+                continue
+            if in_spoken:
+                if stripped == "":
+                    continue                   # drop between-sentence blanks
+                cleaned = _lift_links_from_spoken(stripped, links)
+                # Scrub em-dashes / en-dashes / arrows the avatar would mis-voice.
+                cleaned = _voice_safe_punctuation(cleaned)
+                if cleaned:                    # drop lines that were ONLY a link
+                    out.append(cleaned)
+            else:
+                out.append(ln)
+        text = "\n".join(out)
+        text = re.sub(r'\n{3,}', '\n\n', text).strip() + "\n"
+
+        # 3b) Append the collected links as a trailing, non-spoken section (unless
+        #     one is already present — keeps re-processing idempotent).
+        if links and _ARTICLES_SECTION_TITLE not in text:
+            seen, uniq = set(), []
+            for label, url in links:
+                if url in seen:
+                    continue
+                seen.add(url)
+                uniq.append((label, url))
+            rows = [
+                (f"- [{label}]({url})" if label and label != url else f"- {url}")
+                for label, url in uniq
+            ]
+            text = (text.rstrip() + "\n\n" + _ARTICLES_SECTION_TITLE + "\n\n"
+                    + "Sources referenced in the script (not read aloud by the "
+                    "avatar):\n" + "\n".join(rows) + "\n")
+        return text
+    except Exception as e:
+        logger.warning(f"⚠️ _tidy_generated_script failed: {e}")
+        return script
 
 # Non-spoken label lines to skip when picking beats: script metadata, hook/host
 # labels, and stage-direction tags. (Host is handled separately so an inline
@@ -6245,6 +6644,132 @@ def api_script_polish():
     logger.info("✨ Script polished with %s (%d → %d chars)",
                 model, len(script), len(polished))
     return jsonify({"success": True, "polished_script": polished, "model": model})
+
+
+# ---------------------------------------------------------------------------
+# Interactive refine — targeted, user-directed edits on a finished script.
+#
+# Unlike Polish (a blanket rewrite pass), Refine applies ONE specific change the
+# user types in ("swap the ChatGPT example for a newer one", "add a 2026 example
+# from X about AI agents", "tighten chapter 3's intro"), using either Claude
+# (careful edits, web search on for currency) or Grok (recent / X-aware), and
+# returns the FULL updated script. Production blocks are shielded the same way
+# Polish shields them.
+# ---------------------------------------------------------------------------
+_REFINE_SYSTEM = (
+    "You are a precise script editor for a single-host narrated video. You are "
+    "given a COMPLETE, already-written script and ONE specific change request. "
+    "Apply ONLY that change. Preserve everything else EXACTLY — the overall "
+    "structure, chapter order and headings, every host line the request does "
+    "not touch, the formatting and blank lines, and any production markup or "
+    "placeholder tokens. Do NOT re-polish, re-order, summarize, shorten, lengthen, "
+    "or add commentary beyond what the request asks. Keep the same voice and "
+    "approximate length. If the request asks for a newer / more current example, "
+    "replace the named item with a REAL, current one and keep the surrounding "
+    "sentence shape. Return the FULL updated script ONLY — no preamble, no "
+    "explanation, no code fences."
+)
+
+
+def _refine_script(script: str, instructions: str, model: str = "claude",
+                   title: str = "", audience: str = "") -> tuple:
+    """Apply a single user-directed change to a finished script.
+
+    Returns (updated_text, model_used). `model` is "claude" (Opus 4.8, web
+    search on) or "grok" (xAI, X/recent-aware). Production blocks are masked and
+    restored byte-for-byte; if the model drops a placeholder, we retry once on
+    the raw script asking it to keep the blocks verbatim (a per-segment fallback
+    like Polish's would wrongly apply a single targeted edit to every segment).
+    """
+    ctx = []
+    if title:
+        ctx.append(f"SCRIPT TITLE: {title}")
+    if audience:
+        ctx.append(f"AUDIENCE: {audience}")
+    header = ("\n".join(ctx) + "\n\n") if ctx else ""
+
+    use_grok = (model or "").lower().startswith("grok")
+
+    def _call(text: str, extra: str = "") -> tuple:
+        user = (
+            f"{header}CHANGE REQUEST:\n{instructions}\n\n{extra}"
+            f"Here is the full script. Apply ONLY the change request above and "
+            f"return the complete, updated script:\n\n{text}"
+        )
+        if use_grok:
+            out = _grok_complete(_REFINE_SYSTEM, user, model=IDEA_GROK_MODEL)
+            return _strip_reminder_tags(out or ""), IDEA_GROK_MODEL
+        # Claude Opus 5.5 at MAX reasoning effort for the sharpest edits (user
+        # request — not Opus 4.8, not medium effort).
+        out = _anthropic_complete(
+            _REFINE_SYSTEM, user, max_tokens=16000,
+            use_web_search=True, model=REFINE_MODEL, timeout=240.0,
+            effort="max", thinking=True,
+        )
+        return _strip_reminder_tags(out or ""), REFINE_MODEL
+
+    masked, blocks = _mask_production_blocks(script)
+    if not blocks:
+        out, used = _call(script)
+        if not out:
+            raise RuntimeError("Refine returned an empty script.")
+        return out, used
+
+    sentinel_note = (
+        "IMPORTANT — PRESERVE PLACEHOLDERS: the script contains tokens of the "
+        "form [[PRODUCTION_BLOCK_N]]. Leave every such token EXACTLY as written, "
+        "on its own line, in the same order. Edit ONLY the surrounding host "
+        "narration.\n\n"
+    )
+    out, used = _call(masked, extra=sentinel_note)
+    if not out:
+        raise RuntimeError("Refine returned an empty script.")
+    restored, missing = _restore_production_blocks(out, blocks)
+    if not missing:
+        return restored, used
+
+    logger.warning("⚠️ refine: %d production sentinel(s) missing from output; "
+                   "retrying unmasked", len(missing))
+    keep_note = (
+        "IMPORTANT: Keep every [PRODUCTION BEGIN]…[PRODUCTION END] block and its "
+        "contents EXACTLY as written, unchanged and in place. Edit ONLY the host "
+        "narration.\n\n"
+    )
+    out2, used2 = _call(script, extra=keep_note)
+    if out2:
+        return out2, used2
+    return restored, used  # best effort — return what we could restore
+
+
+@app.route("/api/script/refine", methods=["POST"])
+def api_script_refine():
+    """Apply one user-directed change to the finished script via Claude or Grok."""
+    data = request.get_json(silent=True) or {}
+    script = (data.get("script") or "").strip()
+    instructions = (data.get("instructions") or "").strip()
+    model = (data.get("model") or "claude").strip().lower()
+    if not script:
+        return jsonify({
+            "success": False,
+            "error": "No script to refine — create a script first.",
+        }), 400
+    if not instructions:
+        return jsonify({
+            "success": False,
+            "error": "Describe the change you want (e.g. 'swap the ChatGPT "
+                     "example for a newer one').",
+        }), 400
+    title = (data.get("title") or "").strip()
+    audience = (data.get("audience") or "").strip()
+    try:
+        updated, used = _refine_script(
+            script, instructions, model=model, title=title, audience=audience)
+    except Exception as e:
+        logger.error(f"❌ Script refine failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    logger.info("✏️ Script refined with %s (%d → %d chars) | ask: %s",
+                used, len(script), len(updated), instructions[:80])
+    return jsonify({"success": True, "updated_script": updated, "model": used})
 
 
 @app.route("/api/x/generate", methods=["POST"])
@@ -6781,11 +7306,24 @@ def create():
                     src_name, len(excerpt))
     audience = data.get("audience", "general")
     tone = data.get("tone", "professional")
-    video_length = data.get("video_length", "medium")
+    # The Create Script modal sends the duration dropdown as `duration`
+    # ("5"/"10"/"15"), NOT `video_length`. Honor it: prefer an explicit
+    # video_length, else convert the numeric duration to an "N minutes" string.
+    # Without this, video_length was always the "medium" default and the
+    # workflow fell back to ~8 minutes regardless of the dropdown.
+    video_length = data.get("video_length")
+    if not video_length:
+        _dur = str(data.get("duration", "")).strip()
+        video_length = f"{_dur} minutes" if _dur.isdigit() else (_dur or "medium")
     production_type = data.get("production_type", "standard")
     goals = data.get("goals", "educational")
     test_mode = data.get("test_mode", False)  # Quick test mode flag
     quick_test = data.get("quick_test", False)  # 1-chapter quick test
+    # Video archetype / format — selects the topic-assistant + writer agent pair:
+    #   teaching (default) = "5 things" tutorial listicle
+    #   predictions        = bold / visionary, 1 prediction per chapter
+    #   list               = Top-N ranked countdown (honors N, lists all)
+    video_format = (data.get("video_format") or "teaching").strip().lower()
 
     # NEW: Get checkbox selections
     checkboxes = data.get("checkboxes", {})
@@ -6823,6 +7361,7 @@ def create():
 
     logger.info(f"🎬 Starting script creation: {session_id}")
     logger.info(f"📝 Topic: {topic}, Audience: {audience}, Tone: {tone}")
+    logger.info(f"🎬 Video format: {video_format!r} | length: {video_length!r}")
     if description:
         logger.info(f"📋 Brief: {len(description)} chars — steering the "
                     f"Topic Assistant and Script Writer")
@@ -6854,6 +7393,7 @@ def create():
                         heygen_template_id, heygen_api_key,
                         heygen_voice_id, grok_api_key,
                         description=description,
+                        script_format=video_format,
                     ),
                 )
         except Exception as e:
@@ -8266,13 +8806,25 @@ def api_keys_get():
 
         def _v(key, env):
             return (settings.get(key) or "").strip() or os.getenv(env, "").strip()
+
+        def _src(key, env):
+            # Where the effective value comes from, for the dialog's source tag.
+            if (settings.get(key) or "").strip():
+                return "saved"
+            if os.getenv(env, "").strip():
+                return "env"
+            return "none"
+
+        _map = {
+            "google_api_key": "GOOGLE_API_KEY",
+            "heygen_api_key": "HEYGEN_API_KEY",
+            "grok_api_key": "XAI_API_KEY",
+            "anthropic_api_key": "ANTHROPIC_API_KEY",
+        }
         return jsonify({
             "success": True,
-            "keys": {
-                "google_api_key": _v("google_api_key", "GOOGLE_API_KEY"),
-                "heygen_api_key": _v("heygen_api_key", "HEYGEN_API_KEY"),
-                "grok_api_key": _v("grok_api_key", "XAI_API_KEY"),
-            },
+            "keys": {k: _v(k, e) for k, e in _map.items()},
+            "sources": {k: _src(k, e) for k, e in _map.items()},
         })
     except Exception as e:
         logger.error(f"❌ Failed to load API keys: {e}")
@@ -8290,6 +8842,7 @@ def api_keys_save():
             "google_api_key": "GOOGLE_API_KEY",
             "heygen_api_key": "HEYGEN_API_KEY",
             "grok_api_key": "XAI_API_KEY",
+            "anthropic_api_key": "ANTHROPIC_API_KEY",
         }
         updated = []
         for setting_key, env_var in mapping.items():
@@ -13265,11 +13818,13 @@ def _recent_scripts_for_style_context(
             cur = newest.get(sid)
             if cur is None or b.last_modified > cur.last_modified:
                 newest[sid] = b
-        ordered = sorted(
-            newest.values(), key=lambda b: b.last_modified, reverse=True)
-        for b in ordered:
-            if len(out) >= limit:
-                break
+        # Scan a few more than `limit` so reference-flagged scripts can jump the
+        # queue, then rank reference-first, newest-first.
+        candidates = sorted(
+            newest.values(), key=lambda b: b.last_modified,
+            reverse=True)[:max(limit * 3, 12)]
+        rows = []
+        for b in candidates:
             try:
                 m = json.loads(cc.download_blob(b.name).readall())
             except Exception:
@@ -13277,8 +13832,16 @@ def _recent_scripts_for_style_context(
             body = (m.get("enhanced_script") or "").strip()
             if not body:
                 continue
+            rows.append((
+                bool(m.get("reference") or m.get("final")),
+                b.last_modified,
+                (m.get("script_title") or "Untitled").strip(),
+                body,
+            ))
+        rows.sort(key=lambda r: (r[0], r[1]), reverse=True)
+        for _is_ref, _lm, title, body in rows[:limit]:
             out.append({
-                "title": (m.get("script_title") or "Untitled").strip(),
+                "title": title + (" [REFERENCE]" if _is_ref else ""),
                 "excerpt": body[:_STYLE_CONTEXT_CHARS_PER_SCRIPT],
             })
     except Exception as e:
@@ -13286,25 +13849,137 @@ def _recent_scripts_for_style_context(
     return out
 
 
+def _set_script_reference_flag(script_id: str, version_id: str,
+                               reference: bool = True) -> bool:
+    """Read a version manifest, set its `reference` (and `final`) flag, and
+    re-upload it. Reference scripts lead the style context for new generations."""
+    if not _artifacts_enabled() or not script_id or not version_id:
+        return False
+    sid = _safe_blob_id(script_id)
+    vid = _safe_blob_id(version_id)
+    try:
+        cc = _artifacts_container()
+        path = f"{sid}/versions/{vid}/artifacts.json"
+        m = json.loads(cc.download_blob(path).readall())
+        m["reference"] = bool(reference)
+        m["final"] = bool(reference)  # a marked reference == a production-final
+        _artifacts_upload_bytes(
+            path, json.dumps(m).encode("utf-8"), "application/json")
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ mark-reference failed for {script_id}/{version_id}: {e}")
+        return False
+
+
+@app.route("/api/script/mark-reference", methods=["POST"])
+def api_script_mark_reference():
+    """Mark a saved cloud script as a REFERENCE (used in production / golden).
+    Reference scripts lead the style context fed into every new generation."""
+    data = request.get_json(silent=True) or {}
+    sid = (data.get("script_id") or "").strip()
+    vid = (data.get("version_id") or "").strip()
+    ref = bool(data.get("reference", True))
+    if not sid or not vid:
+        return jsonify({
+            "success": False,
+            "error": "script_id and version_id are required — save the script "
+                     "to the cloud first.",
+        }), 400
+    ok = _set_script_reference_flag(sid, vid, ref)
+    if ok:
+        logger.info("⭐ Marked %s/%s reference=%s", sid, vid, ref)
+    return jsonify({"success": ok})
+
+
+_GOLDEN_CLOUD_SID = "golden-reference"
+_GOLDEN_CLOUD_VID = "v1"
+
+
+def _seed_golden_reference_to_cloud() -> bool:
+    """Upload the local golden reference script to the cloud as a reference
+    script, once. Best-effort and idempotent (skips if already present)."""
+    if not _artifacts_enabled():
+        return False
+    try:
+        from linedrive_azure.agents.pro_script_writer import load_golden_reference
+        body = load_golden_reference(max_chars=100000)
+        if not body:
+            return False
+        cc = _artifacts_container()
+        path = f"{_GOLDEN_CLOUD_SID}/versions/{_GOLDEN_CLOUD_VID}/artifacts.json"
+        try:
+            existing = json.loads(cc.download_blob(path).readall())
+            if (existing.get("enhanced_script") or "").strip():
+                return True  # already seeded
+        except Exception:
+            pass
+        manifest = {
+            "script_id": _GOLDEN_CLOUD_SID,
+            "version_id": _GOLDEN_CLOUD_VID,
+            "script_title": "GOLDEN REFERENCE — The Top 10 AI Tools, When NOT to Use Them",
+            "enhanced_script": body,
+            "brief": "",
+            "reference": True,
+            "final": True,
+        }
+        _artifacts_upload_bytes(
+            path, json.dumps(manifest).encode("utf-8"), "application/json")
+        logger.info("⭐ Seeded golden reference script to the cloud (reference)")
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ seed golden reference to cloud failed: {e}")
+        return False
+
+
+@app.route("/api/golden-reference/save-to-cloud", methods=["POST"])
+def api_golden_reference_save_to_cloud():
+    """Save the golden reference script to the cloud, marked as a reference."""
+    ok = _seed_golden_reference_to_cloud()
+    return jsonify({"success": ok,
+                    "enabled": _artifacts_enabled()})
+
+
 def _build_style_context_block(exclude_script_id: str = "") -> str:
     """A delimited style-reference block built from recent saved scripts, or ''
     when style memory is unavailable/empty. Fed to the Script Writer so new
     scripts stay consistent in voice, structure, and pacing with recent work.
     """
+    parts = []
+    # The GOLDEN REFERENCE always leads — it is the approved target the user
+    # wants every generation to follow (the Pro single-pass writer embeds the
+    # full copy; the Foundry pipeline gets a trimmed copy here).
+    try:
+        from linedrive_azure.agents.pro_script_writer import load_golden_reference
+        golden = load_golden_reference(max_chars=9000)
+    except Exception:
+        golden = ""
+    if golden:
+        parts.append(
+            "\n\n--- GOLDEN REFERENCE SCRIPT (the approved target: match this "
+            "STRUCTURE, production conventions, and SPOKEN VOICE exactly — no "
+            "contractions, no em-dashes or en-dashes, numbers and names spelled "
+            "the way the avatar says them, a FINAL HOOK, 'Heading: Chapter N -' "
+            "lines, [PRODUCTION BEGIN] / [GROK IMAGINE / RESOLVE] / [PRODUCTION "
+            "END] blocks, [VERIFY BEFORE RENDER] for legal or numeric claims, a "
+            "cheat-sheet [PROMPT OVERLAY] in the final chapter, and trailing "
+            "=== … === sections. Do NOT copy its topic or wording) ---\n"
+            + golden + "\n--- END GOLDEN REFERENCE ---\n"
+        )
     recent = _recent_scripts_for_style_context(
         exclude_script_id=exclude_script_id)
-    if not recent:
+    if recent:
+        parts.append(
+            "\n\n--- STYLE REFERENCE: recent scripts (match their voice, "
+            "structure, and pacing; do NOT copy their topics or content) ---")
+        for i, r in enumerate(recent, 1):
+            parts.append(
+                f"\n[Recent script {i} — \"{r['title']}\"]\n{r['excerpt']}")
+        parts.append("\n--- END STYLE REFERENCE ---\n")
+    if not parts:
         return ""
-    parts = [
-        "\n\n--- STYLE REFERENCE: recent scripts (match their voice, "
-        "structure, and pacing; do NOT copy their topics or content) ---"
-    ]
-    for i, r in enumerate(recent, 1):
-        parts.append(f"\n[Recent script {i} — \"{r['title']}\"]\n{r['excerpt']}")
-    parts.append("\n--- END STYLE REFERENCE ---\n")
     logger.info(
-        f"🎨 Style memory: seeded {len(recent)} recent script(s) as "
-        f"style context for this generation")
+        f"🎨 Style memory: golden reference=%s + %d recent script(s) seeded "
+        "as style context", "yes" if golden else "no", len(recent))
     return "".join(parts)
 
 
@@ -14457,6 +15132,12 @@ if __name__ == "__main__":
     logger.info("🎬 Starting ScriptCraft Web GUI (Universal Version)...")
     logger.info("📦 Version: %s", VERSION)
     logger.info("🚀 Server starting on http://0.0.0.0:%d", port)
+
+    # Save the golden reference script to the cloud (marked reference), once.
+    try:
+        _seed_golden_reference_to_cloud()
+    except Exception as _e:
+        logger.warning("golden reference cloud seed skipped: %s", _e)
 
     if port == 5007:
         logger.info("🐳 Running in Azure Container mode")

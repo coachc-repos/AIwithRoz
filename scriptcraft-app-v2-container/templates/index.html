@@ -423,7 +423,40 @@
             display: inline;
             color: #0ea5e9;
         }
-        
+
+        /* In-tab action bars: keep every tab's context buttons consistent —
+           horizontal icon + always-visible label pills with even spacing.
+           (The top toolbar stays icon-only with hover labels; this only
+           applies to buttons rendered inside a tab's content area.) */
+        .tab-content .toolbar-btn {
+            flex-direction: row;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+            height: 42px;
+            min-height: 42px;
+            padding: 0 16px;
+            box-sizing: border-box;
+        }
+        .tab-content .toolbar-btn .toolbar-icon {
+            font-size: 1.15em;
+        }
+        .tab-content .toolbar-btn .toolbar-text {
+            display: inline;
+            font-size: 0.85em;
+            color: #e2e8f0;
+            font-weight: 500;
+        }
+        .tab-content .toolbar-btn:hover .toolbar-text,
+        .tab-content .toolbar-btn:focus-visible .toolbar-text {
+            display: inline;
+            color: #0ea5e9;
+        }
+
+        /* Per-key "source" tag in the API Keys dialog (saved / from .env / not set). */
+        .key-src { float: right; font-weight: normal; font-size: 0.72em; padding: 1px 7px; border-radius: 4px; }
+        .key-src:empty { display: none; }
+
         /* Compact inline action buttons that sit in the Main Script header,
            lined up horizontally with the duration badge (not the big top
            toolbar buttons — those are icon-only 48px boxes). */
@@ -442,9 +475,6 @@
             line-height: 1.2;
             white-space: nowrap;
             vertical-align: middle;
-            /* Nudge up a few px so it doesn't bump the content box border below. */
-            position: relative;
-            top: -4px;
             transition: background 0.15s, border-color 0.15s, color 0.15s;
         }
         .script-hdr-btn:hover {
@@ -1126,6 +1156,28 @@
             .vg-title { font-size: 1em; }
         }
     </style>
+    {% if container_mode %}
+    <style>
+        /* Cloud / container build: hide every feature that requires local
+           desktop apps (DaVinci Resolve) or local file-system access. The
+           matching backend routes are already disabled (503) by container_app.py;
+           this removes their UI so nothing dead is clickable. !important beats
+           the inline display toggles some of these buttons receive from JS. */
+        [onclick*="openResolveInspector"],
+        [onclick*="openSwipeTestModal"],
+        [onclick*="testThumbnails"],
+        [onclick*="createResolveProject"],
+        [onclick*="createDaVinciWithVideos"],
+        [onclick*="openOutputDirModal"],
+        [onclick*="saveAllOutputs"],
+        [onclick*="openYouTubePipelineModal"],
+        [onclick*="openDirBrowser"],
+        #davinciBtn, #davinciButton, #outputDirBtn, #saveAllOutputsBtn,
+        #testThumbBtn, #outputDirStrip {
+            display: none !important;
+        }
+    </style>
+    {% endif %}
 </head>
 <body>
     <div class="container">
@@ -1136,13 +1188,6 @@
                     <h1>ScriptCraft <span style="font-size:0.55em;background:#6366f1;color:#fff;padding:2px 8px;border-radius:6px;vertical-align:middle;">v2 Dual-Mode</span></h1>
                     <p>AI-Powered Script Creation &amp; Polishing</p>
                 </div>
-            </div>
-            <div id="agentModeToggle" style="margin-left:auto;display:flex;align-items:center;gap:10px;padding:8px 14px;background:#1f2937;border-radius:10px;color:#e5e7eb;font-size:14px;">
-                <span style="font-weight:600;">Agent API:</span>
-                <span title="Classic v1 Assistants is retired; this app runs on Microsoft Foundry v2 only." style="display:flex;align-items:center;gap:6px;">
-                    <span>🟣 Foundry v2</span>
-                </span>
-                <span id="agentModeStatus" style="margin-left:6px;padding:2px 8px;border-radius:6px;background:#7c3aed;font-size:12px;">V2</span>
             </div>
         </div>
         <script>
@@ -1179,31 +1224,61 @@
                     <span class="toolbar-icon">🚀</span>
                     <span class="toolbar-text">Create Script</span>
                 </button>
+                <button class="toolbar-btn" onclick="openScriptChooser()" title="Open an existing script from a file or from the cloud — loads it straight into the editor (no need to go through Process Script)">
+                    <span class="toolbar-icon">📂</span>
+                    <span class="toolbar-text">Open Script</span>
+                </button>
+                <button class="toolbar-btn" id="rerunLastBtn" onclick="rerunLastRun()" title="Re-run the last script generation with the exact same inputs (title, brief, format, duration, audience, tone, checkboxes). Saved locally, so it survives a page refresh.">
+                    <span class="toolbar-icon">🔁</span>
+                    <span class="toolbar-text">Re-run Last</span>
+                </button>
                 <button class="toolbar-btn" onclick="openScriptProcessingModal()" title="Open the Script Processing pipeline. Load an existing script first, then run any stage independently.">
                     <span class="toolbar-icon">⚙️</span>
                     <span class="toolbar-text">Process Script…</span>
-                </button>
-                <button class="toolbar-btn" onclick="openTestVideoDialog()" title="Quick HeyGen test render with a short clip">
-                    <span class="toolbar-icon">🧪</span>
-                    <span class="toolbar-text">Test Generate</span>
                 </button>
                 <button class="toolbar-btn" onclick="toggleIdeaGenPanel()" title="Brainstorm episode ideas with Claude Opus 5, then turn one into a script">
                     <span class="toolbar-icon">💡</span>
                     <span class="toolbar-text">Idea Generator</span>
                 </button>
             </div>
-            
+
             <div class="toolbar-divider"></div>
-            
+
+            <div class="toolbar-section">
+                <span class="toolbar-label">Test</span>
+                <button class="toolbar-btn" onclick="openTestVideoDialog()" title="Quick HeyGen test render with a short clip">
+                    <span class="toolbar-icon">🧪</span>
+                    <span class="toolbar-text">Test Generate</span>
+                </button>
+                <button class="toolbar-btn" onclick="openSwipeTestModal()" title="Create a fresh Resolve timeline with one broll clip and apply the swipe Fusion comp for fast iteration">
+                    <span class="toolbar-icon">🌬️</span>
+                    <span class="toolbar-text">Swipe Test</span>
+                </button>
+                <button class="toolbar-btn" onclick="openResolveInspector()" title="Inspect current DaVinci Resolve timeline">
+                    <span class="toolbar-icon">🔍</span>
+                    <span class="toolbar-text">Inspect Resolve</span>
+                </button>
+                <button class="toolbar-btn" onclick="testThumbnails()" id="testThumbBtn" title="Test Thumbnails">
+                    <span class="toolbar-icon">🖼️</span>
+                    <span class="toolbar-text">Test Thumbnails</span>
+                </button>
+            </div>
+
+            <div class="toolbar-divider"></div>
+
             <div class="toolbar-section">
                 <span class="toolbar-label">Export</span>
                 <button class="toolbar-btn" onclick="exportToWord()" id="wordBtn" style="display:none;" title="Export to Word">
-                    <span class="toolbar-icon">📄</span>
+                    <span class="toolbar-icon" style="display:inline-flex; align-items:center;"><img src="{{ url_for('static', filename='word_icon.png') }}" alt="Word" onerror="this.replaceWith(document.createTextNode('📄'))" style="height:20px; width:auto; vertical-align:middle;"></span>
                     <span class="toolbar-text">Word</span>
                 </button>
                 <button class="toolbar-btn" onclick="createResolveProject()" id="davinciBtn" style="display:none;" title="Create DaVinci Project">
                     <span class="toolbar-icon">🎬</span>
                     <span class="toolbar-text">DaVinci</span>
+                </button>
+                <button class="toolbar-btn" onclick="createDaVinciWithVideos()" id="davinciButton" style="display:none;" title="Create DaVinci Project (independent of running the curl commands)">
+                    <span class="toolbar-icon" style="display:inline-flex; align-items:center;"><img src="{{ url_for('static', filename='davinci_icon.png') }}" alt="DaVinci" onerror="this.replaceWith(document.createTextNode('🎬'))" style="height:28px; width:auto; vertical-align:middle; display:inline-block;"></span>
+                    <span class="toolbar-text">Create DaVinci Project</span>
                 </button>
                 <button class="toolbar-btn" onclick="exportToMarkdown()" id="markdownBtn" style="display:none;" title="Export to Markdown">
                     <span class="toolbar-icon">📝</span>
@@ -1219,17 +1294,9 @@
             
             <div class="toolbar-section">
                 <span class="toolbar-label">Tools</span>
-                <button class="toolbar-btn" onclick="testThumbnails()" id="testThumbBtn" title="Test Thumbnails">
-                    <span class="toolbar-icon">🖼️</span>
-                    <span class="toolbar-text">Thumbnails</span>
-                </button>
                 <button class="toolbar-btn" onclick="openGrokTestVideoDialog()" title="Test Grok Video API">
                     <span class="toolbar-icon" style="display:inline-flex; align-items:center;"><img src="{{ url_for('static', filename='grok_icon.png') }}" alt="Grok" style="height:28px; width:auto; vertical-align:middle; display:inline-block;"></span>
                     <span class="toolbar-text">Grok Test</span>
-                </button>
-                <button class="toolbar-btn" onclick="openResolveInspector()" title="Inspect current DaVinci Resolve timeline">
-                    <span class="toolbar-icon">🔍</span>
-                    <span class="toolbar-text">Inspect Resolve</span>
                 </button>
                 <button class="toolbar-btn" onclick="openYouTubePipelineModal()" title="Render audio → transcribe → generate YouTube details → publish" style="background:#7f1d1d; border-color:#b91c1c; color:#fff;">
                     <span class="toolbar-icon" style="display:inline-flex; align-items:center;"><img src="{{ url_for('static', filename='youtube_icon.png') }}" alt="YouTube" style="height:28px; width:auto; vertical-align:middle; display:inline-block;"></span>
@@ -1242,14 +1309,6 @@
                 <button class="toolbar-btn" onclick="openLinkedInModal('random')" title="Draft a LinkedIn post with Claude and post it from @AIwithRoz (promote a video or post about anything)">
                     <span class="toolbar-icon" style="display:inline-flex; align-items:center;"><span style="background:#0a66c2; color:#fff; border-radius:5px; padding:2px 6px; font-weight:800; font-size:0.95em; line-height:1.2; letter-spacing:-0.5px;">in</span></span>
                     <span class="toolbar-text">Post to LinkedIn</span>
-                </button>
-                <button class="toolbar-btn" onclick="openVideoGalleryModal()" title="Browse finished videos from iCloud/Desktop/Podcast/Videos/Final">
-                    <span class="toolbar-icon">🎬</span>
-                    <span class="toolbar-text">Video Gallery</span>
-                </button>
-                <button class="toolbar-btn" onclick="openSwipeTestModal()" title="Create a fresh Resolve timeline with one broll clip and apply the swipe Fusion comp for fast iteration">
-                    <span class="toolbar-icon">🌬️</span>
-                    <span class="toolbar-text">Swipe Test</span>
                 </button>
                 <button class="toolbar-btn" onclick="openApiKeysModal()" title="Manage API Keys">
                     <span class="toolbar-icon">🔑</span>
@@ -1281,11 +1340,12 @@
              Brainstorm episode ideas from a free-text request, pick one, and
              send a full creative brief into the Create Script dialog.
              ============================================================ -->
-        <div id="ideaGenPanel" style="margin:0 0 18px 0; background:#0f172a; border:1px solid #334155; border-radius:10px; overflow:hidden;">
+        <div id="ideaGenPanel" style="margin:15px 15px 14px 15px; background:#0f172a; border:1px solid #334155; border-radius:10px; overflow:hidden;">
             <div onclick="toggleIdeaGenPanel()" style="display:flex; align-items:center; gap:10px; padding:14px 18px; cursor:pointer; user-select:none; background:linear-gradient(90deg,#1e1b4b,#0f172a);">
-                <span style="font-size:1.2em;">💡</span>
                 <span style="font-weight:700; color:#e2e8f0; font-size:1.02em;">Idea Generator</span>
-                <span style="color:#94a3b8; font-size:0.82em;">— brainstorm episode ideas with Claude Opus 5, then turn one into a script</span>
+                <span style="color:#94a3b8; font-size:0.82em; display:inline-flex; align-items:center; gap:4px; flex-wrap:wrap;">— brainstorm episode ideas with
+                    <img src="/static/claude_icon.png" alt="Claude" onerror="this.replaceWith(document.createTextNode('✨'))" style="height:15px; width:auto; vertical-align:middle;"> Claude Opus 5.5 and
+                    <img src="/static/grok_icon.png" alt="Grok" style="height:15px; width:auto; vertical-align:middle;"> Grok, then turn one into a script</span>
                 <span id="ideaGenChevron" style="margin-left:auto; color:#94a3b8; font-size:1.1em;">▸</span>
             </div>
             <div id="ideaGenBody" style="display:none; padding:16px 18px 20px;">
@@ -1299,7 +1359,7 @@
                     <button id="ideaGenBtn" onclick="generateIdeas()" style="white-space:nowrap; padding:10px 16px; background:#6366f1; color:#fff; border:none; border-radius:6px; font-weight:600; cursor:pointer;">Generate 10 Ideas</button>
                 </div>
                 <div style="margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                    <label for="ideaGenLane" style="color:#cbd5e1; font-size:0.85em; white-space:nowrap;">🎚️ Content lane</label>
+                    <label for="ideaGenLane" style="color:#cbd5e1; font-size:0.85em; white-space:nowrap;">Content lane</label>
                     <select id="ideaGenLane" style="padding:7px 10px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-size:0.85em;">
                         <option value="auto" selected>Auto — no bias (let the topic/trends decide)</option>
                         <option value="news">AI news &amp; big moves (launches, announcements, key figures)</option>
@@ -1308,13 +1368,19 @@
                         <option value="careers">Careers &amp; work (resumes, interviews, layoffs)</option>
                     </select>
                     <span style="color:#94a3b8; font-size:0.8em;">Auto no longer forces career/resume ideas.</span>
+                    <label for="ideaGenFormat" style="color:#cbd5e1; font-size:0.85em; white-space:nowrap; margin-left:6px;">Format</label>
+                    <select id="ideaGenFormat" style="padding:7px 10px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-size:0.85em;" title="Force every idea (and its brief) into a structure.">
+                        <option value="auto" selected>Any format</option>
+                        <option value="list">Lists / countdown (&quot;Top 10 AI Tools&quot;)</option>
+                        <option value="levels">&quot;N levels of…&quot; (&quot;The 7 Levels of…&quot;)</option>
+                    </select>
                 </div>
                 <div style="margin-top:10px;">
-                    <label style="display:block; color:#cbd5e1; font-size:0.85em; margin-bottom:4px;">🎯 Be adjacent to these videos <span style="color:#94a3b8;">(optional — paste YouTube links, one per line; I'll pull each title + transcript so your ideas ride their audience)</span></label>
+                    <label style="display:block; color:#cbd5e1; font-size:0.85em; margin-bottom:4px;">Be adjacent to these videos <span style="color:#94a3b8;">(optional — paste YouTube links, one per line; I'll pull each title + transcript so your ideas ride their audience)</span></label>
                     <textarea id="ideaGenAdjacency" rows="2" placeholder="https://youtu.be/…&#10;https://www.youtube.com/watch?v=…" style="width:100%; box-sizing:border-box; padding:10px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-size:0.9em; resize:vertical;"></textarea>
                 </div>
                 <div style="margin-top:10px;">
-                    <label style="display:block; color:#cbd5e1; font-size:0.85em; margin-bottom:4px;">📎 Base ideas on a file <span style="color:#94a3b8;">(optional — attach a PDF or text/markdown file; Claude reads it and grounds all 10 ideas in its content)</span></label>
+                    <label style="display:block; color:#cbd5e1; font-size:0.85em; margin-bottom:4px;">Base ideas on a file <span style="color:#94a3b8;">(optional — attach a PDF or text/markdown file; Claude reads it and grounds all 10 ideas in its content)</span></label>
                     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                         <input type="file" id="ideaGenFile" accept=".pdf,.txt,.md,.markdown,.rtf,.csv,application/pdf,text/plain" onchange="onIdeaFileChange()" style="flex:1; min-width:200px; color:#cbd5e1; font-size:0.85em;" />
                         <span id="ideaGenFileName" style="color:#94a3b8; font-size:0.82em;"></span>
@@ -1326,10 +1392,13 @@
                 <div id="ideaGenUseRow" style="display:none; margin-top:14px; align-items:center; gap:12px; flex-wrap:wrap;">
                     <span style="color:#cbd5e1; font-size:0.9em;">Selected: <strong id="ideaGenUseLabel" style="color:#e2e8f0;"></strong></span>
                     <button id="ideaGenUseBtn" onclick="useSelectedIdea()" style="padding:9px 16px; background:#16a34a; color:#fff; border:none; border-radius:6px; font-weight:600; cursor:pointer;">✍️ Write brief &amp; send to Create Script</button>
+                    <button id="ideaGenRegenBtn" onclick="useSelectedIdea(true)" style="display:none; padding:9px 14px; background:#6366f1; color:#fff; border:none; border-radius:6px; font-weight:600; cursor:pointer;" title="Write a FRESH brief from this idea, ignoring the saved one — use after changing the Format or when you want different parameters.">🔄 Regenerate brief (fresh)</button>
                 </div>
             </div>
         </div>
         <style>
+            #ideaGenList .idea-group-header { margin:12px 2px 4px; padding-bottom:4px; color:#a5b4fc; font-size:0.78em; font-weight:700; letter-spacing:0.05em; text-transform:uppercase; border-bottom:1px solid #334155; }
+            #ideaGenList .idea-group-header:first-child { margin-top:0; }
             #ideaGenList .idea-card { display:flex; gap:12px; align-items:flex-start; padding:10px 12px; background:#1e293b; border:1px solid #334155; border-radius:8px; cursor:pointer; transition:border-color .12s, background .12s; }
             #ideaGenList .idea-card:hover { border-color:#6366f1; background:#243049; }
             #ideaGenList .idea-card.selected { border-color:#16a34a; background:rgba(20,83,45,0.25); box-shadow:inset 0 0 0 1px #16a34a; }
@@ -1386,8 +1455,10 @@
                 renderIdeas();
                 document.getElementById('ideaGenUseRow').style.display = 'none';
                 const when = (b.created_at || '').replace('T', ' ').slice(0, 16);
+                const nBriefs = (_ideaGenState.ideas || []).filter(x => x && x.brief && String(x.brief).trim()).length;
                 document.getElementById('ideaGenStatus').textContent =
-                    '↺ Loaded ' + _ideaGenState.ideas.length + ' saved ideas from ' + when + ' — click one to select.';
+                    '↺ Loaded ' + _ideaGenState.ideas.length + ' saved ideas from ' + when
+                    + (nBriefs ? ' — ' + nBriefs + ' already have a saved brief (✓), select one to reuse it.' : ' — click one to select.');
             }
 
             async function clearIdeaHistory() {
@@ -1477,8 +1548,106 @@
                 const statusEl = document.getElementById('polishScriptStatus');
                 if (statusEl) {
                     statusEl.style.display = 'block';
-                    statusEl.textContent = '↩︎ Reverted to the pre-polish script.';
+                    statusEl.textContent = '↩︎ Reverted to the previous script.';
                 }
+            }
+
+            // ---- Mark the current script as a production reference ----
+            async function markCurrentAsReference() {
+                const sid = window.currentScriptId, vid = window.currentScriptVersion;
+                const statusEl = document.getElementById('polishScriptStatus');
+                const show = (msg) => { if (statusEl) { statusEl.style.display = 'block'; statusEl.innerHTML = msg; } };
+                if (!sid || !vid) {
+                    show('❌ Save this script to the cloud first — it needs a Script-ID and Version before it can be a reference.');
+                    return;
+                }
+                try {
+                    const r = await fetch('/api/script/mark-reference', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ script_id: sid, version_id: vid, reference: true })
+                    });
+                    const d = await r.json();
+                    show(d.success
+                        ? '⭐ Marked as <strong>reference</strong>. New scripts will follow this one as the style guide.'
+                        : ('❌ ' + (d.error || 'Could not mark as reference')));
+                } catch (e) { show('❌ ' + e); }
+            }
+
+            // ---- Hide / show [PRODUCTION …] blocks in the script viewer ----
+            if (typeof window._hideProductionBlocks === 'undefined') window._hideProductionBlocks = false;
+            function toggleProductionBlocks() {
+                window._hideProductionBlocks = !window._hideProductionBlocks;
+                const btn = document.getElementById('toggleProdBtn');
+                if (btn) {
+                    const lbl = btn.querySelector('.tp-label');
+                    if (lbl) lbl.textContent = window._hideProductionBlocks ? 'Show production blocks' : 'Hide production blocks';
+                }
+                // Re-render the main script with the current filter (view-only;
+                // window.currentScript keeps the full text for exports).
+                try { renderMarkdownContent(window.currentScript || '', null, null, null); } catch (e) {}
+            }
+
+            // ---- Refine with AI: targeted, user-directed edits on the script ----
+            function toggleRefinePanel() {
+                const p = document.getElementById('refinePanel');
+                if (!p) return;
+                const show = (p.style.display === 'none' || !p.style.display);
+                p.style.display = show ? 'block' : 'none';
+                if (show) {
+                    const ta = document.getElementById('refineInstructions');
+                    if (ta) ta.focus();
+                }
+            }
+
+            async function refineMainScript() {
+                const btn = document.getElementById('refineSendBtn');
+                const statusEl = document.getElementById('refineScriptStatus');
+                const instructions = (document.getElementById('refineInstructions')?.value || '').trim();
+                const model = document.getElementById('refineModel')?.value || 'claude';
+                const script = (window.currentScript || '').trim();
+                if (!script) { if (statusEl) statusEl.textContent = '❌ No script yet — create one first.'; return; }
+                if (!instructions) { if (statusEl) statusEl.textContent = '❌ Describe the change you want.'; return; }
+                const label = (model === 'grok') ? 'Grok' : 'Claude';
+                const timer = _startBtnTimer(btn, 'Refining with ' + label);
+                if (statusEl) statusEl.innerHTML = '✏️ ' + label + ' is applying your change… (can take ~20-90s)';
+                try {
+                    const r = await fetch('/api/script/refine', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            script: script,
+                            instructions: instructions,
+                            model: model,
+                            title: window.currentScriptTitle || '',
+                            audience: (window.lastResultPayload && window.lastResultPayload.audience) || ''
+                        })
+                    });
+                    const data = await r.json();
+                    if (!data.success) { statusEl.textContent = '❌ ' + (data.error || 'Refine failed'); return; }
+                    // Stash the pre-edit version so "Undo last AI edit" can revert
+                    // (shared with Polish — one undo step for the last AI change).
+                    window._prePolishScript = script;
+                    window.currentScript = data.updated_script || script;
+                    try { renderMarkdownContent(window.currentScript, null, null, null); } catch (_e) {}
+                    const revertBtn = document.getElementById('revertPolishBtn');
+                    if (revertBtn) revertBtn.style.display = '';
+                    statusEl.innerHTML = '✅ Updated with <strong>' + (data.model || label)
+                        + '</strong>. Exports/downloads now use the new version. '
+                        + 'Refine again to keep iterating, or “Undo last AI edit”.';
+                } catch (e) {
+                    statusEl.textContent = '❌ ' + e;
+                } finally {
+                    _stopBtnTimer(btn, timer);
+                }
+            }
+
+            function toggleWorkflowDocs() {
+                const body = document.getElementById('mobileWorkflowDocs');
+                const chev = document.getElementById('workflowDocsChevron');
+                if (!body) return;
+                const open = (body.style.display === 'none' || !body.style.display);
+                body.style.display = open ? 'block' : 'none';
+                if (chev) chev.textContent = open ? '▾' : '▸';
             }
 
             function toggleIdeaGenPanel(forceOpen) {
@@ -1528,6 +1697,8 @@
                 const req = (inp.value || '').trim();
                 const adjUrls = ((document.getElementById('ideaGenAdjacency') || {}).value || '').trim();
                 const lane = ((document.getElementById('ideaGenLane') || {}).value || 'auto');
+                const ideaFormat = ((document.getElementById('ideaGenFormat') || {}).value || 'auto');
+                _ideaGenState.ideaFormat = ideaFormat;
                 const fileEl = document.getElementById('ideaGenFile');
                 const file = (fileEl && fileEl.files && fileEl.files[0]) ? fileEl.files[0] : null;
                 const statusEl = document.getElementById('ideaGenStatus');
@@ -1537,10 +1708,10 @@
                 _ideaGenState.adjacencyUrls = adjUrls;
                 const timer = _startBtnTimer(btn, 'Generating');
                 statusEl.innerHTML = (file
-                    ? '📎 Reading ' + (file.name || 'your file') + ' &amp; brainstorming with Claude Opus 5 (~25-50s)…'
+                    ? '📎 Reading ' + (file.name || 'your file') + ' &amp; brainstorming with Claude Opus 5.5 + Grok (~30-60s)…'
                     : adjUrls
-                    ? '🎯 Fetching your adjacency videos (title + transcript) &amp; brainstorming with Claude Opus 5 (~20-40s)…'
-                    : '🔎 Pulling the top AI videos on YouTube &amp; brainstorming with Claude Opus 5 (~15-30s)…');
+                    ? '🎯 Fetching your adjacency videos (title + transcript) &amp; brainstorming with Claude Opus 5.5 + Grok (~25-45s)…'
+                    : '🔎 Pulling the top AI videos on YouTube &amp; brainstorming with Claude Opus 5.5 + Grok (~20-40s)…');
                 listEl.innerHTML = '';
                 document.getElementById('ideaGenUseRow').style.display = 'none';
                 try {
@@ -1553,12 +1724,13 @@
                         fd.append('request', req);
                         fd.append('adjacency_urls', adjUrls);
                         fd.append('lane', lane);
+                        fd.append('idea_format', ideaFormat);
                         r = await fetch('/api/ideas/generate', { method: 'POST', body: fd });
                     } else {
                         r = await fetch('/api/ideas/generate', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ request: req, adjacency_urls: adjUrls, lane: lane })
+                            body: JSON.stringify({ request: req, adjacency_urls: adjUrls, lane: lane, idea_format: ideaFormat })
                         });
                     }
                     const data = await r.json();
@@ -1579,7 +1751,9 @@
                     } else if (_ty) {
                         _note = ' (grounded in the top ' + _ty + ' AI videos on YouTube)';
                     }
-                    statusEl.textContent = `✨ ${_ideaGenState.ideas.length} ideas${_note} — click one to select it.`;
+                    const _warn = (data.warnings && data.warnings.length)
+                        ? '  ⚠️ ' + data.warnings.join('; ') : '';
+                    statusEl.textContent = `✨ ${_ideaGenState.ideas.length} ideas${_note} — click one to select it.${_warn}`;
                     // The batch was saved server-side; refresh the Recent list
                     // and point it at the new set.
                     await loadIdeaHistory(false);
@@ -1597,7 +1771,18 @@
             function renderIdeas() {
                 const listEl = document.getElementById('ideaGenList');
                 listEl.innerHTML = '';
+                // Ideas arrive grouped by model (Claude first, then Grok). Insert a
+                // header whenever the source changes so each model's set is labeled.
+                let lastSource = null;
                 _ideaGenState.ideas.forEach((idea, i) => {
+                    const src = idea.source || '';
+                    if (src && src !== lastSource) {
+                        const hdr = document.createElement('div');
+                        hdr.className = 'idea-group-header';
+                        hdr.textContent = (src.toLowerCase().indexOf('grok') === 0 ? '⚡ ' : '✨ ') + src;
+                        listEl.appendChild(hdr);
+                        lastSource = src;
+                    }
                     const card = document.createElement('div');
                     card.className = 'idea-card';
                     card.onclick = () => selectIdea(i);
@@ -1617,50 +1802,71 @@
                 const useRow = document.getElementById('ideaGenUseRow');
                 useRow.style.display = 'flex';
                 document.getElementById('ideaGenUseLabel').textContent = _ideaGenState.ideas[i].title || '';
+                // If this idea already has a saved brief, make the button say so.
+                const hasBrief = !!(_ideaGenState.ideas[i] && _ideaGenState.ideas[i].brief && String(_ideaGenState.ideas[i].brief).trim());
+                const ub = document.getElementById('ideaGenUseBtn');
+                if (ub) ub.innerHTML = hasBrief ? '✅ Use saved brief → Create Script' : '✍️ Write brief &amp; send to Create Script';
+                // Offer a fresh regeneration whenever a brief already exists, so
+                // you can change parameters (e.g. Format) instead of reusing it.
+                const rb = document.getElementById('ideaGenRegenBtn');
+                if (rb) rb.style.display = hasBrief ? 'inline-block' : 'none';
             }
 
-            async function useSelectedIdea() {
+            async function useSelectedIdea(forceRegen) {
                 const i = _ideaGenState.selectedIndex;
                 if (i < 0) return;
                 const idea = _ideaGenState.ideas[i];
                 const statusEl = document.getElementById('ideaGenStatus');
-                const useBtn = document.getElementById('ideaGenUseBtn');
-                const timer = _startBtnTimer(useBtn, 'Writing brief');
-                statusEl.innerHTML = '✍️ Writing the detailed brief with Claude (web search, ~15-30s)…';
-                try {
-                    const r = await fetch('/api/ideas/describe', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ title: idea.title, angle: idea.angle, request: _ideaGenState.request, adjacency_urls: _ideaGenState.adjacencyUrls, batch_id: _ideaGenState.batchId })
-                    });
-                    const data = await r.json();
-                    if (!data.success) { statusEl.textContent = '❌ ' + (data.error || 'Failed to write brief'); return; }
-                    const topicEl = document.getElementById('createTopic');
-                    const descEl = document.getElementById('createDescription');
-                    if (topicEl) {
-                        topicEl.value = idea.title || '';
-                        if (typeof refreshOutputDirPreview === 'function') refreshOutputDirPreview();
+                const useBtn = forceRegen
+                    ? document.getElementById('ideaGenRegenBtn')
+                    : document.getElementById('ideaGenUseBtn');
+                // Reuse a brief already written for this idea (fresh this session
+                // or recalled from a saved set) UNLESS the user asked to
+                // regenerate — then write a new one with the current parameters.
+                let briefText = (!forceRegen && idea.brief && idea.brief.trim()) ? idea.brief : '';
+                const reused = !!briefText;
+                if (!briefText) {
+                    const timer = _startBtnTimer(useBtn, 'Writing brief');
+                    statusEl.innerHTML = '✍️ Writing the detailed brief with Claude (web search, ~15-30s)…';
+                    try {
+                        const r = await fetch('/api/ideas/describe', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ title: idea.title, angle: idea.angle, request: _ideaGenState.request, adjacency_urls: _ideaGenState.adjacencyUrls, batch_id: _ideaGenState.batchId, idea_format: (((document.getElementById('ideaGenFormat') || {}).value) || _ideaGenState.ideaFormat || 'auto') })
+                        });
+                        const data = await r.json();
+                        if (!data.success) { statusEl.textContent = '❌ ' + (data.error || 'Failed to write brief'); return; }
+                        briefText = data.description || '';
+                        idea.brief = briefText;  // cache so re-selecting is instant
+                        idea.brief_format = _ideaGenState.ideaFormat || 'auto';
+                    } catch (e) {
+                        statusEl.textContent = '❌ ' + e; return;
+                    } finally {
+                        _stopBtnTimer(useBtn, timer);
                     }
-                    if (descEl) descEl.value = data.description || '';
-                    // Carry the batch's source document (if any) into the next
-                    // Create Script run so the Topic Assistant + Script Writer get
-                    // it too. Shown as a removable chip in the dialog.
-                    window._pendingSource = _ideaGenState.sourceDocName
-                        ? { batchId: _ideaGenState.batchId, name: _ideaGenState.sourceDocName }
-                        : null;
-                    if (typeof renderSourceDocIndicator === 'function') renderSourceDocIndicator();
-                    // Remember which idea produced this brief so the Create Script
-                    // dialog can regenerate it on demand without re-selecting.
-                    _ideaGenState.lastBriefIdea = { title: idea.title, angle: idea.angle, request: _ideaGenState.request, batchId: _ideaGenState.batchId };
-                    const regenRow = document.getElementById('ideaBriefRegenRow');
-                    if (regenRow) regenRow.style.display = 'flex';
-                    statusEl.innerHTML = '✅ Sent to Create Script — review the title &amp; brief, then generate.';
-                    if (typeof openCreateScriptModal === 'function') openCreateScriptModal();
-                } catch (e) {
-                    statusEl.textContent = '❌ ' + e;
-                } finally {
-                    _stopBtnTimer(useBtn, timer);
                 }
+                // Fill the Create Script dialog with the title + brief.
+                const topicEl = document.getElementById('createTopic');
+                const descEl = document.getElementById('createDescription');
+                if (topicEl) {
+                    topicEl.value = idea.title || '';
+                    if (typeof refreshOutputDirPreview === 'function') refreshOutputDirPreview();
+                }
+                if (descEl) descEl.value = briefText;
+                // Carry the batch's source document (if any) into the next run.
+                window._pendingSource = _ideaGenState.sourceDocName
+                    ? { batchId: _ideaGenState.batchId, name: _ideaGenState.sourceDocName }
+                    : null;
+                if (typeof renderSourceDocIndicator === 'function') renderSourceDocIndicator();
+                // Remember which idea produced this brief so the Create Script
+                // dialog can regenerate it on demand without re-selecting.
+                _ideaGenState.lastBriefIdea = { title: idea.title, angle: idea.angle, request: _ideaGenState.request, batchId: _ideaGenState.batchId };
+                const regenRow = document.getElementById('ideaBriefRegenRow');
+                if (regenRow) regenRow.style.display = 'flex';
+                statusEl.innerHTML = reused
+                    ? '✅ Reused the saved brief — review the title &amp; brief, then generate. (Use “🔄 Regenerate brief from idea” in the dialog for a fresh one.)'
+                    : '✅ Sent to Create Script — review the title &amp; brief, then generate.';
+                if (typeof openCreateScriptModal === 'function') openCreateScriptModal();
             }
 
             // Re-run the brief for the most recently used idea, from inside the
@@ -1678,11 +1884,15 @@
                     const r = await fetch('/api/ideas/describe', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ title: idea.title, angle: idea.angle, request: idea.request, adjacency_urls: _ideaGenState.adjacencyUrls, batch_id: (idea.batchId || _ideaGenState.batchId) })
+                        body: JSON.stringify({ title: idea.title, angle: idea.angle, request: idea.request, adjacency_urls: _ideaGenState.adjacencyUrls, batch_id: (idea.batchId || _ideaGenState.batchId), idea_format: (_ideaGenState.ideaFormat || 'auto') })
                     });
                     const data = await r.json();
                     if (!data.success) { if (statusEl) statusEl.textContent = '❌ ' + (data.error || 'Failed to write brief'); return; }
                     if (descEl) descEl.value = data.description || '';
+                    // Keep the cached idea brief in sync with this fresh one, so
+                    // re-selecting it reuses the latest (not the stale) brief.
+                    const _ci = (_ideaGenState.ideas || []).find(x => x && (x.title || '') === (idea.title || ''));
+                    if (_ci) _ci.brief = data.description || '';
                     if (statusEl) statusEl.textContent = '✅ New brief generated — review & generate, or regenerate again.';
                 } catch (e) {
                     if (statusEl) statusEl.textContent = '❌ ' + e;
@@ -2016,6 +2226,20 @@
                 </div>
                 <div id="liPostSubtitle" style="color:#94a3b8; font-size:0.85em; margin-bottom:12px;"></div>
 
+                <!-- Browse & promote any previously-published AIwithRoz video -->
+                <div style="border:1px solid #334155; border-radius:8px; padding:10px 12px; margin-bottom:12px; background:#0b1220;">
+                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span style="color:#cbd5e1; font-size:0.88em; font-weight:600;">📺 Promote a published video</span>
+                        <button id="liBrowseBtn" onclick="toggleLiVideoBrowser()" style="margin-left:auto; padding:6px 12px; background:#0a66c2; color:#fff; border:none; border-radius:6px; font-size:0.85em; font-weight:600; cursor:pointer;">Browse published videos</button>
+                    </div>
+                    <div id="liVideoBrowser" style="display:none; margin-top:10px;">
+                        <input id="liVideoSearch" type="text" oninput="renderLiVideoList()" placeholder="🔎 Filter by title…" style="width:100%; box-sizing:border-box; padding:8px 10px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-size:0.9em; margin-bottom:8px;">
+                        <div id="liVideoList" style="max-height:230px; overflow:auto; border:1px solid #1e293b; border-radius:6px;"></div>
+                        <div id="liVideoBrowserStatus" style="color:#94a3b8; font-size:0.8em; margin-top:6px;"></div>
+                    </div>
+                    <div id="liSelectedVideo" style="display:none; margin-top:8px; color:#93c5fd; font-size:0.85em;"></div>
+                </div>
+
                 <div id="liPostTopicRow" style="display:none; margin-bottom:12px;">
                     <label style="color:#cbd5e1; font-size:0.88em; display:block; margin-bottom:4px;">What should this post be about?</label>
                     <textarea id="liPostTopic" rows="2" placeholder="e.g. our video on AI meeting notes; a lesson about AI-proofing your career" style="width:100%; box-sizing:border-box; padding:10px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-size:0.95em; resize:vertical;"></textarea>
@@ -2040,6 +2264,97 @@
         </div>
         <script>
             let _liPostCtx = { mode: 'random', title: '', youtube_url: '' };
+            let _liPublishedVideos = null;   // cached list from the API
+            let _liVideosLoading = false;
+
+            // Toggle the "Browse published videos" panel; lazy-load on first open.
+            async function toggleLiVideoBrowser() {
+                const panel = document.getElementById('liVideoBrowser');
+                const showing = panel.style.display !== 'none';
+                if (showing) { panel.style.display = 'none'; return; }
+                panel.style.display = 'block';
+                if (_liPublishedVideos === null && !_liVideosLoading) {
+                    await loadLiPublishedVideos();
+                } else {
+                    renderLiVideoList();
+                }
+            }
+
+            // Fetch the channel's published videos once and cache them.
+            async function loadLiPublishedVideos() {
+                _liVideosLoading = true;
+                const status = document.getElementById('liVideoBrowserStatus');
+                const list = document.getElementById('liVideoList');
+                status.textContent = 'Loading published videos…';
+                list.innerHTML = '';
+                try {
+                    const r = await fetch('/api/youtube/published-videos').then(x => x.json());
+                    if (!r.success) throw new Error(r.error || 'Failed to load videos');
+                    if (r.authorized === false) {
+                        _liPublishedVideos = [];
+                        status.innerHTML = '⚠️ ' + (r.message || 'YouTube not connected yet.');
+                        return;
+                    }
+                    _liPublishedVideos = r.videos || [];
+                    status.textContent = _liPublishedVideos.length + ' videos loaded.';
+                    renderLiVideoList();
+                } catch (e) {
+                    status.textContent = '❌ ' + (e.message || e);
+                } finally {
+                    _liVideosLoading = false;
+                }
+            }
+
+            // Render the (optionally filtered) list of published videos.
+            function renderLiVideoList() {
+                const list = document.getElementById('liVideoList');
+                if (!_liPublishedVideos) { list.innerHTML = ''; return; }
+                const q = (document.getElementById('liVideoSearch').value || '').trim().toLowerCase();
+                const rows = _liPublishedVideos.filter(v => !q || (v.title || '').toLowerCase().includes(q));
+                if (!rows.length) {
+                    list.innerHTML = '<div style="padding:10px; color:#94a3b8; font-size:0.85em;">No matching videos.</div>';
+                    return;
+                }
+                list.innerHTML = rows.map((v, i) => {
+                    const idx = _liPublishedVideos.indexOf(v);
+                    const date = (v.published_at || '').slice(0, 10);
+                    const priv = v.privacy_status && v.privacy_status !== 'public'
+                        ? ' <span style="color:#fca5a5;">(' + v.privacy_status + ')</span>' : '';
+                    const thumb = v.thumbnail
+                        ? '<img src="' + v.thumbnail + '" alt="" style="width:64px; height:36px; object-fit:cover; border-radius:3px; flex-shrink:0;">'
+                        : '<div style="width:64px; height:36px; background:#1e293b; border-radius:3px; flex-shrink:0;"></div>';
+                    return '<div onclick="selectLiVideo(' + idx + ')" style="display:flex; gap:9px; align-items:center; padding:7px 9px; cursor:pointer; border-bottom:1px solid #1e293b;" onmouseover="this.style.background=\'#111c33\'" onmouseout="this.style.background=\'transparent\'">'
+                        + thumb
+                        + '<div style="min-width:0;"><div style="color:#e2e8f0; font-size:0.86em; line-height:1.25; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">' + (v.title || '(untitled)') + priv + '</div>'
+                        + '<div style="color:#64748b; font-size:0.76em;">' + date + '</div></div></div>';
+                }).join('');
+            }
+
+            // Pick a published video: switch to episode-promo mode and auto-draft.
+            function selectLiVideo(idx) {
+                const v = (_liPublishedVideos || [])[idx];
+                if (!v) return;
+                _liPostCtx = { mode: 'episode', title: v.title || '', youtube_url: v.url || '' };
+                document.getElementById('liPostTopicRow').style.display = 'none';
+                document.getElementById('liVideoBrowser').style.display = 'none';
+                const sel = document.getElementById('liSelectedVideo');
+                sel.style.display = 'block';
+                sel.innerHTML = '✅ Promoting: <strong style="color:#dbeafe;">' + (v.title || '(untitled)')
+                    + '</strong> — <a href="' + v.url + '" target="_blank" style="color:#60a5fa;">' + v.url + '</a>'
+                    + '<br><span style="color:#94a3b8;">Link is appended automatically. Drafting a promo…</span>';
+                document.getElementById('liPostSubtitle').innerHTML =
+                    'Promoting a published video. The YouTube link is appended automatically (LinkedIn shows a preview card).';
+                regenerateLinkedInPost();
+            }
+
+            // Reset the video-browser UI to its collapsed, unselected state.
+            function resetLiVideoBrowser() {
+                document.getElementById('liVideoBrowser').style.display = 'none';
+                document.getElementById('liSelectedVideo').style.display = 'none';
+                const search = document.getElementById('liVideoSearch');
+                if (search) search.value = '';
+                renderLiVideoList();
+            }
 
             // Open the LinkedIn compose modal. mode 'episode' prefills from a
             // just-published video {title, youtube_url} and auto-drafts; mode
@@ -2053,6 +2368,7 @@
                 document.getElementById('liPostStatus').textContent = '';
                 textEl.value = '';
                 updateLiCharCount();
+                resetLiVideoBrowser();
                 if (_liPostCtx.mode === 'episode') {
                     document.getElementById('liPostTopicRow').style.display = 'none';
                     sub.innerHTML = 'Promoting: <strong style="color:#e2e8f0;">' + (_liPostCtx.title || 'your new video') + '</strong><br>The YouTube link is appended automatically (LinkedIn shows a preview card).';
@@ -2259,7 +2575,13 @@
                     font-size: 0.7em;
                 }
         </style>
-        <div id="mobileWorkflowDocs" aria-label="Workflow documentation">
+        <div id="workflowDocsPanel" style="margin:0 15px 14px 15px;">
+            <div onclick="toggleWorkflowDocs()" style="display:flex; align-items:center; gap:10px; padding:14px 18px; cursor:pointer; user-select:none; background:#0f172a; border:1px solid #334155; border-radius:10px;" title="Show or hide the pipeline reference diagram">
+                <span style="font-weight:700; color:#e2e8f0; font-size:1.02em;">Pipeline reference</span>
+                <span style="color:#94a3b8; font-size:0.82em;">— the Create and Process stages (visual reference)</span>
+                <span id="workflowDocsChevron" style="margin-left:auto; color:#94a3b8; font-size:1.1em;">▸</span>
+            </div>
+        <div id="mobileWorkflowDocs" aria-label="Workflow documentation" style="display:none; margin-top:8px;">
             <div class="mwd-pipeline">
                 <h4>🚀 Script Creation Pipeline <span class="mwd-badge">visual reference</span></h4>
                 <p class="mwd-sub">Stages run end-to-end when you tap <strong>Create Script</strong> on desktop.</p>
@@ -2278,7 +2600,7 @@
                     <div class="mwd-arrow"></div>
                     <div class="mwd-step">🤖<span class="mwd-num">7</span><span class="mwd-label">Grok</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">🎬<span class="mwd-num">8</span><span class="mwd-label">HeyGen</span></div>
+                    <div class="mwd-step"><img src="{{ url_for('static', filename='heygen_icon.png') }}" alt="HeyGen" onerror="this.replaceWith(document.createTextNode('🎬'))" style="height:30px; width:auto;"><span class="mwd-num">8</span><span class="mwd-label">HeyGen</span></div>
                     <div class="mwd-arrow"></div>
                     <div class="mwd-step">📺<span class="mwd-num">9</span><span class="mwd-label">YouTube</span></div>
                     <div class="mwd-arrow"></div>
@@ -2303,16 +2625,17 @@
                     <div class="mwd-arrow"></div>
                     <div class="mwd-step">🤖<span class="mwd-num">7</span><span class="mwd-label">Grok</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">🎬<span class="mwd-num">8</span><span class="mwd-label">HeyGen</span></div>
+                    <div class="mwd-step"><img src="{{ url_for('static', filename='heygen_icon.png') }}" alt="HeyGen" onerror="this.replaceWith(document.createTextNode('🎬'))" style="height:30px; width:auto;"><span class="mwd-num">8</span><span class="mwd-label">HeyGen</span></div>
                     <div class="mwd-arrow"></div>
                     <div class="mwd-step">🧪<span class="mwd-num">9</span><span class="mwd-label">Demo</span></div>
                 </div>
             </div>
         </div>
+        </div>
 
         <!-- Current Output Directory display strip -->
-        <div id="outputDirStrip" style="display:none; padding:6px 14px; margin:6px 0 4px 0; background:#0f172a; border:1px solid #334155; border-radius:6px; color:#94a3b8; font-size:0.78em;">
-            <span style="color:#64748b;">📁 Output Dir:</span>
+        <div id="outputDirStrip" style="display:none; padding:16px 18px; margin:0 15px 15px 15px; background:#0f172a; border:1px solid #334155; border-radius:10px; color:#94a3b8; font-size:0.78em;">
+            <span style="color:#64748b;">Output Dir:</span>
             <span id="outputDirDisplay" style="color:#e2e8f0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;">(not set)</span>
             <button onclick="openOutputDirModal()" style="margin-left:8px; padding:2px 8px; background:#1e293b; border:1px solid #334155; color:#94a3b8; border-radius:4px; cursor:pointer; font-size:0.85em;">Change</button>
         </div>
@@ -2580,17 +2903,22 @@
                 </p>
 
                 <div style="margin-bottom:14px;">
-                    <label for="modalGoogleApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;">🟢 Google API Key <span style="color:#64748b; font-weight:normal;">(GOOGLE_API_KEY — Gemini / thumbnails / B-roll images)</span></label>
+                    <label for="modalAnthropicApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_anthropic" class="key-src"></span><img src="{{ url_for('static', filename='claude_icon.png') }}" alt="Claude" onerror="this.replaceWith(document.createTextNode('✨'))" style="height:15px; width:auto; vertical-align:-2px;"> Claude API Key <span style="color:#64748b; font-weight:normal;">(ANTHROPIC_API_KEY — script writing, refine, ideas)</span></label>
+                    <input type="password" id="modalAnthropicApiKey" autocomplete="off" placeholder="sk-ant-..." style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
+                </div>
+
+                <div style="margin-bottom:14px;">
+                    <label for="modalGoogleApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_google" class="key-src"></span>🟢 Google API Key <span style="color:#64748b; font-weight:normal;">(GOOGLE_API_KEY — Gemini / thumbnails / B-roll images)</span></label>
                     <input type="password" id="modalGoogleApiKey" autocomplete="off" placeholder="AIza..." style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
                 </div>
 
                 <div style="margin-bottom:14px;">
-                    <label for="modalHeygenApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;">🎬 HeyGen API Key <span style="color:#64748b; font-weight:normal;">(HEYGEN_API_KEY)</span></label>
+                    <label for="modalHeygenApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_heygen" class="key-src"></span><img src="{{ url_for('static', filename='heygen_icon.png') }}" alt="HeyGen" onerror="this.replaceWith(document.createTextNode('🎬'))" style="height:15px; width:auto; vertical-align:-2px;"> HeyGen API Key <span style="color:#64748b; font-weight:normal;">(HEYGEN_API_KEY)</span></label>
                     <input type="password" id="modalHeygenApiKey" autocomplete="off" placeholder="sk_V2_..." style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
                 </div>
 
                 <div style="margin-bottom:18px;">
-                    <label for="modalGrokApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;">🤖 Grok API Key <span style="color:#64748b; font-weight:normal;">(XAI_API_KEY)</span></label>
+                    <label for="modalGrokApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_grok" class="key-src"></span><img src="{{ url_for('static', filename='grok_icon.png') }}" alt="Grok" onerror="this.replaceWith(document.createTextNode('🤖'))" style="height:15px; width:auto; vertical-align:-2px;"> Grok API Key <span style="color:#64748b; font-weight:normal;">(XAI_API_KEY)</span></label>
                     <input type="password" id="modalGrokApiKey" autocomplete="off" placeholder="xai-..." style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
                 </div>
 
@@ -2775,6 +3103,21 @@
                     </div>
 
                     <div class="form-row">
+                        <div class="form-group" style="flex:1;">
+                            <label for="videoFormat">🎬 Video Format (picks the Topic Assistant + Script Writer agents):</label>
+                            <select id="videoFormat">
+                                <option value="pro" selected>⭐ Pro — Claude Opus 5.5, single pass, max effort (best quality; figures out the format itself)</option>
+                                <option value="teaching">Teaching listicle (5 things) — tutorial / how-to, distills to 5</option>
+                                <option value="predictions">Bold predictions / visionary — honors N, 1 prediction per chapter, cinematic</option>
+                                <option value="list">Top-N list / countdown — honors N, lists ALL N, ranked countdown</option>
+                            </select>
+                            <div style="color:#94a3b8; font-size:0.78em; margin-top:4px;">
+                                Pro writes the whole script (hook, chapters, Grok Imagine prompts, cheat sheet) in one Claude Opus 5.5 pass. Put the number in the title for lists (e.g. “Top 10…”). Teaching/Predictions/List use the Foundry agent pairs.
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
                         <div class="form-group">
                             <label for="scriptDuration">⏱️ Script Duration:</label>
                             <select id="scriptDuration">
@@ -2855,6 +3198,7 @@
                 <div class="progress-header">
                     <div class="spinner"></div>
                     <p id="progressText">🔄 Processing...</p>
+                    <span id="progressTimer" style="display:none; margin-left:12px; font-variant-numeric: tabular-nums; color:#93c5fd; font-size:0.92em; font-weight:600; white-space:nowrap;">⏱ 0:00</span>
                     <button id="cancelWorkflowBtn" onclick="cancelWorkflow()" title="Cancel script creation and kill all running agents"
                             style="display:none; margin-left:auto; margin-top:4px; padding:6px 14px; background:linear-gradient(135deg,#b91c1c,#7f1d1d); color:#fff; border:1px solid #ef4444; border-radius:4px; font-weight:700; cursor:pointer; font-size:0.85em;">
                         🛑 Cancel Script Creation
@@ -2881,12 +3225,12 @@
             <div id="debugLog" class="progress" style="display: none;">
                 <button type="button" class="sc-collapse-btn" aria-expanded="true" onclick="toggleCollapsible(this)" title="Show / hide execution log">
                     <span class="sc-collapse-icon">▼</span>
-                    <span>📋 Execution Log</span>
+                    <span>Execution Log</span>
                     <span class="sc-collapse-sub">Click to collapse / expand</span>
                 </button>
                 <div>
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                    <h3 style="margin: 0;">📋 Execution Log</h3>
+                    <h3 style="margin: 0;">Execution Log</h3>
                     <button onclick="clearDebugLog()" style="padding: 2px 8px; font-size: 0.7em; background: #ef4444; border: 1px solid #dc2626; border-radius: 4px; color: white; cursor: pointer;">Clear Log</button>
                 </div>
                 <div id="debugLogContent" class="progress-log">
@@ -2897,7 +3241,7 @@
             
             <button type="button" id="resultCollapseBtn" class="sc-collapse-btn" aria-expanded="true" onclick="toggleResultPanel(this)" style="display:none;" title="Show / hide processed script results">
                 <span class="sc-collapse-icon">▼</span>
-                <span>🎬 Processed Script</span>
+                <span>Processed Script</span>
                 <span class="sc-collapse-sub">Click to collapse / expand</span>
             </button>
             <div id="result" style="display: none;">
@@ -3767,6 +4111,13 @@ Time management content here...`;
         // Function to render content WITHOUT markdown heading parsing
         // Only convert **bold** and markdown tables, keep everything else as plain text
         function renderMarkdownContent(mainScript, demoPackages, flowOriginal, flowImproved) {
+            // View filter: optionally hide [PRODUCTION BEGIN]…[PRODUCTION END]
+            // blocks (Grok Imagine prompts, cold open, verify notes, overlays)
+            // from the on-screen main script. Exports/downloads use
+            // window.currentScript (the full text), so this is view-only.
+            if (window._hideProductionBlocks && mainScript) {
+                mainScript = mainScript.replace(/\[PRODUCTION BEGIN\][\s\S]*?\[PRODUCTION END\][ \t]*\n?/g, '');
+            }
             // Render main script
             const mainScriptDiv = document.getElementById('mainScriptContent');
             console.log('renderMarkdownContent called:', {
@@ -4444,13 +4795,13 @@ Time management content here...`;
                 preview.innerHTML = (window.marked ? marked.parse(text) : text.replace(/</g, '&lt;'));
                 editor.style.display = 'none';
                 preview.style.display = '';
-                btn.innerHTML = '✏️ Edit';
+                btn.innerHTML = '<span class="toolbar-icon">✏️</span><span class="toolbar-text">Edit</span>';
             } else {
                 // Switch to editor.
                 editor.value = window._currentYoutubeDetails || '';
                 preview.style.display = 'none';
                 editor.style.display = '';
-                btn.innerHTML = '👁️ Preview';
+                btn.innerHTML = '<span class="toolbar-icon">👁️</span><span class="toolbar-text">Preview</span>';
             }
         }
         
@@ -4581,10 +4932,18 @@ Time management content here...`;
             const btn = document.getElementById('resultCollapseBtn');
             if (!panel || !btn) return;
             const sync = () => {
-                btn.style.display = (panel.style.display && panel.style.display !== 'none') ? '' : 'none';
+                // Show the collapse toggle whenever #result holds a RENDERED
+                // result — including when the user has collapsed it (display:none).
+                // Basing this on element children (not the display style) is the
+                // fix: previously, collapsing set display:none, which this
+                // observer read as "no result" and hid the toggle button too, so
+                // the whole section disappeared until you re-processed. The
+                // initial placeholder is an HTML comment (not an element child),
+                // so the button stays hidden until a real result renders.
+                btn.style.display = (panel.children && panel.children.length > 0) ? '' : 'none';
             };
             sync();
-            new MutationObserver(sync).observe(panel, { attributes: true, attributeFilter: ['style'] });
+            new MutationObserver(sync).observe(panel, { attributes: true, attributeFilter: ['style'], childList: true });
         });
 
         // Estimate HeyGen video duration from script text.
@@ -4735,7 +5094,7 @@ Time management content here...`;
         function heygenDurationBadge(text, color) {
             const est = estimateHeyGenDuration(text);
             const c = color || '#94a3b8';
-            return '<div style="display:inline-block; margin:0 0 8px 0; padding:3px 8px; '
+            return '<div style="display:inline-block; margin:0; vertical-align:middle; padding:3px 8px; '
                 + 'background:#0f172a; border:1px solid #334155; border-radius:12px; '
                 + 'font-size:11px; color:' + c + '; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;" '
                 + 'title="Estimated HeyGen avatar render time at 150 words per minute">'
@@ -4890,8 +5249,7 @@ Time management content here...`;
         }
 
         function renderShutterstockLinks(links) {
-            let html = '<h3>🎬 Shutterstock Search Links</h3>';
-            html += '<p style="margin-bottom: 12px; color: #94a3b8;">Click a search term to preview the Shutterstock results in the right pane. Some browsers/sites may block embedding — use the open-in-new-tab button if the preview is blank.</p>';
+            let html = '<h3 style="margin:0 0 14px 0;">Shutterstock Search Links</h3>';
             if (!links || !links.length) {
                 html += '<p style="color:#94a3b8;">No search terms found in the B-roll table.</p>';
                 return html;
@@ -4976,67 +5334,64 @@ Time management content here...`;
             // the server is reflected automatically).
             const heygenText = extractHeyGenSection(mainScript);
             
-            // Tab Headers
+            // Tab Headers (text-only — tab-bar icons removed per design cleanup)
             html += '<div class="tab-header">';
-            html += '<button class="tab-button active" onclick="switchTab(\'mainScript\')">📝 Main Script</button>';
-            
+            html += '<button class="tab-button active" onclick="switchTab(\'mainScript\')">Main Script</button>';
+
             if (demoPackages) {
-                html += '<button class="tab-button" onclick="switchTab(\'demoPackages\')">🎥 Demo Packages</button>';
+                html += '<button class="tab-button" onclick="switchTab(\'demoPackages\')">Demo Packages</button>';
             }
-            
+
             if (thumbnailList.length > 0) {
-                html += '<button class="tab-button" onclick="switchTab(\'thumbnails\')">🖼️ Thumbnails</button>';
+                html += '<button class="tab-button" onclick="switchTab(\'thumbnails\')">Thumbnails</button>';
             }
-            
+
             if (brollImages && brollImages.length > 0) {
-                html += '<button class="tab-button" onclick="switchTab(\'brollImages\')">🎨 B-Roll Images</button>';
+                html += '<button class="tab-button" onclick="switchTab(\'brollImages\')">B-Roll Images</button>';
             }
-            
+
             if (grokVideos && grokVideos.length > 0) {
-                html += '<button class="tab-button" onclick="switchTab(\'grokVideos\')"><img src="/static/grok_icon.png" alt="Grok" style="height:16px; width:auto; vertical-align:middle; margin-right:4px;"> Grok Videos</button>';
+                html += '<button class="tab-button" onclick="switchTab(\'grokVideos\')">Grok Videos</button>';
             }
 
             const shutterstockLinks = buildShutterstockLinks(brollTable, mainScript);
             if (shutterstockLinks.length > 0) {
-                html += '<button class="tab-button" onclick="switchTab(\'shutterstock\')">🎬 Shutterstock</button>';
+                html += '<button class="tab-button" onclick="switchTab(\'shutterstock\')">Shutterstock</button>';
             }
 
+            // B-Roll Table tab — only shown once generated/loaded (hidden until it has content)
             if (brollTable && typeof brollTable === 'string' && brollTable.trim()) {
-                html += '<button class="tab-button" onclick="switchTab(\'brollTable\')">📊 B-Roll Table</button>';
-            } else {
-                html += '<button class="tab-button" onclick="switchTab(\'brollTable\')" title="Load an existing B-Roll table .docx/.md">📊 B-Roll Table <span style=\"opacity:.6;font-size:11px;\">(load)</span></button>';
+                html += '<button class="tab-button" onclick="switchTab(\'brollTable\')">B-Roll Table</button>';
             }
-            
+
             if (chapterComparisons && chapterComparisons.length > 0) {
-                html += '<button class="tab-button" onclick="switchTab(\'comparisons\')">📊 Comparisons</button>';
+                html += '<button class="tab-button" onclick="switchTab(\'comparisons\')">Comparisons</button>';
             }
-            
+
             // Add flow analysis tabs if available
             if (flowOriginal && flowImproved) {
-                html += '<button class="tab-button" onclick="switchTab(\'flowOriginal\')">📄 Original (Before Flow)</button>';
-                html += '<button class="tab-button" onclick="switchTab(\'flowImproved\')">✨ Revised (After Flow)</button>';
+                html += '<button class="tab-button" onclick="switchTab(\'flowOriginal\')">Original (Before Flow)</button>';
+                html += '<button class="tab-button" onclick="switchTab(\'flowImproved\')">Revised (After Flow)</button>';
             }
-            
+
             // Add EDL tab if available
             if (edlContent) {
-                html += '<button class="tab-button" onclick="switchTab(\'edl\')">🎬 EDL File</button>';
+                html += '<button class="tab-button" onclick="switchTab(\'edl\')">EDL File</button>';
             }
-            
+
             // Add curl commands tab if available
             if (curlCommands) {
-                html += '<button class="tab-button" onclick="switchTab(\'curl\')">🚀 Curl Commands</button>';
+                html += '<button class="tab-button" onclick="switchTab(\'curl\')">Curl Commands</button>';
             }
 
             // HeyGen-ready dialogue (only if we found a HEYGEN section)
             if (heygenText) {
-                html += '<button class="tab-button" onclick="switchTab(\'heygen\')">🎬 HeyGen Script</button>';
+                html += '<button class="tab-button" onclick="switchTab(\'heygen\')">HeyGen Script</button>';
             }
 
-            // YouTube Details tab
+            // YouTube Details tab — only shown once generated/loaded (hidden until it has content)
             if (youtubeDetails) {
-                html += '<button class="tab-button" onclick="switchTab(\'youtubeDetails\')">📺 YouTube Details</button>';
-            } else {
-                html += '<button class="tab-button" onclick="switchTab(\'youtubeDetails\')" title="Load an existing YouTube upload details .docx/.md">📺 YouTube Details <span style=\"opacity:.6;font-size:11px;\">(load)</span></button>';
+                html += '<button class="tab-button" onclick="switchTab(\'youtubeDetails\')">YouTube Details</button>';
             }
             
             html += '</div>'; // End tab-header
@@ -5046,19 +5401,42 @@ Time management content here...`;
             
             // Main Script Tab
             html += '<div id="mainScriptTab" class="tab-content active">';
-            html += '<h3 style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">'
-                  + '<span>✅ Main Script</span>'
+            html += '<h3 style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 14px 0;">'
+                  + '<span>Main Script</span>'
                   + heygenDurationBadge(mainScript, '#10b981')
-                  + '<button id="polishScriptBtn" class="script-hdr-btn" onclick="polishMainScript()" '
-                  + 'title="Run the finished script through Claude Fable 5 for a punchier, more current, more advanced spin.">'
-                  + '<span>✨</span><span>Polish with Fable 5</span>'
-                  + '</button>'
                   + '<button id="revertPolishBtn" class="script-hdr-btn" onclick="revertPolishedScript()" '
-                  + 'style="display:none;" title="Revert to the script before the Fable 5 polish.">'
-                  + '<span>↩︎</span><span>Undo Polish</span>'
+                  + 'style="display:none;" title="Revert to the script before the last AI edit (polish or refine).">'
+                  + '<span>Undo last AI edit</span>'
+                  + '</button>'
+                  + '<button id="refineScriptBtn" class="script-hdr-btn" onclick="toggleRefinePanel()" '
+                  + 'title="Give Claude or Grok a specific change (swap an example, add a more recent one from X, tighten a line) and get the updated script back.">'
+                  + '<span>Refine with AI</span>'
+                  + '</button>'
+                  + '<button id="markRefBtn" class="script-hdr-btn" onclick="markCurrentAsReference()" '
+                  + 'title="Mark this script as a REFERENCE / used-in-production. Reference scripts lead the style guide fed into every new generation.">'
+                  + '<span>Mark as reference</span>'
+                  + '</button>'
+                  + '<button id="toggleProdBtn" class="script-hdr-btn" onclick="toggleProductionBlocks()" '
+                  + 'title="Hide or show the [PRODUCTION …] blocks (Grok Imagine prompts, cold open, verify notes, cheat-sheet overlays) in this viewer. Exports always keep the full script.">'
+                  + '<span class="tp-label">' + (window._hideProductionBlocks ? 'Show production blocks' : 'Hide production blocks') + '</span>'
                   + '</button>'
                   + '</h3>';
             html += '<div id="polishScriptStatus" style="display:none; margin:0 0 10px; font-size:13px; color:#94a3b8;"></div>';
+            html += '<div id="refinePanel" style="display:none; margin:0 0 12px; padding:12px; background:#0f172a; border:1px solid #334155; border-radius:8px;">'
+                  + '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px;">'
+                  + '<label for="refineModel" style="color:#cbd5e1; font-size:13px; font-weight:600;">✏️ Refine with:</label>'
+                  + '<select id="refineModel" style="padding:6px 8px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-size:13px;">'
+                  + '<option value="claude" selected>Claude Opus 4.8 — careful edits (web search on)</option>'
+                  + '<option value="grok">Grok — recent / X-aware</option>'
+                  + '</select>'
+                  + '<span style="color:#64748b; font-size:12px;">Applies ONE change and returns the full updated script. Production blocks are preserved.</span>'
+                  + '</div>'
+                  + '<textarea id="refineInstructions" rows="3" placeholder="Describe the change… e.g. “Swap the ChatGPT example in the tools chapter for a more recent 2026 one.”  •  “Add a current example from X about AI agents.”  •  “Tighten the intro and cut the kitchen analogy.”" style="width:100%; box-sizing:border-box; padding:10px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-size:14px; resize:vertical;"></textarea>'
+                  + '<div style="display:flex; align-items:center; gap:12px; margin-top:8px; flex-wrap:wrap;">'
+                  + '<button id="refineSendBtn" class="script-hdr-btn" onclick="refineMainScript()"><span>✨</span><span>Apply change → update script</span></button>'
+                  + '<span id="refineScriptStatus" style="font-size:13px; color:#94a3b8;"></span>'
+                  + '</div>'
+                  + '</div>';
             html += `<div class="markdown-content" id="mainScriptContent"></div>`;
             html += '</div>';
             
@@ -5104,12 +5482,12 @@ Time management content here...`;
             {
                 const _hasBroll = brollTable && typeof brollTable === 'string' && brollTable.trim();
                 html += '<div id="brollTableTab" class="tab-content">';
-                html += '<h3>📊 B-Roll Search Terms Table</h3>';
+                html += '<h3 style="margin:0 0 14px 0;">B-Roll Search Terms Table</h3>';
                 html += '<div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap;">';
                 html += '<button onclick="loadBrollTableFromFile()" class="toolbar-btn" style="display: flex;" title="Load an existing B-Roll table .docx or .md"><span class="toolbar-icon">📂</span><span class="toolbar-text">Load .docx/.md</span></button>';
                 html += '<button onclick="copyBrollTableMarkdown()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon">📋</span><span class="toolbar-text">Copy Markdown</span></button>';
                 html += '<button onclick="downloadBrollTableMarkdown()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon">💾</span><span class="toolbar-text">Download .md</span></button>';
-                html += '<button onclick="saveBrollTableAsWord()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon">💾</span><span class="toolbar-text">Save as Word</span></button>';
+                html += '<button onclick="saveBrollTableAsWord()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon" style="display:inline-flex; align-items:center;"><img src="/static/word_icon.png" alt="Word" onerror="this.replaceWith(document.createTextNode(\'📄\'))" style="height:18px; width:auto; vertical-align:middle;"></span><span class="toolbar-text">Save as Word</span></button>';
                 html += '</div>';
                 html += '<div class="markdown-content" id="brollTableContent">' + (_hasBroll ? '' : '<p style="color:#94a3b8;">No B-Roll table yet. Click <strong>📂 Load .docx/.md</strong> to load an existing one, or run the workflow with <em>B-Roll Table</em> checked.</p>') + '</div>';
                 html += '</div>';
@@ -5151,10 +5529,10 @@ Time management content here...`;
                 if (edlFilename) {
                     html += `<p style="margin-bottom: 15px; color: #60a5fa;"><strong>Filename:</strong> ${edlFilename}</p>`;
                 }
-                html += '<div style="margin-bottom: 15px;">';
-                html += '<button onclick="exportEDL()" style="background: #1e293b; color: #e2e8f0; border: 1px solid #334155; padding: 10px 20px; border-radius: 6px; cursor: pointer; margin-right: 10px; font-weight: 500; transition: all 0.2s;" onmouseover="this.style.background=\'#0f172a\'; this.style.borderColor=\'#38bdf8\';" onmouseout="this.style.background=\'#1e293b\'; this.style.borderColor=\'#334155\';">💾 Download EDL File</button>';
-                html += '<button onclick="copyEDLToClipboard()" style="background: #1e293b; color: #e2e8f0; border: 1px solid #334155; padding: 10px 20px; border-radius: 6px; cursor: pointer; margin-right: 10px; font-weight: 500; transition: all 0.2s;" onmouseover="this.style.background=\'#0f172a\'; this.style.borderColor=\'#38bdf8\';" onmouseout="this.style.background=\'#1e293b\'; this.style.borderColor=\'#334155\';">📋 Copy to Clipboard</button>';
-                html += '<button onclick="createResolveProject()" style="background: #10b981; color: #0f172a; border: 1px solid #059669; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: 500; transition: all 0.2s;" onmouseover="this.style.background=\'#059669\'; this.style.color=\'#ffffff\';" onmouseout="this.style.background=\'#10b981\'; this.style.color=\'#0f172a\';">🎬 Create DaVinci Project</button>';
+                html += '<div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap;">';
+                html += '<button onclick="exportEDL()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon">💾</span><span class="toolbar-text">Download EDL File</span></button>';
+                html += '<button onclick="copyEDLToClipboard()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon">📋</span><span class="toolbar-text">Copy to Clipboard</span></button>';
+                html += '<button onclick="createResolveProject()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon">🎬</span><span class="toolbar-text">Create DaVinci Project</span></button>';
                 html += '</div>';
                 html += '<div style="background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 15px; margin-top: 15px;">';
                 html += '<h4 style="color: #94a3b8; margin-top: 0;">📋 EDL Content Preview:</h4>';
@@ -5178,13 +5556,13 @@ Time management content here...`;
             if (heygenText) {
                 html += '<div id="heygenTab" class="tab-content">';
                 html += '<h3 style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">'
-                      + '<span>🎬 HeyGen Script</span>'
+                      + '<span style="display:inline-flex; align-items:center; gap:7px;"><img src="/static/heygen_icon.png" alt="HeyGen" onerror="this.replaceWith(document.createTextNode(\'🎬\'))" style="height:22px; width:auto; vertical-align:middle;"> HeyGen Script</span>'
                       + heygenDurationBadge(heygenText, '#8b5cf6')
                       + '</h3>';
-                html += '<p style="color:#94a3b8; margin-bottom:10px;">Dialogue only — no title, chapter headings, hooks, or stage directions. Paste straight into HeyGen.</p>';
                 html += '<div style="margin-bottom:10px; display:flex; gap:10px; flex-wrap:wrap;">';
                 html += '<button onclick="copyHeyGenToClipboard()" class="toolbar-btn" style="display:flex;"><span class="toolbar-icon">📋</span><span class="toolbar-text">Copy</span></button>';
                 html += '<button onclick="downloadHeyGenText()" class="toolbar-btn" style="display:flex;"><span class="toolbar-icon">💾</span><span class="toolbar-text">Download .txt</span></button>';
+                html += '<button onclick="exportHeyGenToWord()" class="toolbar-btn" style="display:flex;"><span class="toolbar-icon" style="display:inline-flex; align-items:center;"><img src="/static/word_icon.png" alt="Word" onerror="this.replaceWith(document.createTextNode(\'📄\'))" style="height:18px; width:auto; vertical-align:middle;"></span><span class="toolbar-text">Save as Word</span></button>';
                 html += '</div>';
                 html += `<textarea id="heygenScriptTextarea" readonly style="width:100%; min-height:480px; padding:14px; background:#0f172a; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-family:'SF Mono', Menlo, monospace; font-size:13px; line-height:1.55; white-space:pre-wrap;">${escapeHtml(heygenText)}</textarea>`;
                 html += '</div>';
@@ -5198,7 +5576,7 @@ Time management content here...`;
                 html += '<button onclick="copyCurlToClipboard()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon">📋</span><span class="toolbar-text">Copy All</span></button>';
                 html += '<button onclick="executeSelectedCurls()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon">▶️</span><span class="toolbar-text">Execute Selected</span></button>';
                 html += '<button onclick="toggleAllCurlCheckboxes()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon">☑️</span><span class="toolbar-text">Select All</span></button>';
-                html += '<button onclick="createDaVinciWithVideos()" id="davinciButton" class="toolbar-btn" style="display: flex;" disabled title="Execute curl commands and download videos first"><span class="toolbar-icon">🎬</span><span class="toolbar-text">Create DaVinci Project</span></button>';
+                html += '<span style="color:#64748b; font-size:12px; align-self:center;">💡 Use the <strong>Create DaVinci Project</strong> button in the top toolbar.</span>';
                 html += '</div>';
                 
                 // Parse curl commands into individual commands
@@ -5273,12 +5651,12 @@ Time management content here...`;
                 html += '<div id="youtubeDetailsTab" class="tab-content">';
                 html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">';
                 html += '<h3 style="margin:0;">📺 YouTube Upload Details</h3>';
-                html += '<div style="display:flex; gap:8px; flex-wrap:wrap;">';
-                html += '<button onclick="loadYouTubeDetailsFromFile()" style="background:#1e293b; color:#e2e8f0; border:1px solid #334155; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:500;" title="Load an existing YouTube details .docx or .md">📂 Load .docx/.md</button>';
-                html += '<button id="ytEditToggleBtn" onclick="toggleYouTubeDetailsEdit()" style="background:#1e293b; color:#e2e8f0; border:1px solid #334155; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:500;">✏️ Edit</button>';
-                html += '<button onclick="copyYouTubeDetails()" style="background:#1e293b; color:#e2e8f0; border:1px solid #334155; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:500;">📋 Copy All</button>';
-                html += '<button onclick="saveYouTubeDetailsAsWord()" style="background:#1e293b; color:#e2e8f0; border:1px solid #334155; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:500;">💾 Save as Word</button>';
-                html += '<button onclick="openPublishToYouTube()" style="background:#dc2626; color:#fff; border:1px solid #b91c1c; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:600;" title="Publish the finished video to the AI for Roz YouTube channel">🚀 Publish to YouTube</button>';
+                html += '<div style="display:flex; gap:10px; flex-wrap:wrap;">';
+                html += '<button onclick="loadYouTubeDetailsFromFile()" class="toolbar-btn" style="display: flex;" title="Load an existing YouTube details .docx or .md"><span class="toolbar-icon">📂</span><span class="toolbar-text">Load .docx/.md</span></button>';
+                html += '<button id="ytEditToggleBtn" onclick="toggleYouTubeDetailsEdit()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon">✏️</span><span class="toolbar-text">Edit</span></button>';
+                html += '<button onclick="copyYouTubeDetails()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon">📋</span><span class="toolbar-text">Copy All</span></button>';
+                html += '<button onclick="saveYouTubeDetailsAsWord()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon" style="display:inline-flex; align-items:center;"><img src="/static/word_icon.png" alt="Word" onerror="this.replaceWith(document.createTextNode(\'📄\'))" style="height:18px; width:auto; vertical-align:middle;"></span><span class="toolbar-text">Save as Word</span></button>';
+                html += '<button onclick="openPublishToYouTube()" class="toolbar-btn" style="display: flex; background:#dc2626; border-color:#b91c1c;" title="Publish the finished video to the AI for Roz YouTube channel"><span class="toolbar-icon">🚀</span><span class="toolbar-text" style="color:#fff;">Publish to YouTube</span></button>';
                 html += '</div>';
                 html += '</div>';
                 // Two views: rendered preview (default) and a textarea editor toggled with the Edit button.
@@ -5289,7 +5667,24 @@ Time management content here...`;
 
             html += '</div>'; // End tab-contents
             html += '</div>'; // End tab-container
-            
+
+            // Create DaVinci Project lives in the top toolbar now (independent of
+            // running the curl commands). Reveal it once BOTH the curl commands and
+            // the HeyGen script have been generated; otherwise keep it hidden.
+            setTimeout(() => {
+                const dv = document.getElementById('davinciButton');
+                if (!dv) return;
+                if (curlCommands && heygenText) {
+                    dv.style.display = 'inline-flex';
+                    dv.disabled = false;
+                    // Best-effort: detect downloaded A-roll (or default test clips)
+                    // so the project isn't empty. Non-critical if it finds nothing.
+                    if (typeof checkArollVideos === 'function') { try { checkArollVideos(); } catch (e) {} }
+                } else {
+                    dv.style.display = 'none';
+                }
+            }, 50);
+
             return html;
         }
         
@@ -5442,6 +5837,7 @@ Time management content here...`;
             const progressText = document.getElementById('progressText');
             const resultDiv = document.getElementById('result');
             progressDiv.style.display = 'block';
+            startProgressTimer();
             progressText.textContent = '🔄 Starting script processing...';
             resultDiv.style.display = 'none';
             clearProgressLog();
@@ -5574,7 +5970,7 @@ Time management content here...`;
                         
                         addProgressMessage(msgText, msgType);
                     } else if (message.status === 'complete') {
-                        eventSource.close();
+                        eventSource.close(); stopProgressTimer();
                         const stopBtn = document.getElementById('stopBrollImagesBtn');
                         if (stopBtn) stopBtn.style.display = 'none';
                         const stopThumbBtn = document.getElementById('stopThumbnailsBtn');
@@ -5794,7 +6190,7 @@ Time management content here...`;
                             updateFooterProgress(0, 'Ready');
                         }
                     } else if (message.status === 'error') {
-                        eventSource.close();
+                        eventSource.close(); stopProgressTimer();
                         
                         // Reset footer progress on error
                         updateFooterProgress(0, 'Ready');
@@ -5811,7 +6207,7 @@ Time management content here...`;
                 
                 eventSource.onerror = function(error) {
                     console.error('SSE Error:', error);
-                    eventSource.close();
+                    eventSource.close(); stopProgressTimer();
                     const stopBtn = document.getElementById('stopBrollImagesBtn');
                     if (stopBtn) stopBtn.style.display = 'none';
                     const stopThumbBtn = document.getElementById('stopThumbnailsBtn');
@@ -5870,6 +6266,107 @@ Time management content here...`;
             await createScript();
         }
 
+        // ---------- Re-run Last: replay the most recent Create Script run ----------
+        function _getLastRunPayload() {
+            try {
+                const raw = localStorage.getItem('scriptcraft_last_run');
+                if (!raw) return null;
+                const obj = JSON.parse(raw);
+                return (obj && obj.payload && obj.payload.topic) ? obj : null;
+            } catch (_e) { return null; }
+        }
+
+        function _updateRerunLastBtn() {
+            const btn = document.getElementById('rerunLastBtn');
+            if (!btn) return;
+            const saved = _getLastRunPayload();
+            if (saved) {
+                const p = saved.payload;
+                btn.disabled = false;
+                btn.style.opacity = '';
+                const t = p.topic.length > 55 ? p.topic.slice(0, 52) + '…' : p.topic;
+                btn.title = `Re-run last: "${t}" [${p.video_format || 'teaching'}]`
+                    + ' — replays the exact same inputs. Saved locally; survives a refresh.';
+            } else {
+                btn.disabled = true;
+                btn.style.opacity = '0.5';
+                btn.title = 'No previous run yet — create a script first, then this replays it.';
+            }
+        }
+
+        // Restore every field the Create Script modal reads, from a saved payload,
+        // so the replay reuses 100% of the normal submit + progress pipeline.
+        function _restoreCreateForm(p) {
+            const set = (id, val) => { const el = document.getElementById(id); if (el && val != null) el.value = val; };
+            const chk = (id, val) => { const el = document.getElementById(id); if (el) el.checked = !!val; };
+            set('createTopic', p.topic);
+            set('createDescription', p.description);
+            set('scriptDuration', p.duration);
+            set('audience', p.audience);
+            set('tone', p.tone);
+            set('productionType', p.production_type);
+            set('videoFormat', p.video_format);
+            chk('quickTest', p.quick_test);
+            if (p.grok_api_key) set('grokApiKey', p.grok_api_key);
+            // Source-document batch (idea-grounded runs)
+            if (p.source_batch_id) window._pendingSource = { batchId: p.source_batch_id };
+            // Checkboxes — inverse of the map built in createScript(). curl/davinci
+            // are derived there, so they don't need restoring.
+            const c = p.checkboxes || {};
+            chk('checkScript', c.script);
+            chk('checkYouTubeDetails', c.youtube_details);
+            chk('checkHeyGenReady', c.heygen);
+            chk('checkBRollTable', c.broll);
+            chk('checkBRollImages', c.broll_images);
+            chk('checkGrokVideos', c.grok_videos);
+            chk('checkHookSummary', c.hook_summary);
+            chk('checkFlowAnalysis', c.flow_analysis);
+            chk('checkThumbnails', c.thumbnails);
+            chk('checkDemoScript', c.demo);
+            chk('checkAll', c.all);
+            chk('checkShortenScript', c.shorten_script);
+            if (c.shorten_percent != null) set('shortenPercent', c.shorten_percent);
+        }
+
+        async function rerunLastRun() {
+            const saved = _getLastRunPayload();
+            if (!saved) {
+                alert('No previous run to replay yet — create a script first, then use 🔁 Re-run Last.');
+                return;
+            }
+            // Restore the saved inputs into the (possibly hidden) form, then hand
+            // off to the normal pipeline: it re-reads the restored fields, re-saves
+            // the payload, runs the output-dir checks, POSTs, and wires up SSE.
+            _restoreCreateForm(saved.payload);
+            await createScript();
+        }
+
+        // Set the button's initial enabled/disabled state on load.
+        if (document.readyState !== 'loading') { try { _updateRerunLastBtn(); } catch (_e) {} }
+        else { document.addEventListener('DOMContentLoaded', () => { try { _updateRerunLastBtn(); } catch (_e) {} }); }
+
+        // ---- Live elapsed timer for the progress area (how long it's run) ----
+        let _progressTimerInterval = null;
+        let _progressTimerStart = 0;
+        function startProgressTimer() {
+            _progressTimerStart = Date.now();
+            const el = document.getElementById('progressTimer');
+            if (el) { el.style.display = 'inline-block'; el.textContent = '⏱ 0:00'; }
+            if (_progressTimerInterval) clearInterval(_progressTimerInterval);
+            _progressTimerInterval = setInterval(() => {
+                const s = Math.floor((Date.now() - _progressTimerStart) / 1000);
+                const mm = Math.floor(s / 60), ss = s % 60;
+                const e = document.getElementById('progressTimer');
+                if (e) e.textContent = '⏱ ' + mm + ':' + String(ss).padStart(2, '0') + ' elapsed'
+                    + (s >= 150 ? ' · Pro writes in one pass, ~3-5 min is normal' : '');
+            }, 1000);
+        }
+        function stopProgressTimer() {
+            if (_progressTimerInterval) { clearInterval(_progressTimerInterval); _progressTimerInterval = null; }
+            const el = document.getElementById('progressTimer');
+            if (el) el.style.display = 'none';
+        }
+
         async function createScript() {
             const topicInput = document.getElementById('createTopic');
             const descriptionInput = document.getElementById('createDescription');
@@ -5887,6 +6384,8 @@ Time management content here...`;
             const tone = document.getElementById('tone').value;
             const productionType = productionSelect.value;
             const quickTest = document.getElementById('quickTest').checked;
+            // Video archetype → routes to the matching topic-assistant + writer pair.
+            const videoFormat = document.getElementById('videoFormat')?.value || 'teaching';
 
             // Keep Grok key persisted even if user didn't click Save.
             await persistGrokApiKey(true);
@@ -5912,6 +6411,7 @@ Time management content here...`;
             }
 
             progressDiv.style.display = 'block';
+            startProgressTimer();
             progressText.textContent = quickTest ? '⚡ Quick test: Creating 1-chapter script...' : '🎬 Creating your script with AI...';
             resultDiv.style.display = 'none';
             document.getElementById('debugLog').style.display = 'none';
@@ -5941,23 +6441,35 @@ Time management content here...`;
                     shorten_percent: document.getElementById('shortenPercent')?.value || '25'
                 };
                 const grokApiKey = (document.getElementById('grokApiKey')?.value || '').trim();
-                
+
+                // Full submission payload. Persisted to localStorage so the
+                // "🔁 Re-run Last" toolbar button can replay this exact run
+                // (survives a page refresh). The Grok key is saved too but is
+                // re-read from the field on replay in case it changed.
+                const createPayload = {
+                    topic: topic,
+                    description: description,
+                    duration: duration,
+                    audience: audience,
+                    tone: tone,
+                    production_type: productionType,
+                    video_format: videoFormat,
+                    quick_test: quickTest,
+                    checkboxes: checkboxes,
+                    grok_api_key: grokApiKey,
+                    source_batch_id: (window._pendingSource && window._pendingSource.batchId) || ''
+                };
+                try {
+                    localStorage.setItem('scriptcraft_last_run',
+                        JSON.stringify({ payload: createPayload, savedAt: Date.now() }));
+                    if (typeof _updateRerunLastBtn === 'function') _updateRerunLastBtn();
+                } catch (_e) { /* localStorage unavailable — re-run just won't persist */ }
+
                 // Start script creation
                 const response = await fetch('/create', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        topic: topic,
-                        description: description,
-                        duration: duration,
-                        audience: audience,
-                        tone: tone,
-                        production_type: productionType,
-                        quick_test: quickTest,
-                        checkboxes: checkboxes,
-                        grok_api_key: grokApiKey,
-                        source_batch_id: (window._pendingSource && window._pendingSource.batchId) || ''
-                    })
+                    body: JSON.stringify(createPayload)
                 });
                 
                 const data = await response.json();
@@ -6041,7 +6553,7 @@ Time management content here...`;
                         
                         addProgressMessage(msgText, msgType);
                     } else if (message.status === 'complete') {
-                        eventSource.close();
+                        eventSource.close(); stopProgressTimer();
                         const stopBtn = document.getElementById('stopBrollImagesBtn');
                         if (stopBtn) {
                             stopBtn.style.display = 'none';
@@ -6271,7 +6783,7 @@ Time management content here...`;
                         }
                         resultDiv.style.display = 'block';
                     } else if (message.status === 'error') {
-                        eventSource.close();
+                        eventSource.close(); stopProgressTimer();
                         const stopBtn = document.getElementById('stopBrollImagesBtn');
                         if (stopBtn) {
                             stopBtn.style.display = 'none';
@@ -6300,7 +6812,7 @@ Time management content here...`;
                 
                 eventSource.onerror = function(error) {
                     console.error('SSE Error:', error);
-                    eventSource.close();
+                    eventSource.close(); stopProgressTimer();
                     const stopBtn = document.getElementById('stopBrollImagesBtn');
                     if (stopBtn) {
                         stopBtn.style.display = 'none';
@@ -6356,6 +6868,10 @@ Time management content here...`;
                 } else if (tabId === 'flowImprovedTab' && window.currentFlowImproved) {
                     content = window.currentFlowImproved;
                     scriptTitle = 'Revised Script (After Flow Analysis)';
+                } else if (tabId === 'heygenTab') {
+                    const ta = document.getElementById('heygenScriptTextarea');
+                    content = ta ? ta.value : '';
+                    scriptTitle = (window.currentScriptTitle || 'AI Script') + ' - HeyGen Script';
                 } else if (window.currentScript) {
                     content = window.currentScript;
                     scriptTitle = 'AI Script';
@@ -6390,6 +6906,39 @@ Time management content here...`;
                 }
             } catch (error) {
                 alert('❌ Error exporting to Word: ' + error.message);
+            }
+        }
+
+        // Save the HeyGen (dialogue-only) script to a Word .docx.
+        async function exportHeyGenToWord() {
+            const ta = document.getElementById('heygenScriptTextarea');
+            const content = ta ? ta.value : '';
+            if (!content || !content.trim()) {
+                alert('No HeyGen script to export — generate a script with the HeyGen option first.');
+                return;
+            }
+            const base = (window.currentScriptTitle || 'AI Script');
+            try {
+                const response = await fetch('/export_word', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ script_content: content, title: base + ' - HeyGen Script' })
+                });
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = (base + ' HeyGen.docx').replace(/[\/\\:*?"<>|]+/g, '_');
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                } else {
+                    alert('❌ Failed to export HeyGen script to Word');
+                }
+            } catch (error) {
+                alert('❌ Error exporting HeyGen script to Word: ' + error.message);
             }
         }
 
@@ -6672,12 +7221,25 @@ Time management content here...`;
             
             try {
                 console.log('📡 Checking for aRoll videos...');
-                const response = await fetch('/check_aroll_videos', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ script_title: scriptTitle })
-                });
-                
+                // Retry transient network blips. The dev server can briefly drop
+                // a connection under concurrent generation + SSE load, which
+                // surfaces as "Failed to fetch"; this check is non-critical.
+                let response = null, lastErr = null;
+                for (let attempt = 1; attempt <= 3; attempt++) {
+                    try {
+                        response = await fetch('/check_aroll_videos', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ script_title: scriptTitle })
+                        });
+                        break;
+                    } catch (e) {
+                        lastErr = e;
+                        if (attempt < 3) await new Promise(r => setTimeout(r, 600 * attempt));
+                    }
+                }
+                if (!response) throw (lastErr || new Error('request failed'));
+
                 const result = await response.json();
                 console.log('📊 Check result:', result);
                 
@@ -6706,8 +7268,15 @@ Time management content here...`;
                     window.useDefaultArollForDaVinci = false;
                 }
             } catch (error) {
-                console.error('❌ Error checking aRoll videos:', error);
-                addToDebugLog(`❌ Error checking videos: ${error.message}`);
+                console.error('aRoll video check failed (non-critical):', error);
+                // Non-critical: DaVinci can still run with the default test clips.
+                // Keep it a soft warning, not a scary error, after retries.
+                const davinciButton = document.getElementById('davinciButton');
+                if (davinciButton && !davinciButton.disabled) {
+                    addToDebugLog('⚠️ aRoll video check hiccuped (transient connection) — DaVinci is still usable with the default clips.');
+                } else {
+                    addToDebugLog(`⚠️ Could not check aRoll videos (${error.message}). This is non-critical — your curl/HeyGen output is unaffected; retry the DaVinci step if you need it.`);
+                }
             }
         }
 
@@ -7780,6 +8349,56 @@ Thank you for watching!`;
         function closeCloudScriptPicker() {
             const el = document.getElementById('cloudScriptPicker');
             if (el) el.style.display = 'none';
+        }
+
+        // ---- "Open Script" quick chooser (toolbar) -------------------------
+        // Same load functionality as Stage 1 of the Process Script dialog, but
+        // reachable directly from the top toolbar. Picks File or Cloud, then
+        // reuses the exact same handlers (loadFile via #fileInput / the cloud
+        // picker) so the loaded script lands in the editor + result view.
+        function _scriptChooserEl() {
+            let el = document.getElementById('openScriptChooser');
+            if (el) return el;
+            el = document.createElement('div');
+            el.id = 'openScriptChooser';
+            el.style.cssText = 'display:none; position:fixed; inset:0; z-index:10000; background:rgba(2,6,23,0.72); align-items:flex-start; justify-content:center;';
+            el.innerHTML =
+                '<div style="background:#0f172a; border:1px solid #334155; border-radius:10px; width:min(520px,92vw); margin-top:12vh; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.5);">'
+                + '<div style="display:flex; align-items:center; gap:10px; padding:14px 18px; border-bottom:1px solid #1e293b;">'
+                + '<span style="font-size:1.3em;">📂</span><strong style="flex:1; color:#e2e8f0;">Open a script</strong>'
+                + '<button onclick="closeScriptChooser()" style="background:#334155; color:#e2e8f0; border:none; border-radius:6px; padding:6px 12px; cursor:pointer;">✕</button>'
+                + '</div>'
+                + '<div style="padding:10px 18px 4px; color:#94a3b8; font-size:0.82em;">Load an existing script straight into the editor — from your computer or from the cloud.</div>'
+                + '<div style="display:flex; gap:12px; flex-wrap:wrap; padding:16px 18px 20px;">'
+                + '<button type="button" onclick="scriptChooserPick(\'file\')" style="flex:1; min-width:200px; display:flex; flex-direction:column; align-items:center; gap:8px; background:#1e293b; border:1px solid #334155; border-radius:10px; padding:18px 14px; cursor:pointer; color:#e2e8f0;" onmouseover="this.style.borderColor=\'#0ea5e9\'" onmouseout="this.style.borderColor=\'#334155\'">'
+                + '<span style="font-size:1.8em;">💻</span><span style="font-weight:600;">From File</span><span style="color:#94a3b8; font-size:0.78em; text-align:center;">.md / .txt / .docx on this computer</span>'
+                + '</button>'
+                + '<button type="button" onclick="scriptChooserPick(\'cloud\')" style="flex:1; min-width:200px; display:flex; flex-direction:column; align-items:center; gap:8px; background:#1e293b; border:1px solid #334155; border-radius:10px; padding:18px 14px; cursor:pointer; color:#e2e8f0;" onmouseover="this.style.borderColor=\'#8b5cf6\'" onmouseout="this.style.borderColor=\'#334155\'">'
+                + '<span style="font-size:1.8em;">☁️</span><span style="font-weight:600;">From Cloud</span><span style="color:#94a3b8; font-size:0.78em; text-align:center;">A previously generated script (restores its brief)</span>'
+                + '</button>'
+                + '</div>';
+            el.addEventListener('click', (e) => { if (e.target === el) closeScriptChooser(); });
+            document.body.appendChild(el);
+            return el;
+        }
+
+        function openScriptChooser() {
+            _scriptChooserEl().style.display = 'flex';
+        }
+
+        function closeScriptChooser() {
+            const el = document.getElementById('openScriptChooser');
+            if (el) el.style.display = 'none';
+        }
+
+        function scriptChooserPick(which) {
+            closeScriptChooser();
+            if (which === 'cloud') {
+                openCloudScriptPicker();
+            } else {
+                const fi = document.getElementById('fileInput');
+                if (fi) fi.click();
+            }
         }
 
         async function openCloudScriptPicker() {
@@ -9635,9 +10254,23 @@ Thank you for watching!`;
                 .then(r => r.json())
                 .then(data => {
                     if (data && data.success && data.keys) {
+                        document.getElementById('modalAnthropicApiKey').value = data.keys.anthropic_api_key || '';
                         document.getElementById('modalGoogleApiKey').value = data.keys.google_api_key || '';
                         document.getElementById('modalHeygenApiKey').value = data.keys.heygen_api_key || '';
                         document.getElementById('modalGrokApiKey').value   = data.keys.grok_api_key   || '';
+                        // Show where each effective value comes from.
+                        const srcMap = data.sources || {};
+                        const setSrc = (id, src) => {
+                            const el = document.getElementById(id);
+                            if (!el) return;
+                            if (src === 'saved') { el.textContent = 'saved'; el.style.background = '#052e2b'; el.style.color = '#34d399'; }
+                            else if (src === 'env') { el.textContent = 'from .env'; el.style.background = '#0b1b33'; el.style.color = '#60a5fa'; }
+                            else { el.textContent = 'not set'; el.style.background = '#1e293b'; el.style.color = '#64748b'; }
+                        };
+                        setSrc('src_anthropic', srcMap.anthropic_api_key);
+                        setSrc('src_google', srcMap.google_api_key);
+                        setSrc('src_heygen', srcMap.heygen_api_key);
+                        setSrc('src_grok', srcMap.grok_api_key);
                         status.textContent = 'Loaded current values.';
                     } else {
                         status.textContent = (data && data.error) || 'Loaded local values only.';
@@ -9729,6 +10362,7 @@ Thank you for watching!`;
         async function saveApiKeysModal() {
             const status = document.getElementById('apiKeysModalStatus');
             const payload = {
+                anthropic_api_key: document.getElementById('modalAnthropicApiKey').value.trim(),
                 google_api_key: document.getElementById('modalGoogleApiKey').value.trim(),
                 heygen_api_key: document.getElementById('modalHeygenApiKey').value.trim(),
                 grok_api_key:   document.getElementById('modalGrokApiKey').value.trim(),
@@ -9993,7 +10627,10 @@ Thank you for watching!`;
         // ensureOutputDirSet — which only prompts when no path is set at all —
         // this always surfaces the current output path so the user can confirm
         // it's the right project folder (or go change it) before artifacts are
-        // written. Returns true to proceed, false to cancel (opens the picker).
+        // written. If they choose to change it, the picker opens and the run
+        // auto-resumes once a path is saved (the form's brief/topic is preserved,
+        // so nothing is regenerated). Returns true to proceed, false only if they
+        // close the picker without saving.
         async function remindSetCurrentPath() {
             // No local filesystem picker in the container/cloud build or mobile.
             if (window.IS_CONTAINER) return true;
@@ -10013,11 +10650,19 @@ Thank you for watching!`;
                 'OK = continue with this path\n' +
                 'Cancel = change the path first'
             );
-            if (!proceed) {
-                await openOutputDirModal();   // let them set/verify, then re-run
-                return false;
-            }
-            return true;
+            if (proceed) return true;
+            // They chose to change the path: open the picker and WAIT for a save,
+            // then auto-resume the run. The topic/brief already in the Create
+            // Script form is never touched, so nothing has to be regenerated — no
+            // extra server trip. Resolves true once a non-empty path is saved,
+            // false only if they close the picker without saving (a real cancel).
+            return new Promise(async (resolve) => {
+                await openOutputDirModal();
+                window.__outputDirGateResolve = (ok) => {
+                    window.__outputDirGateResolve = null;
+                    resolve(!!ok);
+                };
+            });
         }
 
         function closeOutputDirModal() {
@@ -10940,8 +11585,7 @@ Thank you for watching!`;
           <!-- Stage 1: Load Script -->
           <div class="sps-stage" data-sps-stage="load" style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden;">
             <div class="sps-stage-header" onclick="spsToggleStage('load')" style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; user-select:none;">
-              <span style="font-size:1.3em;">📁</span>
-              <strong style="flex:1;">Stage 1 — Load Script <span style="color:#f59e0b; font-size:0.75em; font-weight:500;">(required first)</span></strong>
+              <strong style="flex:1;">Load Script <span style="color:#f59e0b; font-size:0.75em; font-weight:500;">(required first)</span></strong>
               <span class="sps-stage-status" data-sps-status="load" style="font-size:0.8em; color:#64748b;">Pending</span>
               <span class="sps-stage-caret" style="color:#64748b;">▸</span>
             </div>
@@ -10967,8 +11611,7 @@ Thank you for watching!`;
           <!-- Stage 2: Script Flow -->
           <div class="sps-stage" data-sps-stage="flow" style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden;">
             <div class="sps-stage-header" onclick="spsToggleStage('flow')" style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; user-select:none;">
-              <span style="font-size:1.3em;">🔄</span>
-              <strong style="flex:1;">Stage 2 — Script Flow Quality</strong>
+              <strong style="flex:1;">Script Flow Quality</strong>
               <span class="sps-stage-status" data-sps-status="flow" style="font-size:0.8em; color:#64748b;">Pending</span>
               <span class="sps-stage-caret" style="color:#64748b;">▸</span>
             </div>
@@ -10983,8 +11626,7 @@ Thank you for watching!`;
           <!-- Stage 3: Shorten -->
           <div class="sps-stage" data-sps-stage="shorten" style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden;">
             <div class="sps-stage-header" onclick="spsToggleStage('shorten')" style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; user-select:none;">
-              <span style="font-size:1.3em;">✂️</span>
-              <strong style="flex:1;">Stage 3 — Shorten Script</strong>
+              <strong style="flex:1;">Shorten Script</strong>
               <span class="sps-stage-status" data-sps-status="shorten" style="font-size:0.8em; color:#64748b;">Pending</span>
               <span class="sps-stage-caret" style="color:#64748b;">▸</span>
             </div>
@@ -11014,8 +11656,7 @@ Thank you for watching!`;
           <!-- Stage 4: Hook & Summary -->
           <div class="sps-stage" data-sps-stage="hook" style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden;">
             <div class="sps-stage-header" onclick="spsToggleStage('hook')" style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; user-select:none;">
-              <span style="font-size:1.3em;">🎯</span>
-              <strong style="flex:1;">Stage 4 — Hook &amp; Summary</strong>
+              <strong style="flex:1;">Hook &amp; Summary</strong>
               <span class="sps-stage-status" data-sps-status="hook" style="font-size:0.8em; color:#64748b;">Pending</span>
               <span class="sps-stage-caret" style="color:#64748b;">▸</span>
             </div>
@@ -11030,8 +11671,7 @@ Thank you for watching!`;
           <!-- Stage 5: B-Roll Table -->
           <div class="sps-stage" data-sps-stage="broll_table" style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden;">
             <div class="sps-stage-header" onclick="spsToggleStage('broll_table')" style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; user-select:none;">
-              <span style="font-size:1.3em;">🎥</span>
-              <strong style="flex:1;">Stage 5 — B-Roll Table &amp; Shutterstock Links</strong>
+              <strong style="flex:1;">B-Roll Table &amp; Shutterstock Links</strong>
               <span class="sps-stage-status" data-sps-status="broll_table" style="font-size:0.8em; color:#64748b;">Pending</span>
               <span class="sps-stage-caret" style="color:#64748b;">▸</span>
             </div>
@@ -11047,8 +11687,7 @@ Thank you for watching!`;
           <!-- Stage 6: B-Roll Images -->
           <div class="sps-stage" data-sps-stage="broll_images" style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden;">
             <div class="sps-stage-header" onclick="spsToggleStage('broll_images')" style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; user-select:none;">
-              <span style="font-size:1.3em;">🎨</span>
-              <strong style="flex:1;">Stage 6 — B-Roll Images</strong>
+              <strong style="flex:1;">B-Roll Images</strong>
               <span class="sps-stage-status" data-sps-status="broll_images" style="font-size:0.8em; color:#64748b;">Pending</span>
               <span class="sps-stage-caret" style="color:#64748b;">▸</span>
             </div>
@@ -11063,8 +11702,7 @@ Thank you for watching!`;
           <!-- Stage 7: Grok Videos -->
           <div class="sps-stage" data-sps-stage="grok" style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden;">
             <div class="sps-stage-header" onclick="spsToggleStage('grok')" style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; user-select:none;">
-              <span style="font-size:1.3em;">🤖</span>
-              <strong style="flex:1;">Stage 7 — Grok Videos from B-Roll Table</strong>
+              <strong style="flex:1;">Grok Videos from B-Roll Table</strong>
               <span class="sps-stage-status" data-sps-status="grok" style="font-size:0.8em; color:#64748b;">Pending</span>
               <span class="sps-stage-caret" style="color:#64748b;">▸</span>
             </div>
@@ -11079,8 +11717,7 @@ Thank you for watching!`;
           <!-- Stage 8: Grok Imagine Prompts -->
           <div class="sps-stage" data-sps-stage="grok_imagine" style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden;">
             <div class="sps-stage-header" onclick="spsToggleStage('grok_imagine')" style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; user-select:none;">
-              <span style="font-size:1.3em;">🖼️</span>
-              <strong style="flex:1;">Stage 8 — Grok Imagine Prompts</strong>
+              <strong style="flex:1;">Grok Imagine Prompts</strong>
               <span class="sps-stage-status" data-sps-status="grok_imagine" style="font-size:0.8em; color:#64748b;">Pending</span>
               <span class="sps-stage-caret" style="color:#64748b;">▸</span>
             </div>
@@ -11093,8 +11730,7 @@ Thank you for watching!`;
           <!-- Stage 9: HeyGen Script & Curl -->
           <div class="sps-stage" data-sps-stage="heygen" style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden;">
             <div class="sps-stage-header" onclick="spsToggleStage('heygen')" style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; user-select:none;">
-              <span style="font-size:1.3em;">🎬</span>
-              <strong style="flex:1;">Stage 9 — HeyGen Script &amp; Curl Commands</strong>
+              <strong style="flex:1;">HeyGen Script &amp; Curl Commands</strong>
               <span class="sps-stage-status" data-sps-status="heygen" style="font-size:0.8em; color:#64748b;">Pending</span>
               <span class="sps-stage-caret" style="color:#64748b;">▸</span>
             </div>
@@ -11111,8 +11747,7 @@ Thank you for watching!`;
           <!-- Stage 10: Demo Scripts -->
           <div class="sps-stage" data-sps-stage="demo" style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden;">
             <div class="sps-stage-header" onclick="spsToggleStage('demo')" style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; user-select:none;">
-              <span style="font-size:1.3em;">🧪</span>
-              <strong style="flex:1;">Stage 10 — Demo Scripts</strong>
+              <strong style="flex:1;">Demo Scripts</strong>
               <span class="sps-stage-status" data-sps-status="demo" style="font-size:0.8em; color:#64748b;">Pending</span>
               <span class="sps-stage-caret" style="color:#64748b;">▸</span>
             </div>
@@ -11157,7 +11792,7 @@ Thank you for watching!`;
       broll_table:  { label: 'B-Roll Table & Shutterstock Links', icon: '🎥', status: 'pending' },
       broll_images: { label: 'B-Roll Images',                     icon: '🎨', status: 'pending' },
       grok:         { label: 'Grok Videos',                       icon: '🤖', status: 'pending' },
-      heygen:       { label: 'HeyGen Script & Curl Commands',     icon: '🎬', status: 'pending' },
+      heygen:       { label: 'HeyGen Script & Curl Commands',     icon: '<img src="/static/heygen_icon.png" alt="HeyGen" onerror="this.replaceWith(document.createTextNode(\'🎬\'))" style="height:1em; width:auto; vertical-align:middle;">', status: 'pending' },
       demo:         { label: 'Demo Scripts',                      icon: '🧪', status: 'pending' },
     };
     const _SPS_ORDER = ['load','flow','shorten','hook','broll_table','broll_images','grok','grok_imagine','heygen','demo'];

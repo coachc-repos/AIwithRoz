@@ -58,6 +58,14 @@ V1_TO_V2_AGENT_NAME: Dict[str, str] = {
     "Script-Topic-Assistant-Agent": "Script-Topic-Assistant-Agent",
     "Script-Demo-Assistant-Agent": "Script-Demo-Assistant-Agent",
     "Script-Shorten-Agent": "Script-Shorten-Agent",
+    # Archetype-specific pairs (predictions / Top-N list). Names match the
+    # Foundry agents verbatim; these identity entries are explicit so the
+    # mapping stays the single source of truth even though _resolve_v2_name
+    # would fall through to the same value.
+    "Script-Topic-Assistant-Predictions-Agent": "Script-Topic-Assistant-Predictions-Agent",
+    "Script-Writer-Predictions-Agent": "Script-Writer-Predictions-Agent",
+    "Script-Topic-Assistant-List-Agent": "Script-Topic-Assistant-List-Agent",
+    "Script-Writer-List-Agent": "Script-Writer-List-Agent",
 }
 
 # Lower-cased lookup for robustness against minor casing differences.
@@ -359,19 +367,32 @@ class BaseAgentClient(ABC):
                 print(
                     f"✅ [v2] {self.v2_agent_name} completed in {elapsed:.1f}s")
 
-                text_parts: List[str] = []
+                # Keep only the LAST assistant message, not a concatenation of
+                # every message item. The v2 Responses API can return several
+                # `message` items for a single turn — e.g. when the agent runs a
+                # web-search / multi-step loop it emits intermediate messages plus
+                # the final answer. Joining them all (the previous behavior)
+                # produced several full scripts per chapter, which the workflow
+                # then multiplied across chapters. The v1 backend this replaced
+                # took only the latest assistant message (text_messages[-1]); we
+                # restore that behavior so one call == one answer.
+                messages_text: List[str] = []
                 for item in getattr(response, "output", []) or []:
                     if getattr(item, "type", None) != "message":
                         continue
+                    parts: List[str] = []
                     for block in getattr(item, "content", []) or []:
                         txt = getattr(block, "text", None)
                         if isinstance(txt, str) and txt:
-                            text_parts.append(txt)
+                            parts.append(txt)
                         elif isinstance(block, dict) and isinstance(
                             block.get("text"), str
                         ):
-                            text_parts.append(block["text"])
-                response_text = "\n".join(text_parts).strip()
+                            parts.append(block["text"])
+                    if parts:
+                        messages_text.append("\n".join(parts))
+                # Last message wins — it's the agent's final answer.
+                response_text = (messages_text[-1] if messages_text else "").strip()
 
                 if not response_text:
                     return {
@@ -756,7 +777,6 @@ class _ThreadsShim:
 class _LegacyAgentsShim:
     def __init__(self, owner):
         self._owner = owner
-        self._agents_client = owner._v1()
         self._threads_shim = _ThreadsShim(owner)
 
     @property
@@ -764,8 +784,14 @@ class _LegacyAgentsShim:
         return self._threads_shim
 
     def __getattr__(self, name):
-        # messages / runs / get_agent / etc. → real v1 AgentsClient
-        return getattr(self._agents_client, name)
+        # messages / runs / get_agent / etc. → real v1 AgentsClient, resolved
+        # LAZILY. In v2 mode `.threads.create()` dispatches to create_thread()
+        # (a pure v2 conversation call), so the v1 client — and its agent_id
+        # assistant lookup — is never needed. Initializing it EAGERLY here used
+        # to crash any v2-only agent whose agent_id is a sentinel with no
+        # matching classic Assistant (e.g. the archetype List/Predictions
+        # clients: asst_*_v2_only). Only genuine v1-only ops hit this now.
+        return getattr(self._owner._v1(), name)
 
 
 class _LegacyProjectShim:

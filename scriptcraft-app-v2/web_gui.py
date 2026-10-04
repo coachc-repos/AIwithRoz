@@ -49,7 +49,7 @@ except ImportError:
     pass  # python-dotenv not installed; rely on the real environment
 
 
-VERSION = "15.34-quotes-progress-mapping"
+VERSION = "15.35-ui-overhaul-unified-keys"
 
 # Verify Google API key availability for thumbnail generation.
 if "GOOGLE_API_KEY" in os.environ and os.environ.get("GOOGLE_API_KEY"):

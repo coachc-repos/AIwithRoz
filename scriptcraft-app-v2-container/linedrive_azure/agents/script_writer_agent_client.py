@@ -14,11 +14,16 @@ from .youtube_transcript_functions import YouTubeTranscriptSearcher
 class ScriptWriterAgentClient(BaseAgentClient):
     """Specialized client for script writing and content creation"""
 
-    def __init__(self):
-        """Initialize the Script Writer Agent"""
-        super().__init__(
-            agent_id="asst_gUvMkcUOwebEb4YWq0zfNMtb", agent_name="Script-Writer-Agent"
-        )
+    def __init__(self, agent_id: str = "asst_gUvMkcUOwebEb4YWq0zfNMtb",
+                 agent_name: str = "Script-Writer-Agent"):
+        """Initialize the Script Writer Agent.
+
+        Accepts an optional agent_id/agent_name so archetype-specific
+        subclasses (predictions / Top-N list) can point at their own Foundry
+        agent while inheriting every helper (style grounding, write_video_script,
+        get_specialized_info, etc.) unchanged.
+        """
+        super().__init__(agent_id=agent_id, agent_name=agent_name)
         # Initialize YouTube transcript searcher for style grounding
         try:
             self.transcript_searcher = YouTubeTranscriptSearcher()
