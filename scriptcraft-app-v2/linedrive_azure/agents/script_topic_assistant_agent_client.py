@@ -13,12 +13,15 @@ from .base_agent_client import BaseAgentClient
 class ScriptTopicAssistantAgentClient(BaseAgentClient):
     """Specialized client for script topic assistance and chapter planning"""
 
-    def __init__(self):
-        """Initialize the Script Topic Assistant Agent"""
-        super().__init__(
-            agent_id="asst_vqx6qOfUIEFnuKtb9XEyNtXK",
-            agent_name="Script-Topic-Assistant-Agent",
-        )
+    def __init__(self, agent_id: str = "asst_vqx6qOfUIEFnuKtb9XEyNtXK",
+                 agent_name: str = "Script-Topic-Assistant-Agent"):
+        """Initialize the Script Topic Assistant Agent.
+
+        Accepts an optional agent_id/agent_name so archetype-specific
+        subclasses (predictions / Top-N list) can point at their own Foundry
+        agent while inheriting the topic-planning helpers unchanged.
+        """
+        super().__init__(agent_id=agent_id, agent_name=agent_name)
 
     def get_specialized_info(self) -> Dict[str, Any]:
         """Get specialized information about the script topic assistant agent"""
