@@ -1561,6 +1561,11 @@
                     show('❌ Save this script to the cloud first — it needs a Script-ID and Version before it can be a reference.');
                     return;
                 }
+                // This can take a while (cloud write + style-guide reseed), so show
+                // a wait cursor + a ticking timer on the button until it finishes.
+                const btn = document.getElementById('markRefBtn');
+                const timer = btn ? _startBtnTimer(btn, 'Marking as reference') : null;
+                document.body.style.cursor = 'wait';
                 try {
                     const r = await fetch('/api/script/mark-reference', {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1571,6 +1576,10 @@
                         ? '⭐ Marked as <strong>reference</strong>. New scripts will follow this one as the style guide.'
                         : ('❌ ' + (d.error || 'Could not mark as reference')));
                 } catch (e) { show('❌ ' + e); }
+                finally {
+                    document.body.style.cursor = '';
+                    if (btn && timer) _stopBtnTimer(btn, timer);
+                }
             }
 
             // ---- Hide / show [PRODUCTION …] blocks in the script viewer ----
@@ -5426,7 +5435,7 @@ Time management content here...`;
                   + '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px;">'
                   + '<label for="refineModel" style="color:#cbd5e1; font-size:13px; font-weight:600;">✏️ Refine with:</label>'
                   + '<select id="refineModel" style="padding:6px 8px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-size:13px;">'
-                  + '<option value="claude" selected>Claude Opus 4.8 — careful edits (web search on)</option>'
+                  + '<option value="claude" selected>Claude Opus 5.5 — careful edits (web search on)</option>'
                   + '<option value="grok">Grok — recent / X-aware</option>'
                   + '</select>'
                   + '<span style="color:#64748b; font-size:12px;">Applies ONE change and returns the full updated script. Production blocks are preserved.</span>'
