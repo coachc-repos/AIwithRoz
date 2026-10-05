@@ -49,7 +49,7 @@ except ImportError:
     pass  # python-dotenv not installed; rely on the real environment
 
 
-VERSION = "15.35-ui-overhaul-unified-keys"
+VERSION = "15.36-refine-opus55-high-effort"
 
 # Verify Google API key availability for thumbnail generation.
 if "GOOGLE_API_KEY" in os.environ and os.environ.get("GOOGLE_API_KEY"):
@@ -6675,7 +6675,7 @@ def _refine_script(script: str, instructions: str, model: str = "claude",
                    title: str = "", audience: str = "") -> tuple:
     """Apply a single user-directed change to a finished script.
 
-    Returns (updated_text, model_used). `model` is "claude" (Opus 4.8, web
+    Returns (updated_text, model_used). `model` is "claude" (Opus 5.5, web
     search on) or "grok" (xAI, X/recent-aware). Production blocks are masked and
     restored byte-for-byte; if the model drops a placeholder, we retry once on
     the raw script asking it to keep the blocks verbatim (a per-segment fallback
@@ -6699,12 +6699,16 @@ def _refine_script(script: str, instructions: str, model: str = "claude",
         if use_grok:
             out = _grok_complete(_REFINE_SYSTEM, user, model=IDEA_GROK_MODEL)
             return _strip_reminder_tags(out or ""), IDEA_GROK_MODEL
-        # Claude Opus 5.5 at MAX reasoning effort for the sharpest edits (user
-        # request — not Opus 4.8, not medium effort).
+        # Claude Opus 5.5 at HIGH reasoning effort (not Opus 4.8, not medium).
+        # NOTE: effort="max" on opus-5-5 OVERTHINKS this task — it burns the
+        # whole token budget on hidden reasoning and returns ZERO visible text
+        # (that is the "Refine returned an empty script" bug). "high" reasons
+        # hard and still emits the full updated script. max_tokens is raised so
+        # a long script (2k+ words) fits alongside the thinking block.
         out = _anthropic_complete(
-            _REFINE_SYSTEM, user, max_tokens=16000,
+            _REFINE_SYSTEM, user, max_tokens=32000,
             use_web_search=True, model=REFINE_MODEL, timeout=240.0,
-            effort="max", thinking=True,
+            effort="high", thinking=True,
         )
         return _strip_reminder_tags(out or ""), REFINE_MODEL
 
