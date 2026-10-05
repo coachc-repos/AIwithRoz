@@ -49,7 +49,7 @@ except ImportError:
     pass  # python-dotenv not installed; rely on the real environment
 
 
-VERSION = "15.36-refine-opus55-high-effort"
+VERSION = "15.37-save-refined-to-cloud"
 
 # Verify Google API key availability for thumbnail generation.
 if "GOOGLE_API_KEY" in os.environ and os.environ.get("GOOGLE_API_KEY"):
@@ -6774,6 +6774,74 @@ def api_script_refine():
     logger.info("✏️ Script refined with %s (%d → %d chars) | ask: %s",
                 used, len(script), len(updated), instructions[:80])
     return jsonify({"success": True, "updated_script": updated, "model": used})
+
+
+@app.route("/api/script/save-to-cloud", methods=["POST"])
+def api_script_save_to_cloud():
+    """Persist the current script to the cloud as a pullable copy.
+
+    Modes:
+      - new_copy=True  -> a brand-new Script-ID (a distinct, named copy that
+                          shows as its own entry in Open Script -> From Cloud).
+                          Used by the manual "Save to Cloud" button.
+      - new_copy=False -> a new version under the given script_id (the refined
+                          script becomes the latest pullable version). Used by
+                          the auto-save after a Refine.
+
+    Returns the resolved script_id / version_id / title. Verified with a
+    read-back so the UI only reports success when the write actually landed.
+    """
+    data = request.get_json(silent=True) or {}
+    script = (data.get("script") or "").strip()
+    if not script:
+        return jsonify({"success": False, "error": "No script to save."}), 400
+    if not _artifacts_enabled():
+        return jsonify({
+            "success": False,
+            "error": "Cloud storage is not configured, so the script cannot be "
+                     "saved to the cloud.",
+        }), 503
+
+    title = (data.get("title") or "").strip()
+    brief = (data.get("brief") or "").strip()
+    new_copy = bool(data.get("new_copy", False))
+    src_id = (data.get("script_id") or "").strip()
+    try:
+        if new_copy or not src_id:
+            # Fresh Script-ID + version: a standalone, pullable copy.
+            stamped, sid, vid = _ensure_script_ids(
+                script, script_id=_new_ld_id("ld"), version_id=_new_ld_id("v"))
+        else:
+            # New version under the existing script (refined -> latest version).
+            stamped, sid, vid = _ensure_script_ids(
+                script, bump_version=True, script_id=src_id)
+
+        if not title:
+            m = (re.search(r"(?im)^\s*\**\s*Title\s*\**\s*:\s*(.+?)\s*$", stamped)
+                 or re.search(r"(?m)^\s*#\s+(.+?)\s*$", stamped))
+            title = (m.group(1).strip() if m else "") or "Untitled script"
+
+        _persist_version_artifacts(
+            sid, vid,
+            {"enhanced_script": stamped, "brief": brief, "script_title": title},
+            title)
+
+        # Read-back verification — _persist_version_artifacts never raises, so
+        # confirm the manifest actually landed before telling the user it saved.
+        chk = _read_version_artifacts(sid, vid)
+        if not chk or not (chk.get("enhanced_script") or "").strip():
+            return jsonify({
+                "success": False,
+                "error": "The cloud save could not be verified — please retry.",
+            }), 502
+
+        logger.info("☁️ Saved script to cloud %s/%s (new_copy=%s) title=%r",
+                    sid, vid, new_copy, title[:60])
+        return jsonify({"success": True, "script_id": sid, "version_id": vid,
+                        "title": title})
+    except Exception as e:
+        logger.error("❌ /api/script/save-to-cloud failed: %s", e)
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/x/generate", methods=["POST"])

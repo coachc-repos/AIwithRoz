@@ -1582,6 +1582,52 @@
                 }
             }
 
+            // ---- Save the current script to the cloud (named copy / new version) ----
+            // Shared by the manual "Save to Cloud" button (new_copy=true, named)
+            // and the auto-save after a Refine (new_copy=false → new version).
+            // Adopts the returned ids so later saves/refs target the saved copy.
+            async function _saveScriptCopyToCloud({ title, newCopy, scriptId } = {}) {
+                const script = (window.currentScript || '').trim();
+                if (!script) throw new Error('No script to save.');
+                const r = await fetch('/api/script/save-to-cloud', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        script: script,
+                        title: (title || window.currentScriptTitle || '').trim(),
+                        new_copy: !!newCopy,
+                        script_id: scriptId || '',
+                        brief: (window.lastResultPayload && window.lastResultPayload.brief) || ''
+                    })
+                });
+                const d = await r.json();
+                if (!d.success) throw new Error(d.error || 'Save failed');
+                window.currentScriptId = d.script_id;
+                window.currentScriptVersion = d.version_id;
+                if (d.title) window.currentScriptTitle = d.title;
+                return d;
+            }
+
+            async function saveScriptToCloud() {
+                const statusEl = document.getElementById('polishScriptStatus');
+                const show = (m) => { if (statusEl) { statusEl.style.display = 'block'; statusEl.innerHTML = m; } };
+                const script = (window.currentScript || '').trim();
+                if (!script) { show('❌ No script yet — create or load one first.'); return; }
+                const name = prompt('Name this cloud copy:', window.currentScriptTitle || 'My script');
+                if (name === null) return; // cancelled
+                const btn = document.getElementById('saveCloudBtn');
+                const timer = btn ? _startBtnTimer(btn, 'Saving to cloud') : null;
+                document.body.style.cursor = 'wait';
+                try {
+                    const d = await _saveScriptCopyToCloud({ title: (name || '').trim(), newCopy: true });
+                    show('☁️ Saved <strong>' + (d.title || 'copy').replace(/</g, '&lt;')
+                        + '</strong> to the cloud. Pull it later via <strong>Open Script → From Cloud</strong>.');
+                } catch (e) { show('❌ ' + (e.message || e)); }
+                finally {
+                    document.body.style.cursor = '';
+                    if (btn && timer) _stopBtnTimer(btn, timer);
+                }
+            }
+
             // ---- Hide / show [PRODUCTION …] blocks in the script viewer ----
             if (typeof window._hideProductionBlocks === 'undefined') window._hideProductionBlocks = false;
             function toggleProductionBlocks() {
@@ -1640,9 +1686,23 @@
                     try { renderMarkdownContent(window.currentScript, null, null, null); } catch (_e) {}
                     const revertBtn = document.getElementById('revertPolishBtn');
                     if (revertBtn) revertBtn.style.display = '';
+                    // Auto-save the refined script to the cloud as a new version
+                    // (or a fresh copy if this script has no cloud id yet) so it
+                    // can be pulled later via Open Script → From Cloud.
+                    let cloudNote = '';
+                    try {
+                        await _saveScriptCopyToCloud({
+                            title: window.currentScriptTitle || '',
+                            newCopy: false,
+                            scriptId: window.currentScriptId || ''
+                        });
+                        cloudNote = ' 💾 Saved a copy to the cloud (pull it later via <strong>Open Script → From Cloud</strong>).';
+                    } catch (se) {
+                        cloudNote = ' ⚠️ Could not auto-save to the cloud: ' + (se.message || se) + '.';
+                    }
                     statusEl.innerHTML = '✅ Updated with <strong>' + (data.model || label)
-                        + '</strong>. Exports/downloads now use the new version. '
-                        + 'Refine again to keep iterating, or “Undo last AI edit”.';
+                        + '</strong>. Exports/downloads now use the new version.' + cloudNote
+                        + ' Refine again to keep iterating, or “Undo last AI edit”.';
                 } catch (e) {
                     statusEl.textContent = '❌ ' + e;
                 } finally {
@@ -5424,6 +5484,10 @@ Time management content here...`;
                   + '<button id="markRefBtn" class="script-hdr-btn" onclick="markCurrentAsReference()" '
                   + 'title="Mark this script as a REFERENCE / used-in-production. Reference scripts lead the style guide fed into every new generation.">'
                   + '<span>Mark as reference</span>'
+                  + '</button>'
+                  + '<button id="saveCloudBtn" class="script-hdr-btn" onclick="saveScriptToCloud()" '
+                  + 'title="Save this script to the cloud under a name you choose, so you can pull it later via Open Script → From Cloud.">'
+                  + '<span>☁️ Save to Cloud</span>'
                   + '</button>'
                   + '<button id="toggleProdBtn" class="script-hdr-btn" onclick="toggleProductionBlocks()" '
                   + 'title="Hide or show the [PRODUCTION …] blocks (Grok Imagine prompts, cold open, verify notes, cheat-sheet overlays) in this viewer. Exports always keep the full script.">'
