@@ -8363,6 +8363,13 @@ Thank you for watching!`;
             };
             const p = window.currentResultPayload;
             window._currentBrollRows = p.brollRows || null;
+            // Reset the B-roll table override to THIS script's table (or null).
+            // Without this, loading a script that has no B-roll table leaves the
+            // PREVIOUS script's table in window._currentBrollTable, so Process
+            // Script sends it as broll_table_override and generates B-roll /
+            // Shutterstock / Grok for the WRONG script. (window.currentScript is
+            // set at the top of this function; _currentYoutubeDetails above.)
+            window._currentBrollTable = p.brollTable || null;
             if (typeof spsSetLoadStatus === 'function') spsSetLoadStatus('⏳ Rendering script & media…');
             const tabbedHTML = createTabbedInterface(
                 scriptText, p.demoPackages, p.thumbnails, p.chapterComparisons,

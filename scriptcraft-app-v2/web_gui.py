@@ -49,7 +49,7 @@ except ImportError:
     pass  # python-dotenv not installed; rely on the real environment
 
 
-VERSION = "15.37-save-refined-to-cloud"
+VERSION = "15.38-fix-stale-broll-override"
 
 # Verify Google API key availability for thumbnail generation.
 if "GOOGLE_API_KEY" in os.environ and os.environ.get("GOOGLE_API_KEY"):
