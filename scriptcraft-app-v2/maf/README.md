@@ -73,19 +73,65 @@ subscription as the Foundry project).
 `observability.py` holds the shared endpoint / credential / tracing helpers used
 by all three entry points.
 
-## Step 3 (in progress) — portal agents -> code, one at a time
+## Step 3 (done) — all 15 portal agents -> code
 
-Convert each portal agent to a code-defined MAF agent seeded from its captured
-`../agent_instructions/*.md`; retire the portal copy only after a side-by-side
-`--compare` passes.
+Each portal agent is now a code-defined MAF agent seeded from its captured
+`../agent_instructions/*.md` (all 15 verified identical to the live portal
+prompts on 2026-10-07). Retire a portal copy only after its checks pass.
+
+### Model policy, web search, and how the agents were tested
+
+- **Models.** Every code agent runs Claude Opus 5.5 (`claude-opus-5-5`) on the
+  Foundry deployment, except Quotes-and-Statistics, which runs Grok 4.7 through
+  xAI so it can search X. The Reviewer uses the second Opus 5.5 deployment,
+  `claude-opus-5-5-2`, as the portal does, so parallel reviews do not compete
+  with the writers. `--compare` prints the code and portal models and flags a
+  mismatch (the portal moved Shorten, YouTube, Demo-Assistant, and the List
+  writer to Opus 5.5 on 2026-10-07 03:22 UTC, after their prompts were captured).
+- **Web search is a function tool.** Claude agents get a `web_search` function
+  (`_common.make_web_search_tool`): `gpt-5.4-mini` runs Foundry's hosted web
+  search and returns findings with URLs, and Claude writes its own reply. Do not
+  attach Foundry's hosted web search to a Claude agent directly. It runs (the MAF
+  docs say Azure-OpenAI-only), but whenever a search fires the returned text
+  stops following the agent's formatting rules:
+
+  | Code replies on recorded app calls | Searches | Curly quotes | No-break spaces | Dashes |
+  |---|---|---|---|---|
+  | Teaching writer | none | 0 | 0 | 0 |
+  | List writer | 1 each | 5 | 24 | 11 |
+  | Reviewer | 3 of 7 | 42 | 1 | 27 |
+  | Reviewer, same calls, function-tool search | 2 of 7 | 0 | 0 | 0 |
+
+  Every portal agent has that hosted tool attached, which explains its format
+  failures in the app: `"##  "` double-space headings (the Quotes and YouTube
+  parsers match nothing), a B-Roll table without pipes (zero rows parsed), a
+  narrow no-break space inside "Chapter 1", and, on one code run, a revised
+  script returned twice.
+- **Which agents search.** All Claude agents have the function except the three
+  Writers, which work from the Topic plan (switch `web_search=True` in
+  `pipeline.SPECS` to give them search). The Writers also get a length rule, to
+  keep "around N words" chapters within 20% of N. Quotes-and-Statistics uses xAI's own
+  X search and web search, capped with `max_turns` (an unbounded full-script
+  request ran over ten minutes).
+- **Throttling.** `claude-opus-5-5` has 78 capacity units; the app's pipeline
+  writes up to eight chapters in parallel and hits HTTP 429. `run_with_retry`
+  backs off on 429 and on DNS blips.
+- **Testing.** Standalone agents run live `--compare` (code and portal on the
+  same input). The pipeline agents (Topic, Writer, Reviewer, Quotes, Hook) are
+  tested by replay: `testing/capture_pipeline.py` runs the APP's real pipeline
+  with the portal agents and records every message it sends; `--replay` sends
+  the same messages to the code agents and scores both replies with the app's
+  own parsing. Recorded runs: teaching, Top-N list, and predictions.
 
 - **`agents/broll.py`** — `Script-bRoll-Agent` as code (claude-opus-5-5 via
   `FoundryChatClient`, seeded from the captured instructions). `--compare` runs
   the code agent and the portal agent on the same script and prints both tables +
   row/section stats. Validated: both produce well-formed B-Roll tables
   (Timecode | Search Term | Description | Scene Context) with the
-  `## Animation Suggestions` section. `web_search` is omitted — B-Roll reads the
-  provided script, and the GA Foundry web-search tool is Azure-OpenAI-only.
+  `## Animation Suggestions` section. Re-validated with the `web_search`
+  function: 21 pipe-table rows (2 searches). One portal reply in testing was a
+  plain-text table with no pipes, which the app's B-Roll parser reads as zero
+  rows (no EDL markers, no per-row Grok prompts).
 
   ```bash
   maf/.venv/bin/python maf/agents/broll.py --compare
@@ -93,7 +139,7 @@ Convert each portal agent to a code-defined MAF agent seeded from its captured
   ```
 
 - **`agents/hook_summary.py`** — `Script-Hook-and-Summary-Agent` as code (same
-  model, same omission of `web_search`). It is a **drop-in** for
+  model, `web_search` function attached). It is a **drop-in** for
   `HookAndSummaryAgentClient.generate_hook_and_summary()`: it sends the app's
   request message verbatim (checked byte-for-byte) and returns the same dict keys
   `web_gui.py` reads. The reply parser is ported from the app client and
@@ -107,7 +153,9 @@ Convert each portal agent to a code-defined MAF agent seeded from its captured
   Validated 2026-10-07: both agents parse into 3 hooks, opening, summary,
   3 thumbnail lines, and flow analysis. The code agent was closer to the word
   targets and followed the no-contractions / no-em-dash voice rules; the portal
-  agent's summary ran 184 words against a 90-135 target.
+  agent's summary ran 184 words against a 90-135 target. `--replay` on the app's
+  recorded calls (teaching, list, predictions): both agents parse into 3 hooks,
+  opening, summary, 3 thumbnail lines, and flow analysis every time.
 
   ```bash
   maf/.venv/bin/python maf/agents/hook_summary.py --compare --dump /tmp/hook_cmp
@@ -180,15 +228,21 @@ Convert each portal agent to a code-defined MAF agent seeded from its captured
   notes, a "Let me know…" sign-off, and a narrow no-break space inside "Chapter 1"
   that the app's `[ \t]` chapter regexes miss.
 
+  With Foundry's hosted web search attached, one code run returned the revised
+  script twice. With the `web_search` function it is clean again: 29 of 29
+  placeholders, 7 of 7 headings, 4 of 4 trailing sections, one search. The
+  parser also accepts "Flow issues found:" as well as "Flow Issues Identified:".
+
   ```bash
   maf/.venv/bin/python maf/agents/repeat_flow.py --compare --dump /tmp/flow_cmp
   maf/.venv/bin/python maf/agents/repeat_flow.py --compare --code-only --script-file s.md
   ```
 
-- **`agents/shorten.py`** — `Script-Shorten-Agent` as code: the first
-  non-Claude conversion (`gpt-6-astra` via `FoundryChatClient`) and the second
-  transform agent, since the shortened script replaces the user's when "Shorten
-  script" is checked. It is a drop-in for
+- **`agents/shorten.py`** — `Script-Shorten-Agent` as code on `claude-opus-5-5`
+  (the portal agent's model since its v8; this module first ran `gpt-6-astra`
+  from a stale capture header, which made the first comparison cross-model). It
+  is the second transform agent: the shortened script replaces the user's when
+  "Shorten script" is checked. It is a drop-in for
   `ScriptShortenAgentClient.shorten_to_target()`: same request and same
   per-chapter retry request (both checked byte-for-byte), same keys, and the
   content-filter fallback is ported. Two fixes: a reply cut off by `max_tokens`
@@ -204,20 +258,27 @@ Convert each portal agent to a code-defined MAF agent seeded from its captured
   prompt promises ±10%), chapters, headings, trailing sections, notes, and
   punctuation. The code agent runs the captured prompt plus a two-rule
   `APP_CONTRACT`: keep every placeholder, and never drop items from a list the
-  script counts out. `MAF_SHORTEN_APP_CONTRACT=0` turns it off.
+  script counts out. `MAF_SHORTEN_APP_CONTRACT=0` turns it off. It also adds a
+  **correction pass** the app client lacks: if the reply is still more than 10%
+  over the target, the shortened script goes through the same request once more,
+  and the second reply is kept only if it is closer and keeps every placeholder.
+  On Opus 5.5 the first pass alone landed at 111-114% on the golden script.
 
-  Validated 2026-10-07 with 25% cuts:
+  Validated 2026-10-07 with 25% cuts (the first code rows ran `gpt-6-astra`):
 
   | Agent | Script | Placeholders kept | Host words vs target | Within ±10% |
   |---|---|---|---|---|
   | Portal | golden | 29 of 29 | 1626 of 1384 (117%) | no |
   | Portal | produced | 21 of 21 | 2176 of 1820 (120%) | no |
   | Portal | Top-N list | 35 of 35 | 1882 of 1694 (111%) | no |
-  | Code, no addendum | golden | 29 of 29 | 1394 (101%) | yes |
-  | Code, no addendum | produced | 21 of 21 | 1757 (97%) | yes |
-  | Code, no addendum | Top-N list | 35 of 35 | 1682 (99%), but cut "Ten mistakes, ten seconds" to 3 items | yes |
-  | **Code + addendum** | golden | 29 of 29 | 1398 (101%) | yes |
-  | **Code + addendum** | Top-N list | 35 of 35 | 1708 (101%), all 10 items kept | yes |
+  | Code (gpt-6-astra), no addendum | golden | 29 of 29 | 1394 (101%) | yes |
+  | Code (gpt-6-astra), no addendum | produced | 21 of 21 | 1757 (97%) | yes |
+  | Code (gpt-6-astra), no addendum | Top-N list | 35 of 35 | 1682 (99%), but cut "Ten mistakes, ten seconds" to 3 items | yes |
+  | Code (gpt-6-astra) + addendum | golden | 29 of 29 | 1398 (101%) | yes |
+  | Code (gpt-6-astra) + addendum | Top-N list | 35 of 35 | 1708 (101%), all 10 items kept | yes |
+  | **Code (Opus 5.5), final** | golden | 29 of 29 | 1416 (102%); first pass 1533 (111%), corrected | yes |
+  | **Code (Opus 5.5), final** | produced | 21 of 21 | 1991 (109%), no correction needed | yes |
+  | **Code (Opus 5.5), final** | Top-N list | 35 of 35 | 1860 (110%), all 10 montage items kept | yes |
 
   Every run kept all chapters, headings, and trailing sections, and added no
   notes, dashes, or contractions. Unlike Repeat-and-Flow, the portal Shorten
@@ -229,6 +290,116 @@ Convert each portal agent to a code-defined MAF agent seeded from its captured
   maf/.venv/bin/python maf/agents/shorten.py --compare --code-only --percent 30 --script-file s.md
   ```
 
+- **`agents/pipeline.py`** — the seven agents the script pipeline calls with
+  messages it builds itself: Topic Assistant and Writer for each format
+  (teaching, list, predictions) and the Reviewer, plus the Demo-Assistant (not
+  called by the app; its portal prompt is an old Topic Assistant copy, so it is
+  tested as a topic planner). The drop-in surface is message-level: `send()`
+  returns the same dict as `BaseAgentClient.send_message`. Scoring ports the
+  pipeline's own parsing: the chapter list it extracts from a Topic reply (with
+  its list/predictions cap of N + 2), the writer refusal check, and the
+  Reviewer clean-up.
+
+  Two app-contract rules, both from replay evidence. **Topic:** write
+  "Chapter N:" only in the outline's chapter headings; one code reply listed
+  "- **Chapter 3:** Dana's saved context note (...)" above the outline, so the
+  app would have planned two bogus chapters and dropped the real recap.
+  **Writers:** no web search, and keep "around N words" chapters within 20% of N.
+
+  Topic Assistants, replayed on the app's recorded planning calls (the chapters
+  the app extracts, against its cap):
+
+  | Format | Code, with the chapter-heading rule | Portal |
+  |---|---|---|
+  | Teaching | 7 of 8, "The 5 AI Habits Quietly Eating…" to "Your Five Habit Fix Cheat Sheet" | 7 of 8 |
+  | List | 10 of 10, after 3 searches drawing on 22 sources | 10 of 10 |
+  | Predictions | 8 of 8, "Monday Morning, Twenty Thirty" to "A Workday Worth Waking Up For" | 8 of 8 |
+
+  With the rule, "Chapter N:" appeared only in the 7 outline headings (49 other
+  references used "Ch N"). Without it, one teaching run would have planned two
+  bogus chapters and lost the recap.
+
+  Writers, replayed on every recorded chapter (spoken Host words, the unit of
+  the pipeline's length targets):
+
+  | Writer and target | Chapters | Code | Portal | Whole script, code vs portal |
+  |---|---|---|---|---|
+  | Teaching, "300+ words" | 7 | 416-632, all above 300 | 408-735 | 3,491 vs 3,703 words |
+  | List, "around 120 words" | 10 | avg 142, 8 of 10 within 20% | avg 108, 6 of 10 | 9.5 vs 7.2 minutes |
+  | Predictions, "around 150 words" | 8 | avg 178, 6 of 8 within 20% | avg 138, 8 of 8 | 9.5 vs 7.4 minutes |
+
+  The capture asked for "8-10 minutes": the code List and Predictions scripts
+  land inside it and the portal's fall short. All 25 code chapters succeeded
+  with zero formatting quirks and no refusals (the portal's List and Predictions
+  chapters had 47 and 9 quirks). The code teaching writer opens chapter 1 with a
+  "FINAL HOOK:" block, following the golden reference; the app offers it as the
+  "Current FINAL HOOK" hook option and finalize-hook keeps a single FINAL HOOK.
+
+  The Reviewer replied in the required "REVISED CHAPTER:" format on all 7
+  recorded chapters with zero formatting quirks (the portal: 14-22 quirks on the
+  three chapters where it searched, and the marker missing once). The
+  Demo-Assistant, given the app's teaching topic request, planned 7 chapters as
+  the portal did.
+
+  ```bash
+  maf/.venv/bin/python maf/agents/pipeline.py --replay CAPTURE_DIR [--agent NAME]
+  maf/.venv/bin/python maf/agents/pipeline.py --replay CAPTURE_DIR \
+      --as-agent Script-Demo-Assistant-Agent --from-agent Script-Topic-Assistant-Agent
+  ```
+
+- **`agents/quotes_stats.py`** — `Statistics-and-Quotes-Finder-Agent` on Grok
+  4.7 through xAI's Responses API with **X search** and web search (MAF's OpenAI
+  client passes xAI's tool definitions through and treats xAI's `x_*` calls as
+  informational). Drop-in for `generate_quotes_and_statistics()` (request and
+  parser checked identical). A sourcing addendum: search X first and use at
+  least one real X post when one exists, exact quotes only, and a **Link:** line
+  under every quote and statistic (the app's parser only counts the
+  "**Quote N:**" labels, so extra lines are safe). `MAF_QUOTES_SOURCING=0` and
+  `MAF_QUOTES_MAX_TURNS` (default 8) control it.
+
+  | Run | Quotes + stats the app counts | Links (X posts) | From own searches | Dates in 18 months | Searches |
+  |---|---|---|---|---|---|
+  | Portal, golden | 0 + 0 | 0 | n/a | 0 of 0 | 1 web |
+  | Code, golden | 3 + 3 | 5 (2) | 4 | 6 of 8 | 10 web, 8 X |
+  | Portal, app's recorded teaching call | 0 + 0 | 0 | n/a | 0 of 0 | n/a |
+  | Code, same call | 3 + 3 | 6 (1) | 6 | 8 of 8 | 16 web, 6 X |
+
+  The portal's "0 + 0" is real in the app: its headings read `"##  📊"` with two
+  spaces, and its "quotes" included "Paraphrased from the script's guidance" and
+  a statistic dressed as a quote. The code agent's quotes in testing were real X
+  posts (Ethan Mollick, Gary Marcus) and sourced articles (EBU and BBC, KPMG).
+
+  ```bash
+  maf/.venv/bin/python maf/agents/quotes_stats.py --compare --dump /tmp/quotes_cmp
+  maf/.venv/bin/python maf/agents/quotes_stats.py --replay CAPTURE_DIR
+  ```
+
+- **`agents/youtube_details.py`** — `Script-Youtube-Upload-Details-Agent` as
+  code. Drop-in for `generate_upload_details()`: the ~17K-character request
+  (checked byte-for-byte), the client's refusal retry, its `extract_*` helpers,
+  and its timestamp check. On the golden script the app extracts a title,
+  filename, 30 tags, a 3,113-character description with 10 tool links (from 2
+  searches), and 19 timestamps, none past the script's duration. From the portal
+  reply it extracts nothing: its `"##  📁"` headings miss the client's regexes,
+  so the app gets "Untitled Video", no tags, and no description.
+
+  ```bash
+  maf/.venv/bin/python maf/agents/youtube_details.py --compare --dump /tmp/yt_cmp
+  ```
+
+- **`agents/polisher.py`** — `Script-Polisher-Agent` as code (only the legacy
+  console UI calls it). Drop-in for `polish_script()` (request checked
+  identical), plus a markup addendum: keep "Heading:" lines, "Host:" labels, and
+  `[PRODUCTION BEGIN]` / `[PRODUCTION END]` exactly. The portal agent rewrote 40
+  of 58 production markers as `[PRODUCTION_BEGIN]` (the app's regex needs the
+  space); the code agent with the addendum kept all 7 headings and damaged no
+  markers, with the original text unchanged and 17 visual cues added.
+
+- **`agents/registry.py`** maps every Foundry portal name to its code agent's
+  builder (used by the hosted entry point). **`testing/capture_pipeline.py`**
+  records the app's real pipeline calls for replay (run it with the app's
+  interpreter).
+
 `agents/_common.py` holds the shared recipe (load captured instructions, build
 the code agent, retry transient DNS blips, call the portal agent by name, warn
 when a reply hits `max_tokens`). For the agents that rewrite the script,
@@ -237,15 +408,34 @@ when a reply hits `max_tokens`). For the agents that rewrite the script,
 own Host-word counter (checked identical to both copies in `web_gui.py`). Each
 new conversion is mostly its own prompt, parser, and `--compare` scoring.
 
-Remaining portal agents to convert: Topic-Assistant, Writer, Reviewer, Polisher
-(only the legacy console UI calls it), Youtube-Upload-Details (gpt-6-astra, and
-actually needs web search for tool URLs), Quotes-and-Statistics (grok-4.7),
-Demo-Assistant, + the List/Predictions pairs.
+All 15 portal agents now have code versions. The clients for Tournament-Agent
+and AI-Tips-Agent point at agents that no longer exist in the Foundry project.
+
+### Findings in the live app (not changed by this migration)
+
+- **Flow Analysis is a silent no-op** on scripts with production blocks: the
+  portal agent drops the placeholders, so the app keeps the original script.
+- **List and Predictions scripts always end in "Sequential workflow error".**
+  `enhanced_autogen_system.py` skips the review step for those formats before it
+  creates `revision_feedback`, then reads it at the end (UnboundLocalError).
+  Initializing `revision_feedback = []` before the review step fixes it.
+- **The portal agents' hosted web search breaks the app's parsers** (see Web
+  search above): Quotes and YouTube extraction return nothing, B-Roll tables can
+  come back without pipes.
+- **The portal Quotes agent invents quotes** ("Paraphrased from the script's
+  guidance") and adds no links.
+- **`claude-opus-5-5` capacity (78) throttles the pipeline.** Parallel chapter
+  writes hit HTTP 429; the app's Claude fallback then needs `ANTHROPIC_API_KEY`.
+- **The Shorten client's content-filter fallback never runs on Pro scripts**:
+  its splitter ignores "Heading: Chapter N" lines.
+- **Hook-and-Summary drops the parsed opening statement**, and its header regex
+  can match preamble text.
+- The saved "10 AI Tools, 10 Mistakes" script ends with a B-Roll table from a
+  different video (a 2030 grocery bill).
 
 ## Next steps
 
-4. Optionally host the MAF agents in Foundry (framework-hosted) for managed
-   runtime + automatic portal tracing.
+4. Host the code agents in Foundry as hosted agents (in progress).
 
 ## Troubleshooting: `ConnectError: nodename nor servname` (VPN / split-DNS)
 
