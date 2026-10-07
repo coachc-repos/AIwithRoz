@@ -185,15 +185,61 @@ Convert each portal agent to a code-defined MAF agent seeded from its captured
   maf/.venv/bin/python maf/agents/repeat_flow.py --compare --code-only --script-file s.md
   ```
 
+- **`agents/shorten.py`** — `Script-Shorten-Agent` as code: the first
+  non-Claude conversion (`gpt-6-astra` via `FoundryChatClient`) and the second
+  transform agent, since the shortened script replaces the user's when "Shorten
+  script" is checked. It is a drop-in for
+  `ScriptShortenAgentClient.shorten_to_target()`: same request and same
+  per-chapter retry request (both checked byte-for-byte), same keys, and the
+  content-filter fallback is ported. Two fixes: a reply cut off by `max_tokens`
+  fails instead of being saved, and the chapter splitter accepts
+  `Heading: Chapter N` lines. **The client's splitter finds no chapters in
+  Pro-format scripts, so its content-filter fallback can never run on them.** A
+  fake agent that blocks the full script confirmed the fix: 8 chapter calls,
+  every placeholder kept.
+
+  `--compare` reproduces the app's target rule (`--percent`, default 25, or
+  `--video-length` at 150 wpm) and its own Host-word counter, then scores what
+  the app would save: placeholders kept, Host words against the target (the
+  prompt promises ±10%), chapters, headings, trailing sections, notes, and
+  punctuation. The code agent runs the captured prompt plus a two-rule
+  `APP_CONTRACT`: keep every placeholder, and never drop items from a list the
+  script counts out. `MAF_SHORTEN_APP_CONTRACT=0` turns it off.
+
+  Validated 2026-10-07 with 25% cuts:
+
+  | Agent | Script | Placeholders kept | Host words vs target | Within ±10% |
+  |---|---|---|---|---|
+  | Portal | golden | 29 of 29 | 1626 of 1384 (117%) | no |
+  | Portal | produced | 21 of 21 | 2176 of 1820 (120%) | no |
+  | Portal | Top-N list | 35 of 35 | 1882 of 1694 (111%) | no |
+  | Code, no addendum | golden | 29 of 29 | 1394 (101%) | yes |
+  | Code, no addendum | produced | 21 of 21 | 1757 (97%) | yes |
+  | Code, no addendum | Top-N list | 35 of 35 | 1682 (99%), but cut "Ten mistakes, ten seconds" to 3 items | yes |
+  | **Code + addendum** | golden | 29 of 29 | 1398 (101%) | yes |
+  | **Code + addendum** | Top-N list | 35 of 35 | 1708 (101%), all 10 items kept | yes |
+
+  Every run kept all chapters, headings, and trailing sections, and added no
+  notes, dashes, or contractions. Unlike Repeat-and-Flow, the portal Shorten
+  agent keeps the placeholders, so the live Shorten step works; it just cuts
+  less than asked.
+
+  ```bash
+  maf/.venv/bin/python maf/agents/shorten.py --compare --dump /tmp/shorten_cmp
+  maf/.venv/bin/python maf/agents/shorten.py --compare --code-only --percent 30 --script-file s.md
+  ```
+
 `agents/_common.py` holds the shared recipe (load captured instructions, build
 the code agent, retry transient DNS blips, call the portal agent by name, warn
-when a reply hits `max_tokens`). Each new conversion is mostly its own prompt,
-parser, and `--compare` scoring.
+when a reply hits `max_tokens`). For the agents that rewrite the script,
+`agents/_production_blocks.py` ports the app's production-block masking and
+`agents/_script_metrics.py` holds the `--compare` scoring, including the app's
+own Host-word counter (checked identical to both copies in `web_gui.py`). Each
+new conversion is mostly its own prompt, parser, and `--compare` scoring.
 
 Remaining portal agents to convert: Topic-Assistant, Writer, Reviewer, Polisher
-(only the legacy console UI calls it), Shorten (gpt-6-astra; also a masked
-rewrite, so reuse `_production_blocks.py`), Youtube-Upload-Details (gpt-6-astra,
-and actually needs web search for tool URLs), Quotes-and-Statistics (grok-4.7),
+(only the legacy console UI calls it), Youtube-Upload-Details (gpt-6-astra, and
+actually needs web search for tool URLs), Quotes-and-Statistics (grok-4.7),
 Demo-Assistant, + the List/Predictions pairs.
 
 ## Next steps

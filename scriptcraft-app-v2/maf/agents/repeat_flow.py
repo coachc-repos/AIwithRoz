@@ -62,10 +62,10 @@ from agents._common import (  # noqa: E402
     run_response,
 )
 from agents._production_blocks import (  # noqa: E402
-    PLACEHOLDER_RE,
     mask_production_blocks,
     restore_or_keep,
 )
+from agents._script_metrics import fmt_chapters, script_stats  # noqa: E402
 from observability import PROJECT_ENDPOINT, load_env, make_credential, setup_tracing  # noqa: E402
 
 AGENT_NAME = "Script-Repeat-and-Flow-Agent"   # the portal agent, called by name in --compare
@@ -321,95 +321,6 @@ async def analyze_and_improve_flow(
 # --compare: score what the APP would save from each agent's reply
 # --------------------------------------------------------------------------- #
 
-# Chapter headings in any layout the agents produce ("Heading: Chapter 1 - …",
-# "## Chapter 1: …", "**Chapter 1: …**"), tolerant of no-break spaces.
-_CHAPTER_HEADING = re.compile(
-    r"^[ \t]*(?:#+[ \t]*)?\*{0,2}(?:Heading:[ \t]*)?\*{0,2}Chapter[^\S\n]+(\d+)\b[^\n]*$",
-    flags=re.IGNORECASE | re.MULTILINE,
-)
-_HEADING_PREFIX = re.compile(r"^[ \t]*Heading:[ \t]*Chapter[ \t]+\d+", flags=re.IGNORECASE | re.MULTILINE)
-# "(1:15)", "(approx. 1:15)", "(~2:30 to 4:05)", or the literal sample "(X:XX)".
-_HEADING_TIMESTAMP = re.compile(r"\([^)\n]*\b(?:\d{1,2}:\d{2}|X:XX)\b[^)\n]*\)", flags=re.IGNORECASE)
-# Trailing sections: "=== NAME ===" lines, or the app's "====…" rule followed by a
-# "# …" heading (e.g. "# 🎬 HEYGEN READY SCRIPT", "# 🎬 B-ROLL SEARCH TERMS …").
-_SECTION_TITLE = re.compile(r"^[ \t]*[#*]*[ \t]*={3}[ \t]*([A-Z][^=\n]*?)[ \t]*={3}[ \t]*\**[ \t]*$",
-                            flags=re.MULTILINE)
-_RULE_THEN_HEADING = re.compile(r"^[ \t]*={8,}[ \t]*\n(?:[ \t]*\n)*[ \t]*#+[ \t]*(\S[^\n]*)$",
-                                flags=re.MULTILINE)
-# ...or an all-caps "# …" heading appended without a rule line ("#  HEYGEN READY SCRIPT").
-_CAPS_H1 = re.compile(r"^[ \t]*#[ \t]+[^A-Za-z0-9\n]*([A-Z0-9][A-Z0-9 &()\-:/'.,]{3,}?)[ \t]*$",
-                      flags=re.MULTILINE)
-# Agent commentary that leaked into the script: checklists, notes headings, sign-offs.
-_AGENT_NOTES = re.compile(
-    r"^[ \t]*(?:[-*][ \t]*\[[ xX\u2713]\]"
-    r"|(?:#{1,6}|\*\*)[ \t]*(?:notes?\b|revision notes|summary of (?:changes|revisions)|checklist|voice\W{0,3}synthesis)"
-    r"|\**[ \t]*notes on (?:the )?revisions?"
-    r"|let me know\b)",
-    flags=re.IGNORECASE | re.MULTILINE,
-)
-# Spaces the app's "[ \t]" chapter regexes do not match (NBSP, figure, thin, narrow NBSP).
-_ODD_SPACE = re.compile("[    ]")
-_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'’]*")
-_CONTRACTION = re.compile(
-    r"\b(?:\w+n['’]t|\w+['’](?:re|ve|ll|m|d)|"
-    r"(?:it|that|there|here|what|let|he|she|who|where)['’]s)\b",
-    flags=re.IGNORECASE,
-)
-
-
-def _words(s: str) -> int:
-    return len(_WORD.findall(s or ""))
-
-
-def _trailing_sections(text: str, after: int) -> list[tuple[int, str]]:
-    found = [(m.start(), m.group(1).strip().upper()) for m in _SECTION_TITLE.finditer(text, after)]
-    for m in _RULE_THEN_HEADING.finditer(text, after):
-        name = re.sub(r"^[^A-Za-z0-9]+", "", m.group(1)).strip().upper()
-        if name:
-            found.append((m.start(), name))
-    found += [(m.start(), m.group(1).strip()) for m in _CAPS_H1.finditer(text, after)]
-    seen, out = set(), []
-    for pos, name in sorted(found):
-        if name not in seen:
-            seen.add(name)
-            out.append((pos, name))
-    return out
-
-
-def _script_stats(script: str) -> dict:
-    """Stats on a MASKED script (placeholders still in place)."""
-    kept = {int(n) for n in PLACEHOLDER_RE.findall(script)}
-    text = PLACEHOLDER_RE.sub(" ", script)
-    heads = list(_CHAPTER_HEADING.finditer(text))
-    sections = _trailing_sections(text, heads[-1].end() if heads else 0)
-    end_of_chapters = sections[0][0] if sections else len(text)
-    chapters = {}
-    for i, h in enumerate(heads):
-        stop = heads[i + 1].start() if i + 1 < len(heads) else end_of_chapters
-        chapters[int(h.group(1))] = _words(text[h.end():stop])
-    spoken = text[:end_of_chapters]
-    return {
-        "placeholders": kept,
-        "chapter_nums": [int(h.group(1)) for h in heads],
-        "heading_prefix": len(_HEADING_PREFIX.findall(text)),
-        "heading_timestamps": sum(bool(_HEADING_TIMESTAMP.search(h.group(0))) for h in heads),
-        "pre_chapter_words": _words(text[:heads[0].start()]) if heads else 0,
-        "chapter_words": chapters,
-        "total_chapter_words": sum(chapters.values()),
-        "dashes_arrows": sum(spoken.count(ch) for ch in ("—", "–", "→")),
-        "contractions": len(_CONTRACTION.findall(spoken)),
-        "odd_spaces": len(_ODD_SPACE.findall(text)),
-        "agent_notes": len(_AGENT_NOTES.findall(text)),
-        "sections": [name for _, name in sections],
-    }
-
-
-def _fmt_chapters(nums: list[int]) -> str:
-    if not nums:
-        return "none"
-    return f"{nums[0]}-{nums[-1]}" if nums == list(range(nums[0], nums[-1] + 1)) else ",".join(map(str, nums))
-
-
 async def _compare(script_text: str, title: str, dump_dir: str = "", code_only: bool = False) -> None:
     masked, blocks = mask_production_blocks(script_text)
     msg = build_request_message(masked, title, "general")
@@ -424,14 +335,14 @@ async def _compare(script_text: str, title: str, dump_dir: str = "", code_only: 
     for name, agent in agents.items():  # sequential: avoids the concurrent-DNS flake
         replies[name] = await run_response(agent, msg, name.lower())
 
-    orig = _script_stats(masked)
+    orig = script_stats(masked)
     names = list(replies)
     cols, results = {"ORIGINAL": orig}, {}
     for name, resp in replies.items():
         text = (resp.text or "").strip()
         res = _result_from_reply(text, is_truncated(resp), masked)
         results[name] = (text, res, is_truncated(resp))
-        cols[name] = _script_stats(res.get("improved_script", "")) if res["success"] else None
+        cols[name] = script_stats(res.get("improved_script", "")) if res["success"] else None
 
     n_blocks = len(blocks)
     all_blocks = set(range(n_blocks))
@@ -450,7 +361,7 @@ async def _compare(script_text: str, title: str, dump_dir: str = "", code_only: 
         ("structure check", agent_only(lambda n: "-" if not ok(n) else ("yes" if results[n][1]["structure_check"] else "no"))),
         ("repetition analysis ch", agent_only(lambda n: "-" if not ok(n) else str(len(results[n][1]["repetition_analysis"])))),
         ("flow analysis ch", agent_only(lambda n: "-" if not ok(n) else str(len(results[n][1]["flow_analysis"])))),
-        ("chapters", stat(lambda s: _fmt_chapters(s["chapter_nums"]))),
+        ("chapters", stat(lambda s: fmt_chapters(s["chapter_nums"]))),
         ("'Heading:' lines", stat(lambda s: str(s["heading_prefix"]))),
         ("timestamps in headings", stat(lambda s: str(s["heading_timestamps"]))),
         ("hook/header words", stat(lambda s: str(s["pre_chapter_words"]))),
