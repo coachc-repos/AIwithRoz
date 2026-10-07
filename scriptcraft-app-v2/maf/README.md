@@ -92,9 +92,37 @@ Convert each portal agent to a code-defined MAF agent seeded from its captured
   maf/.venv/bin/python maf/agents/broll.py --script-file path/to/script.md
   ```
 
-Remaining portal agents to convert: Topic-Assistant, Writer, Hook-and-Summary,
-Repeat-and-Flow, Reviewer, Polisher, Shorten, Youtube-Upload-Details,
-Quotes-and-Statistics (grok-4.7), Demo-Assistant, + the List/Predictions pairs.
+- **`agents/hook_summary.py`** — `Script-Hook-and-Summary-Agent` as code (same
+  model, same omission of `web_search`). It is a **drop-in** for
+  `HookAndSummaryAgentClient.generate_hook_and_summary()`: it sends the app's
+  request message verbatim (checked byte-for-byte) and returns the same dict keys
+  `web_gui.py` reads. The reply parser is ported from the app client and
+  hardened: section headers must start a line (both agents open with a preamble
+  that mentions "the opening statement", which the app's regex mis-matched), any
+  dash is accepted in "(8‑10 SECONDS)", and standalone length notes such as
+  "*(About 122 words…)*" are stripped from spoken text. It also returns
+  `opening_statement`, which the app client parses but drops.
+  `--compare` defaults to the golden reference script (a full 7-chapter script)
+  and scores both replies with that parser against the prompt's targets.
+  Validated 2026-10-07: both agents parse into 3 hooks, opening, summary,
+  3 thumbnail lines, and flow analysis. The code agent was closer to the word
+  targets and followed the no-contractions / no-em-dash voice rules; the portal
+  agent's summary ran 184 words against a 90-135 target.
+
+  ```bash
+  maf/.venv/bin/python maf/agents/hook_summary.py --compare --dump /tmp/hook_cmp
+  maf/.venv/bin/python maf/agents/hook_summary.py --script-file path/to/script.md
+  ```
+
+`agents/_common.py` holds the shared recipe (load captured instructions, build
+the code agent, retry transient DNS blips, call the portal agent by name, warn
+when a reply hits `max_tokens`). Each new conversion is mostly its own prompt,
+parser, and `--compare` scoring.
+
+Remaining portal agents to convert: Topic-Assistant, Writer, Repeat-and-Flow,
+Reviewer, Polisher, Shorten, Youtube-Upload-Details (gpt-6-astra, and actually
+needs web search for tool URLs), Quotes-and-Statistics (grok-4.7),
+Demo-Assistant, + the List/Predictions pairs.
 
 ## Next steps
 

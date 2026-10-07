@@ -23,24 +23,23 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent_framework import Agent  # noqa: E402
-from agent_framework.foundry import FoundryAgent, FoundryChatClient  # noqa: E402
 
+from agents._common import (  # noqa: E402
+    build_code_agent as _build_agent,
+    load_instructions as _load_instructions,
+    run_portal as _run_portal,
+    run_text,
+)
 from observability import PROJECT_ENDPOINT, load_env, make_credential, setup_tracing  # noqa: E402
 
 AGENT_NAME = "Script-bRoll-Agent"   # the portal agent, called by name in --compare
 MODEL = os.environ.get("MAF_BROLL_MODEL", "claude-opus-5-5")
 MAX_TOKENS = int(os.environ.get("MAF_BROLL_MAX_TOKENS", "16000"))
-
-_INSTR_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "agent_instructions", "Script-bRoll-Agent.md",
-)
 
 # Short, self-contained sample used by --compare so the two tables are easy to
 # diff. Replace with --script-file for a full-length check.
@@ -57,23 +56,18 @@ Use these three together and you reclaim a full hour, every single day."""
 
 
 def load_instructions() -> str:
-    """Load the captured portal instructions, stripping the capture-header comment."""
-    with open(_INSTR_PATH, "r", encoding="utf-8") as f:
-        txt = f.read()
-    return re.sub(r"^\s*<!--.*?-->\s*", "", txt, flags=re.DOTALL).strip()
+    """The captured portal instructions (capture-header comment stripped)."""
+    return _load_instructions(AGENT_NAME)
 
 
 def build_code_agent(credential=None) -> Agent:
     """The B-Roll agent defined in code (seeded from the captured instructions)."""
-    return Agent(
-        client=FoundryChatClient(
-            project_endpoint=PROJECT_ENDPOINT,
-            model=MODEL,
-            credential=credential or make_credential(),
-        ),
+    return _build_agent(
         name="Script-bRoll-Agent (code)",
         instructions=load_instructions(),
-        default_options={"max_tokens": MAX_TOKENS},
+        model=MODEL,
+        max_tokens=MAX_TOKENS,
+        credential=credential,
     )
 
 
@@ -81,55 +75,13 @@ def _user_message(script_text: str, title: str) -> str:
     return f"SCRIPT TITLE: {title}\n\nSCRIPT:\n{script_text}"
 
 
-async def _run_with_retry(make_coro, label: str, attempts: int = 6) -> str:
-    """Retry transient DNS/connection blips (Azure front door / local network).
-    The Foundry host DNS occasionally flaps for tens of seconds, so we give it a
-    ~40s window (6 attempts with increasing backoff) before giving up."""
-    last = None
-    for i in range(1, attempts + 1):
-        try:
-            return await make_coro()
-        except Exception as e:
-            msg = str(e).lower()
-            transient = any(k in msg for k in (
-                "connection", "nodename", "servname", "name or service",
-                "timed out", "timeout", "temporarily", "reset", "eof",
-                "could not resolve", "getaddrinfo",
-            ))
-            last = e
-            if not transient or i == attempts:
-                raise
-            delay = min(12.0, 2.0 * i)
-            print(f"   [{label}] transient connection error "
-                  f"(attempt {i}/{attempts}); retrying in {delay:.0f}s…",
-                  file=sys.stderr)
-            await asyncio.sleep(delay)
-    raise last  # pragma: no cover
-
-
 async def run_code(script_text: str, title: str, credential=None) -> str:
-    agent = build_code_agent(credential)
-
-    async def _go() -> str:
-        resp = await agent.run(_user_message(script_text, title))
-        return (resp.text or "").strip()
-
-    return await _run_with_retry(_go, "code")
+    return await run_text(build_code_agent(credential), _user_message(script_text, title), "code")
 
 
 async def run_portal(script_text: str, title: str, credential=None) -> str:
     """The existing portal agent, called by name (the step-1 pattern)."""
-    agent = FoundryAgent(
-        project_endpoint=PROJECT_ENDPOINT,
-        agent_name=AGENT_NAME,
-        credential=credential or make_credential(),
-    )
-
-    async def _go() -> str:
-        resp = await agent.run(_user_message(script_text, title))
-        return (resp.text or "").strip()
-
-    return await _run_with_retry(_go, "portal")
+    return await _run_portal(AGENT_NAME, _user_message(script_text, title), credential)
 
 
 def _table_stats(md: str) -> dict:
