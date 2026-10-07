@@ -44,12 +44,38 @@ subscription as the Foundry project).
 - **Local span dump (debug):** `MAF_TRACE_CONSOLE=1 maf/.venv/bin/python maf/poc_topic_to_writer.py "..."`
 - **Default:** tracing off (clean output); MAF still emits OTel spans, nothing exports.
 
-## Next steps (not done yet)
+## Step 2 (done) — bring code-side models into MAF
 
-2. Bring code-side models in: make the single-pass **Claude writer** a MAF agent
-   (`FoundryChatClient`, model `claude-opus-5-5`); wrap **Grok video** as a
-   function tool (it is a media API, not a chat agent).
-3. Migrate agents to code one at a time, seeding each from the captured
+- **`pro_writer_agent.py`** — the single-pass "Pro" script writer as a MAF agent.
+  Reuses the exact `SCRIPT_WRITER_PRO_SYSTEM` prompt + golden reference from
+  `../linedrive_azure/agents/pro_script_writer.py`, but runs it through
+  `FoundryChatClient(model="claude-opus-5-5")` instead of a bespoke Anthropic
+  streaming loop. Verified: a full ~28k-char script with the golden-reference
+  shape (FINAL HOOK, chapters, PRODUCTION / GROK IMAGINE blocks, VERIFY,
+  PROMPT OVERLAY).
+
+  ```bash
+  maf/.venv/bin/python maf/pro_writer_agent.py "Top 7 AI Tools, and When NOT to Use Them" \
+      --brief "Practical countdown for busy professionals; 2026 examples."
+  ```
+
+- **`tools/grok_video.py`** — Grok Imagine video generation as a MAF **function
+  tool** (`generate_grok_video`). A media API is a tool, not an agent, so an
+  agent decides when to call it. The demo attaches the tool to a small B-Roll
+  Director agent that discovers and calls it. Dry-run by default; set
+  `MAF_GROK_LIVE=1` + `XAI_API_KEY` (and `pip install xai_sdk certifi requests`
+  into the venv) to render for real.
+
+  ```bash
+  maf/.venv/bin/python maf/tools/grok_video.py "slow push-in on glowing AI tool icons on a dark desk"
+  ```
+
+`observability.py` holds the shared endpoint / credential / tracing helpers used
+by all three entry points.
+
+## Next steps
+
+3. Migrate the portal agents to code one at a time, seeding each from the captured
    `../agent_instructions/*.md`; delete the portal copy only after the code
    version passes.
 4. Optionally host the MAF agents in Foundry (framework-hosted) for managed
