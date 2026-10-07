@@ -101,6 +101,30 @@ Quotes-and-Statistics (grok-4.7), Demo-Assistant, + the List/Predictions pairs.
 4. Optionally host the MAF agents in Foundry (framework-hosted) for managed
    runtime + automatic portal tracing.
 
+## Troubleshooting: `ConnectError: nodename nor servname` (VPN / split-DNS)
+
+If a run fails with `ConnectError: [Errno 8] nodename nor servname provided`
+("Connection error") while `nslookup linedrive-ai-foundry.services.ai.azure.com
+1.1.1.1` **does** resolve, a zero-trust VPN (e.g. **Microsoft Global Connect** /
+Global Secure Access) is intercepting DNS for `*.azure.com` /
+`*.cognitive.microsoft.com` and its internal resolver can't resolve this host.
+`nslookup` bypasses the OS resolver, so it lies about what the app sees — test
+the real path instead:
+
+```bash
+maf/.venv/bin/python -c "import socket; print(socket.getaddrinfo('linedrive-ai-foundry.services.ai.azure.com',443)[0][4][0])"
+```
+
+Fixes: (a) turn the VPN off; or (b) keep it on and pin just this host in
+`/etc/hosts` (it is a public endpoint):
+
+```bash
+echo "20.232.91.180 linedrive-ai-foundry.services.ai.azure.com" | sudo tee -a /etc/hosts
+```
+
+(The IP is a Traffic Manager front end that can change; remove the line to
+revert.) The deployed cloud app is unaffected — it runs inside Azure.
+
 ## Notes
 
 - Package set: `agent-framework-foundry` (pulls `agent-framework-core`),
