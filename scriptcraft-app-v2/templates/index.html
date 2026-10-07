@@ -4810,6 +4810,47 @@ Time management content here...`;
             inp.click();
         }
 
+        // Force a fresh B-roll table by re-running the agent on the CURRENT
+        // script (the normal Process flow skips the agent when a table already
+        // exists, which can leave a partial/stale table). Replaces the table +
+        // rows in place so Shutterstock and Grok use the new one.
+        async function regenerateBrollTable() {
+            const statusEl = document.getElementById('brollRegenStatus');
+            const show = (m) => { if (statusEl) { statusEl.style.display = 'block'; statusEl.innerHTML = m; } };
+            const script = (window.currentScript || '').trim();
+            if (!script) { show('❌ No script loaded — open or create a script first.'); return; }
+            const btn = document.getElementById('brollRegenBtn');
+            const timer = btn ? _startBtnTimer(btn, 'Regenerating B-roll') : null;
+            document.body.style.cursor = 'wait';
+            show('🔄 Calling the B-roll agent on the current script… (can take ~30-90s)');
+            try {
+                const r = await fetch('/api/broll/regenerate', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ script: script, title: window.currentScriptTitle || '' })
+                });
+                const d = await r.json();
+                if (!d.success) { show('❌ ' + (d.error || 'Regeneration failed')); return; }
+                window._currentBrollTable = d.broll_table || '';
+                window._currentBrollRows = d.broll_rows || [];
+                const div = document.getElementById('brollTableContent');
+                if (div) { try { div.innerHTML = renderBrollTableMarkdown(window._currentBrollTable, window._currentBrollRows); } catch (_e) {} }
+                // Best-effort: refresh the Shutterstock tab from the new table.
+                try {
+                    const ss = document.getElementById('shutterstockTab');
+                    if (ss && typeof renderShutterstockLinks === 'function' && typeof buildShutterstockLinks === 'function') {
+                        ss.innerHTML = renderShutterstockLinks(buildShutterstockLinks(window._currentBrollTable, window.currentScript || ''));
+                    }
+                } catch (_e) {}
+                const n = (window._currentBrollRows || []).length;
+                show('✅ B-roll table regenerated' + (n ? ' (' + n + ' rows)' : '')
+                    + '. Shutterstock &amp; Grok video generation now use this table.');
+            } catch (e) { show('❌ ' + (e.message || e)); }
+            finally {
+                document.body.style.cursor = '';
+                if (btn && timer) _stopBtnTimer(btn, timer);
+            }
+        }
+
         function loadBrollTableFromFile() {
             const inp = _ensureHiddenLoader('_brollLoadInput');
             inp.value = '';
@@ -5557,12 +5598,14 @@ Time management content here...`;
                 html += '<div id="brollTableTab" class="tab-content">';
                 html += '<h3 style="margin:0 0 14px 0;">B-Roll Search Terms Table</h3>';
                 html += '<div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap;">';
+                html += '<button onclick="regenerateBrollTable()" id="brollRegenBtn" class="toolbar-btn" style="display: flex;" title="Call the B-roll agent again on the CURRENT script and replace this table. Use this if the table is partial or came from a different script."><span class="toolbar-icon">🔄</span><span class="toolbar-text">Regenerate</span></button>';
                 html += '<button onclick="loadBrollTableFromFile()" class="toolbar-btn" style="display: flex;" title="Load an existing B-Roll table .docx or .md"><span class="toolbar-icon">📂</span><span class="toolbar-text">Load .docx/.md</span></button>';
                 html += '<button onclick="copyBrollTableMarkdown()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon">📋</span><span class="toolbar-text">Copy Markdown</span></button>';
                 html += '<button onclick="downloadBrollTableMarkdown()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon">💾</span><span class="toolbar-text">Download .md</span></button>';
                 html += '<button onclick="saveBrollTableAsWord()" class="toolbar-btn" style="display: flex;"><span class="toolbar-icon" style="display:inline-flex; align-items:center;"><img src="/static/word_icon.png" alt="Word" onerror="this.replaceWith(document.createTextNode(\'📄\'))" style="height:18px; width:auto; vertical-align:middle;"></span><span class="toolbar-text">Save as Word</span></button>';
                 html += '</div>';
-                html += '<div class="markdown-content" id="brollTableContent">' + (_hasBroll ? '' : '<p style="color:#94a3b8;">No B-Roll table yet. Click <strong>📂 Load .docx/.md</strong> to load an existing one, or run the workflow with <em>B-Roll Table</em> checked.</p>') + '</div>';
+                html += '<div id="brollRegenStatus" style="display:none; margin:0 0 10px; font-size:13px; color:#94a3b8;"></div>';
+                html += '<div class="markdown-content" id="brollTableContent">' + (_hasBroll ? '' : '<p style="color:#94a3b8;">No B-Roll table yet. Click <strong>🔄 Regenerate</strong> to build one from the current script, <strong>📂 Load .docx/.md</strong> to load an existing one, or run the workflow with <em>B-Roll Table</em> checked.</p>') + '</div>';
                 html += '</div>';
                 if (_hasBroll) { window._currentBrollTable = brollTable; }
             }
