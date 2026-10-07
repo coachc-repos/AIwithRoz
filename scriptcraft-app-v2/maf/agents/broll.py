@@ -63,13 +63,13 @@ def load_instructions() -> str:
     return re.sub(r"^\s*<!--.*?-->\s*", "", txt, flags=re.DOTALL).strip()
 
 
-def build_code_agent() -> Agent:
+def build_code_agent(credential=None) -> Agent:
     """The B-Roll agent defined in code (seeded from the captured instructions)."""
     return Agent(
         client=FoundryChatClient(
             project_endpoint=PROJECT_ENDPOINT,
             model=MODEL,
-            credential=make_credential(),
+            credential=credential or make_credential(),
         ),
         name="Script-bRoll-Agent (code)",
         instructions=load_instructions(),
@@ -81,20 +81,55 @@ def _user_message(script_text: str, title: str) -> str:
     return f"SCRIPT TITLE: {title}\n\nSCRIPT:\n{script_text}"
 
 
-async def run_code(script_text: str, title: str) -> str:
-    resp = await build_code_agent().run(_user_message(script_text, title))
-    return (resp.text or "").strip()
+async def _run_with_retry(make_coro, label: str, attempts: int = 6) -> str:
+    """Retry transient DNS/connection blips (Azure front door / local network).
+    The Foundry host DNS occasionally flaps for tens of seconds, so we give it a
+    ~40s window (6 attempts with increasing backoff) before giving up."""
+    last = None
+    for i in range(1, attempts + 1):
+        try:
+            return await make_coro()
+        except Exception as e:
+            msg = str(e).lower()
+            transient = any(k in msg for k in (
+                "connection", "nodename", "servname", "name or service",
+                "timed out", "timeout", "temporarily", "reset", "eof",
+                "could not resolve", "getaddrinfo",
+            ))
+            last = e
+            if not transient or i == attempts:
+                raise
+            delay = min(12.0, 2.0 * i)
+            print(f"   [{label}] transient connection error "
+                  f"(attempt {i}/{attempts}); retrying in {delay:.0f}s…",
+                  file=sys.stderr)
+            await asyncio.sleep(delay)
+    raise last  # pragma: no cover
 
 
-async def run_portal(script_text: str, title: str) -> str:
+async def run_code(script_text: str, title: str, credential=None) -> str:
+    agent = build_code_agent(credential)
+
+    async def _go() -> str:
+        resp = await agent.run(_user_message(script_text, title))
+        return (resp.text or "").strip()
+
+    return await _run_with_retry(_go, "code")
+
+
+async def run_portal(script_text: str, title: str, credential=None) -> str:
     """The existing portal agent, called by name (the step-1 pattern)."""
     agent = FoundryAgent(
         project_endpoint=PROJECT_ENDPOINT,
         agent_name=AGENT_NAME,
-        credential=make_credential(),
+        credential=credential or make_credential(),
     )
-    resp = await agent.run(_user_message(script_text, title))
-    return (resp.text or "").strip()
+
+    async def _go() -> str:
+        resp = await agent.run(_user_message(script_text, title))
+        return (resp.text or "").strip()
+
+    return await _run_with_retry(_go, "portal")
 
 
 def _table_stats(md: str) -> dict:
@@ -110,11 +145,12 @@ def _table_stats(md: str) -> dict:
 
 
 async def _compare(script_text: str, title: str) -> None:
-    print("Running CODE agent and PORTAL agent on the same script...\n")
-    code_out, portal_out = await asyncio.gather(
-        run_code(script_text, title),
-        run_portal(script_text, title),
-    )
+    # One shared credential, run sequentially — avoids two concurrent
+    # `az` token fetches + connection setups (the transient DNS flake).
+    cred = make_credential()
+    print("Running CODE agent, then PORTAL agent, on the same script...\n")
+    code_out = await run_code(script_text, title, cred)
+    portal_out = await run_portal(script_text, title, cred)
     cs, ps = _table_stats(code_out), _table_stats(portal_out)
     print("================ COMPARISON ================")
     print(f"{'metric':<22}{'CODE':>12}{'PORTAL':>12}")
