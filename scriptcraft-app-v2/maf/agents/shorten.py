@@ -3,8 +3,8 @@ MAF migration — Step 3, fourth portal->code conversion: Shorten agent.
 
 Re-creates the Foundry portal agent `Script-Shorten-Agent` as a CODE-DEFINED
 Microsoft Agent Framework agent, seeded from its captured instructions
-(../agent_instructions/Script-Shorten-Agent.md) and run on the same model
-(gpt-6-astra) via FoundryChatClient. It is the first non-Claude conversion.
+(../agent_instructions/Script-Shorten-Agent.md) and run on claude-opus-5-5 via
+FoundryChatClient (the model policy; the portal agent also runs it since v8).
 
 Like Repeat-and-Flow it is a TRANSFORM agent: when "Shorten script" is checked,
 web_gui.py replaces the user's script with the shortened one. The app masks
@@ -28,8 +28,8 @@ addendum (keep placeholders; never drop items from a counted list). See
 APP_CONTRACT for the evidence. MAF_SHORTEN_APP_CONTRACT=0 runs the bare
 captured prompt for A/B checks.
 
-Why no web_search tool: the portal agent lists one, but shortening only cuts
-the provided script, and its prompt forbids adding new facts.
+Web search: Foundry's hosted web search tool is attached, as on the portal
+agent (shortening rarely needs it; --compare reports what each agent searched).
 
 Validate side-by-side (does NOT delete the portal agent):
     maf/.venv/bin/python maf/agents/shorten.py --compare --dump /tmp/shorten_cmp
@@ -52,8 +52,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent_framework import Agent  # noqa: E402
 
 from agents._common import (  # noqa: E402
+    CLAUDE_MODEL,
     REFERENCE_TITLE,
     build_code_agent as _build_agent,
+    evidence_line,
+    model_line,
     is_truncated,
     load_instructions as _load_instructions,
     load_reference_script,
@@ -65,7 +68,9 @@ from agents._script_metrics import app_host_words, fmt_chapters, script_stats  #
 from observability import PROJECT_ENDPOINT, load_env, make_credential, setup_tracing  # noqa: E402
 
 AGENT_NAME = "Script-Shorten-Agent"   # the portal agent, called by name in --compare
-MODEL = os.environ.get("MAF_SHORTEN_MODEL", "gpt-6-astra")
+# claude-opus-5-5 per the model policy; the portal agent moved from gpt-6-astra
+# to claude-opus-5-5 (version 8, 2026-10-07 03:22 UTC).
+MODEL = os.environ.get("MAF_SHORTEN_MODEL", CLAUDE_MODEL)
 # The reply is the whole shortened script; 32000 leaves room for long scripts.
 MAX_TOKENS = int(os.environ.get("MAF_SHORTEN_MAX_TOKENS", "32000"))
 WPM = 150  # the app's fixed speaking rate
@@ -273,9 +278,9 @@ async def _run_one(agent, message: str, label: str) -> dict:
         return {"success": False, "error": str(e)}
     text = (resp.text or "").strip()
     if is_truncated(resp):
-        return {"success": False, "response": text,
+        return {"success": False, "response": text, "search": evidence_line(resp),
                 "error": "Shorten reply hit max_tokens; the script is incomplete"}
-    return {"success": bool(text), "response": text,
+    return {"success": bool(text), "response": text, "search": evidence_line(resp),
             **({} if text else {"error": "Empty response from Shorten agent"})}
 
 
@@ -308,21 +313,9 @@ async def _shorten_chunked(agent, chunks: List[str], target_total_host_words: in
             "chunk_failures": failures, "chunk_count": len(chunks)}
 
 
-async def shorten_to_target(
-    script_content: str,
-    target_minutes: float,
-    wpm: int = WPM,
-    target_words_override: Optional[int] = None,
-    reduction_percent: Optional[int] = None,
-    current_host_words: Optional[int] = None,
-    credential=None,
-    agent=None,
-    label: str = "code",
-) -> dict:
-    """Code-agent equivalent of ScriptShortenAgentClient.shorten_to_target().
-    Like the app client, it expects the caller to have masked production blocks.
-    Pass `agent` to run the same flow against another agent (e.g. the portal one)."""
-    agent = agent or build_code_agent(credential)
+async def _shorten_once(agent, script_content: str, target_minutes: float, wpm: int,
+                        target_words_override, reduction_percent, current_host_words, label: str) -> dict:
+    """One shorten request, with the client's content-filter chapter fallback."""
     msg = build_request_message(script_content, target_minutes, wpm, target_words_override,
                                 reduction_percent, current_host_words)
     result = await _run_one(agent, msg, label)
@@ -334,6 +327,52 @@ async def shorten_to_target(
             return await _shorten_chunked(
                 agent, chunks, target_words_for(target_minutes, wpm, target_words_override),
                 target_minutes, wpm, label)
+    return result
+
+
+async def shorten_to_target(
+    script_content: str,
+    target_minutes: float,
+    wpm: int = WPM,
+    target_words_override: Optional[int] = None,
+    reduction_percent: Optional[int] = None,
+    current_host_words: Optional[int] = None,
+    credential=None,
+    agent=None,
+    label: str = "code",
+    correct: bool = True,
+) -> dict:
+    """Code-agent equivalent of ScriptShortenAgentClient.shorten_to_target().
+    Like the app client, it expects the caller to have masked production blocks.
+    Pass `agent` to run the same flow against another agent (e.g. the portal one).
+
+    correct=True adds one CORRECTION PASS the app client does not have: if the
+    reply is still more than 10% over the target (the prompt promises +/-10%),
+    the shortened script goes back through the same request with the same
+    target. The second reply is kept only if it is closer to the target and
+    keeps every [[PRODUCTION_BLOCK_N]] placeholder the first reply kept. On
+    claude-opus-5-5 the first pass alone landed at 111% on the golden script."""
+    agent = agent or build_code_agent(credential)
+    result = await _shorten_once(agent, script_content, target_minutes, wpm, target_words_override,
+                                 reduction_percent, current_host_words, label)
+    if not (correct and result.get("success")):
+        return result
+    target = target_words_for(target_minutes, wpm, target_words_override)
+    first = strip_code_fences(result["response"].strip())
+    st1 = script_stats(first)
+    if st1["host_words"] <= target * 1.10:
+        return result
+    second = await _shorten_once(agent, first, target_minutes, wpm, target, None, st1["host_words"],
+                                 label + " correction")
+    if second.get("success"):
+        st2 = script_stats(strip_code_fences(second["response"].strip()))
+        better = abs(st2["host_words"] - target) < abs(st1["host_words"] - target)
+        if better and st2["placeholders"] >= st1["placeholders"]:
+            second["correction_pass"] = f"{st1['host_words']} -> {st2['host_words']}"
+            return second
+        result["correction_pass"] = f"{st1['host_words']} -> {st2['host_words']} (rejected)"
+    else:
+        result["correction_pass"] = f"failed: {str(second.get('error'))[:80]}"
     return result
 
 
@@ -358,13 +397,16 @@ async def _compare(script_text: str, title: str, video_length: str, percent: Opt
           f"{len(build_request_message(masked, **kwargs))} chars. "
           f"App contract on code agent: {'on' if app_contract_enabled() else 'OFF'}.")
     cred = make_credential()
+    print(model_line(AGENT_NAME, MODEL, cred))
     agents = {"CODE": build_code_agent(cred)}
     if not code_only:
         agents["PORTAL"] = portal_agent(AGENT_NAME, cred)
     print(f"Running {' then '.join(agents)} on the same script...\n")
     results = {}
     for name, agent in agents.items():  # sequential: avoids the concurrent-DNS flake
-        results[name] = await shorten_to_target(masked, agent=agent, label=name.lower(), **kwargs)
+        results[name] = await shorten_to_target(masked, agent=agent, label=name.lower(),
+                                                correct=(name == "CODE"), **kwargs)
+    print("search  : " + " | ".join(f"{n.lower()} {r.get('search', 'n/a')}" for n, r in results.items()) + "\n")
 
     orig = script_stats(masked)
     cols, saved = {"ORIGINAL": orig}, {}
@@ -390,6 +432,7 @@ async def _compare(script_text: str, title: str, video_length: str, percent: Opt
         ("result", agent_only(lambda n: ("ok" + (" (chunked)" if results[n].get("chunked") else ""))
                               if results[n].get("success") else "FAILED")),
         ("code fences in reply", agent_only(lambda n: "yes" if "```" in (results[n].get("response") or "") else "no")),
+        ("correction pass", agent_only(lambda n: results[n].get("correction_pass") or "not needed")),
         (f"placeholders kept /{n_blocks}", stat(lambda s: str(len(s["placeholders"] & all_blocks)))),
         ("APP KEEPS REWRITE", agent_only(lambda n: "-" if cols[n] is None else ("yes" if saved[n][1] else "NO (discarded)"))),
         (f"Host words (target {target})", stat(lambda s: str(s["host_words"]))),

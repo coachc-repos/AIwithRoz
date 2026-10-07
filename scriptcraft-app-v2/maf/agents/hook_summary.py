@@ -14,9 +14,8 @@ returns `opening_statement` / `opening_analysis`, which the app client parses
 but never returns (web_gui.py's `hook_result.get("opening_statement")` is
 always empty today).
 
-Why no web_search tool: same as B-Roll. The portal agent lists `web_search`, but
-the GA Foundry web-search tool is Azure-OpenAI-only (not Claude), and hooks and
-summaries are written from the PROVIDED script. `--compare` confirms parity.
+Web search: Foundry's hosted web search tool is attached, as on the portal
+agent (see broll.py).
 
 Validate side-by-side (does NOT delete the portal agent):
     maf/.venv/bin/python maf/agents/hook_summary.py --compare
@@ -37,8 +36,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent_framework import Agent  # noqa: E402
 
 from agents._common import (  # noqa: E402
+    CLAUDE_MODEL,
     REFERENCE_TITLE,
     build_code_agent as _build_agent,
+    evidence_line,
+    model_line,
+    portal_agent,
+    run_response,
     load_instructions as _load_instructions,
     load_reference_script,
     run_portal as _run_portal,
@@ -47,7 +51,7 @@ from agents._common import (  # noqa: E402
 from observability import PROJECT_ENDPOINT, load_env, make_credential, setup_tracing  # noqa: E402
 
 AGENT_NAME = "Script-Hook-and-Summary-Agent"   # the portal agent, called by name in --compare
-MODEL = os.environ.get("MAF_HOOK_MODEL", "claude-opus-5-5")
+MODEL = os.environ.get("MAF_HOOK_MODEL", CLAUDE_MODEL)
 # 16000 like B-Roll: on a full script Opus writes long ANALYSIS blocks and an
 # 8000 cap truncated the reply before FLOW ANALYSIS.
 MAX_TOKENS = int(os.environ.get("MAF_HOOK_MAX_TOKENS", "16000"))
@@ -381,9 +385,13 @@ async def _compare(script_text: str, title: str, dump_dir: str = "") -> None:
     # One shared credential, run sequentially — avoids two concurrent
     # `az` token fetches + connection setups (the transient DNS flake).
     cred = make_credential()
+    print(model_line(AGENT_NAME, MODEL, cred))
     print("Running CODE agent, then PORTAL agent, on the same script...\n")
-    code_out = await run_code(script_text, title, cred)
-    portal_out = await run_portal(script_text, title, cred)
+    msg = build_request_message(script_text, title)
+    code_resp = await run_response(build_code_agent(cred), msg, "code")
+    portal_resp = await run_response(portal_agent(AGENT_NAME, cred), msg, "portal")
+    code_out, portal_out = (code_resp.text or "").strip(), (portal_resp.text or "").strip()
+    print(f"search  : code {evidence_line(code_resp)} | portal {evidence_line(portal_resp)}")
     if dump_dir:
         os.makedirs(dump_dir, exist_ok=True)
         for name, out in (("code", code_out), ("portal", portal_out)):
@@ -398,6 +406,22 @@ async def _compare(script_text: str, title: str, dump_dir: str = "") -> None:
     print("====================================================\n")
     _show("CODE agent", code_out)
     _show("PORTAL agent", portal_out)
+
+
+async def _replay(capture_dirs: list[str]) -> None:
+    """Send the app's recorded Hook-and-Summary messages to the code agent and
+    score both replies with the app's parser (portal replies come from the capture)."""
+    import json
+    cred = make_credential()
+    print(model_line(AGENT_NAME, MODEL, cred))
+    for d in capture_dirs:
+        recs = [json.loads(line) for line in open(os.path.join(d, "calls.jsonl"), encoding="utf-8")]
+        for rec in (r for r in recs if r.get("agent") == AGENT_NAME):
+            resp = await run_response(build_code_agent(cred), rec["message"], "code")
+            cs, ps = _stats((resp.text or "").strip()), _stats(rec.get("response") or "")
+            print(f"\n=== {os.path.basename(d)}: recorded call ({len(rec['message'])} chars in) [{evidence_line(resp)}]")
+            for k in cs:
+                print(f"  {k:<26}{str(cs[k]):>12}{str(ps[k]):>12}")
 
 
 def _read_script(args) -> tuple[str, str]:
@@ -418,9 +442,14 @@ def main() -> None:
                     help="Run BOTH the code agent and the portal agent and compare")
     ap.add_argument("--dump", default="", metavar="DIR",
                     help="With --compare: also save both raw replies to DIR")
+    ap.add_argument("--replay", nargs="+", metavar="CAPTURE_DIR",
+                    help="Replay the app's recorded Hook-and-Summary calls from capture dirs")
     args = ap.parse_args()
 
     status = setup_tracing()
+    if args.replay:
+        asyncio.run(_replay(args.replay))
+        return
     script_text, title = _read_script(args)
     print("ScriptCraft MAF — Hook-and-Summary agent (portal -> code conversion)")
     print(f"project : {PROJECT_ENDPOINT}")

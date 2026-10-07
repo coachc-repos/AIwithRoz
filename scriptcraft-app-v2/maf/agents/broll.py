@@ -6,10 +6,9 @@ Microsoft Agent Framework agent, seeded from its captured instructions
 (../agent_instructions/Script-bRoll-Agent.md) and run on the same model
 (claude-opus-5-5) via FoundryChatClient.
 
-Why no web_search tool: the portal agent lists a `web_search` tool, but the GA
-Foundry web-search tool is Azure-OpenAI-only (not Claude), and B-Roll generation
-reads the PROVIDED script rather than the live web. So the code version omits it;
-the `--compare` mode below confirms the output still matches the portal agent.
+Web search: Foundry's hosted web search tool is attached, as on the portal
+agent. (An earlier version omitted it because the MAF docs list that tool as
+Azure-OpenAI-only; it does run on this project's Claude deployment.)
 
 Validate side-by-side (does NOT delete the portal agent — retire that only after
 you're satisfied):
@@ -30,15 +29,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent_framework import Agent  # noqa: E402
 
 from agents._common import (  # noqa: E402
+    CLAUDE_MODEL,
     build_code_agent as _build_agent,
+    evidence_line,
     load_instructions as _load_instructions,
+    model_line,
+    portal_agent,
     run_portal as _run_portal,
+    run_response,
     run_text,
 )
 from observability import PROJECT_ENDPOINT, load_env, make_credential, setup_tracing  # noqa: E402
 
 AGENT_NAME = "Script-bRoll-Agent"   # the portal agent, called by name in --compare
-MODEL = os.environ.get("MAF_BROLL_MODEL", "claude-opus-5-5")
+MODEL = os.environ.get("MAF_BROLL_MODEL", CLAUDE_MODEL)
 MAX_TOKENS = int(os.environ.get("MAF_BROLL_MAX_TOKENS", "16000"))
 
 # Short, self-contained sample used by --compare so the two tables are easy to
@@ -100,9 +104,13 @@ async def _compare(script_text: str, title: str) -> None:
     # One shared credential, run sequentially — avoids two concurrent
     # `az` token fetches + connection setups (the transient DNS flake).
     cred = make_credential()
+    print(model_line(AGENT_NAME, MODEL, cred))
     print("Running CODE agent, then PORTAL agent, on the same script...\n")
-    code_out = await run_code(script_text, title, cred)
-    portal_out = await run_portal(script_text, title, cred)
+    msg = _user_message(script_text, title)
+    code_resp = await run_response(build_code_agent(cred), msg, "code")
+    portal_resp = await run_response(portal_agent(AGENT_NAME, cred), msg, "portal")
+    code_out, portal_out = (code_resp.text or "").strip(), (portal_resp.text or "").strip()
+    print(f"search  : code {evidence_line(code_resp)} | portal {evidence_line(portal_resp)}")
     cs, ps = _table_stats(code_out), _table_stats(portal_out)
     print("================ COMPARISON ================")
     print(f"{'metric':<22}{'CODE':>12}{'PORTAL':>12}")

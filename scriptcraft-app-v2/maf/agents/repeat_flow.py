@@ -30,8 +30,8 @@ after the script). The portal
 prompt never states these rules; see APP_CONTRACT for the failures behind each.
 MAF_FLOW_APP_CONTRACT=0 runs the bare captured prompt for A/B checks.
 
-Why no web_search tool: same as B-Roll and Hook-and-Summary. The GA Foundry
-web-search tool is Azure-OpenAI-only, and this agent edits the PROVIDED script.
+Web search: Foundry's hosted web search tool is attached, as on the portal
+agent (see broll.py).
 
 Validate side-by-side (does NOT delete the portal agent):
     maf/.venv/bin/python maf/agents/repeat_flow.py --compare --dump /tmp/flow_cmp
@@ -53,8 +53,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent_framework import Agent  # noqa: E402
 
 from agents._common import (  # noqa: E402
+    CLAUDE_MODEL,
     REFERENCE_TITLE,
     build_code_agent as _build_agent,
+    evidence_line,
+    model_line,
     is_truncated,
     load_instructions as _load_instructions,
     load_reference_script,
@@ -69,7 +72,7 @@ from agents._script_metrics import fmt_chapters, script_stats  # noqa: E402
 from observability import PROJECT_ENDPOINT, load_env, make_credential, setup_tracing  # noqa: E402
 
 AGENT_NAME = "Script-Repeat-and-Flow-Agent"   # the portal agent, called by name in --compare
-MODEL = os.environ.get("MAF_FLOW_MODEL", "claude-opus-5-5")
+MODEL = os.environ.get("MAF_FLOW_MODEL", CLAUDE_MODEL)
 # The reply is an analysis PLUS the full rewritten script, so it is the longest
 # output of the converted agents so far. 32000 matches the Pro writer.
 MAX_TOKENS = int(os.environ.get("MAF_FLOW_MAX_TOKENS", "32000"))
@@ -226,7 +229,8 @@ def _marker(label: str) -> re.Pattern:
 _REVISED = _marker(r"REVISED\s+COMPLETE\s+SCRIPT")
 _REPETITION = _marker(r"REPETITION\s+ANALYSIS")
 _STRUCTURE = _marker(r"STRUCTURE\s+CHECK")
-_FLOW_ISSUES = re.compile(r"^[ \t]*#*[ \t]*\**[ \t]*Flow\s+Issues\s+Identified:?\**:?[ \t]*$",
+# "Flow Issues Identified:" per the request; replies also say "Flow issues found:".
+_FLOW_ISSUES = re.compile(r"^[ \t]*#*[ \t]*\**[ \t]*Flow\s+Issues\s+(?:Identified|Found):?\**:?[ \t]*$",
                           flags=re.IGNORECASE | re.MULTILINE)
 
 
@@ -327,6 +331,7 @@ async def _compare(script_text: str, title: str, dump_dir: str = "", code_only: 
     print(f"Masked {len(blocks)} production blocks, as the app does. Request: {len(msg)} chars. "
           f"App contract on code agent: {'on' if app_contract_enabled() else 'OFF'}.")
     cred = make_credential()
+    print(model_line(AGENT_NAME, MODEL, cred))
     agents = {"CODE": build_code_agent(cred)}
     if not code_only:
         agents["PORTAL"] = portal_agent(AGENT_NAME, cred)
@@ -334,6 +339,7 @@ async def _compare(script_text: str, title: str, dump_dir: str = "", code_only: 
     replies = {}
     for name, agent in agents.items():  # sequential: avoids the concurrent-DNS flake
         replies[name] = await run_response(agent, msg, name.lower())
+    print("search  : " + " | ".join(f"{n.lower()} {evidence_line(r)}" for n, r in replies.items()) + "\n")
 
     orig = script_stats(masked)
     names = list(replies)

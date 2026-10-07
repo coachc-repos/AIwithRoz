@@ -28,7 +28,11 @@ def load_env() -> None:
 
 
 def make_credential():
-    """Local-dev credential (az login). Swap for ManagedIdentityCredential in prod."""
+    """az login locally; the agent's managed identity when hosted in Foundry
+    (maf/hosted/deploy.py sets MAF_HOSTED=1 on every hosted agent)."""
+    if os.environ.get("MAF_HOSTED") == "1" or os.environ.get("IDENTITY_ENDPOINT"):
+        from azure.identity import DefaultAzureCredential
+        return DefaultAzureCredential()
     from azure.identity import AzureCliCredential
     return AzureCliCredential()
 
