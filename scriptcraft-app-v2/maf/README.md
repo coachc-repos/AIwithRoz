@@ -73,11 +73,31 @@ subscription as the Foundry project).
 `observability.py` holds the shared endpoint / credential / tracing helpers used
 by all three entry points.
 
+## Step 3 (in progress) — portal agents -> code, one at a time
+
+Convert each portal agent to a code-defined MAF agent seeded from its captured
+`../agent_instructions/*.md`; retire the portal copy only after a side-by-side
+`--compare` passes.
+
+- **`agents/broll.py`** — `Script-bRoll-Agent` as code (claude-opus-5-5 via
+  `FoundryChatClient`, seeded from the captured instructions). `--compare` runs
+  the code agent and the portal agent on the same script and prints both tables +
+  row/section stats. Validated: both produce well-formed B-Roll tables
+  (Timecode | Search Term | Description | Scene Context) with the
+  `## Animation Suggestions` section. `web_search` is omitted — B-Roll reads the
+  provided script, and the GA Foundry web-search tool is Azure-OpenAI-only.
+
+  ```bash
+  maf/.venv/bin/python maf/agents/broll.py --compare
+  maf/.venv/bin/python maf/agents/broll.py --script-file path/to/script.md
+  ```
+
+Remaining portal agents to convert: Topic-Assistant, Writer, Hook-and-Summary,
+Repeat-and-Flow, Reviewer, Polisher, Shorten, Youtube-Upload-Details,
+Quotes-and-Statistics (grok-4.7), Demo-Assistant, + the List/Predictions pairs.
+
 ## Next steps
 
-3. Migrate the portal agents to code one at a time, seeding each from the captured
-   `../agent_instructions/*.md`; delete the portal copy only after the code
-   version passes.
 4. Optionally host the MAF agents in Foundry (framework-hosted) for managed
    runtime + automatic portal tracing.
 
