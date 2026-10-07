@@ -49,7 +49,7 @@ except ImportError:
     pass  # python-dotenv not installed; rely on the real environment
 
 
-VERSION = "15.38-fix-stale-broll-override"
+VERSION = "15.39-broll-regenerate"
 
 # Verify Google API key availability for thumbnail generation.
 if "GOOGLE_API_KEY" in os.environ and os.environ.get("GOOGLE_API_KEY"):
@@ -6841,6 +6841,69 @@ def api_script_save_to_cloud():
                         "title": title})
     except Exception as e:
         logger.error("❌ /api/script/save-to-cloud failed: %s", e)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/broll/regenerate", methods=["POST"])
+def api_broll_regenerate():
+    """Force a FRESH B-roll Search Terms Table by calling the B-roll agent
+    directly on the current script, ignoring any existing (possibly partial)
+    table. The normal Process flow skips the agent when a table/override is
+    present (web_gui.py ~3556), so this endpoint is how the UI's "Regenerate"
+    button gets a full table re-run. Returns the new table markdown + rows.
+    """
+    data = request.get_json(silent=True) or {}
+    script = (data.get("script") or "").strip()
+    title = (data.get("title") or data.get("script_title") or "").strip() or "Video Script"
+    if not script:
+        return jsonify({"success": False,
+                        "error": "No script to generate a B-roll table from."}), 400
+    try:
+        # Mirror the cleaning the full Process flow applies before the agent so
+        # the regenerated table matches a normal run.
+        cleaned = _tidy_generated_script(script)
+        cleaned = re.sub(r'^[_\-=~]+\s*$', '', cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        cleaned = re.sub(r'🎬|📺|📊|🎥|🎯|💡|✨|🚀', '', cleaned)
+        cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)
+        cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
+        cleaned = re.sub(r'__([^_]+)__', r'\1', cleaned)
+        cleaned = re.sub(r'_([^_]+)_', r'\1', cleaned)
+
+        from linedrive_azure.agents import ScriptBRollAgentClient
+        agent = ScriptBRollAgentClient()
+        result = agent.generate_broll_table_with_timecodes(
+            script_content=cleaned, script_title=title,
+            words_per_minute=150, timeout=300)
+        if not result.get("success", False):
+            return jsonify({
+                "success": False,
+                "error": result.get("error") or "The B-roll agent did not return a table.",
+            }), 502
+
+        table = (result.get("table") or "").strip()
+        rows = result.get("parsed_data") or []
+        # Merge "## Animation Suggestions" rows exactly like the full flow so the
+        # table carries Grok-eligible animation rows too.
+        try:
+            anim_rows = _extract_animation_suggestion_rows(cleaned)
+            if anim_rows:
+                rows = list(rows) + anim_rows
+                table = (table.rstrip() + "\n\n" + _animation_rows_to_markdown(anim_rows))
+                logger.info("🎞️ regenerate: appended %d Animation Suggestion row(s)",
+                            len(anim_rows))
+        except Exception as _ae:
+            logger.warning("⚠️ regenerate: animation-suggestion merge failed: %s", _ae)
+
+        if not table:
+            return jsonify({"success": False,
+                            "error": "The B-roll agent returned an empty table."}), 502
+
+        logger.info("🔄 Regenerated B-roll table (%d chars, %d rows) for %r",
+                    len(table), len(rows), title[:60])
+        return jsonify({"success": True, "broll_table": table, "broll_rows": rows})
+    except Exception as e:
+        logger.error("❌ /api/broll/regenerate failed: %s", e)
         return jsonify({"success": False, "error": str(e)}), 500
 
 
