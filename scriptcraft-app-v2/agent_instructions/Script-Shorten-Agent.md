@@ -1,4 +1,4 @@
-<!-- Captured from Azure AI Foundry (v2) on 2026-10-06 | agent: Script-Shorten-Agent | version: 7 | model: gpt-6-astra | tools: [{"type": "web_search"}] -->
+<!-- Captured from Azure AI Foundry (v2) on 2026-10-06 | agent: Script-Shorten-Agent | version: 8 | model: claude-opus-5-5 | tools: [{"type": "web_search"}] | header resynced 2026-10-07 (instructions unchanged) -->
 
 # Script Shortener Agent — Foundry Instructions
 

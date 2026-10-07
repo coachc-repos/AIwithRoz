@@ -13,23 +13,36 @@ Framework migration** — when we re-create these agents in code (MAF
 
 ## Capture status
 
-| Agent (Foundry name) | Agent ID | Client file | Captured |
-|---|---|---|---|
-| **Script-Writer-Agent** | `asst_gUvMkcUOwebEb4YWq0zfNMtb` | `script_writer_agent_client.py` | ✅ [Script-Writer-Agent.md](Script-Writer-Agent.md) |
-| **Script-Topic-Assistant-Agent** | `asst_vqx6qOfUIEFnuKtb9XEyNtXK` | `script_topic_assistant_agent_client.py` | ✅ [Script-Topic-Assistant-Agent.md](Script-Topic-Assistant-Agent.md) |
-| Script-Review-Agent | `asst_MeeUTGVUBItaslmikiJ1qhd9` | `script_review_agent_client.py` | ⬜ pending |
-| **Statistics-and-Quotes-Finder-Agent** | `asst_bEMK0Y6mdB6yRVnv0WwIZXwd` | `quote_and_statistics_agent_client.py` | ⚠️ [captured, TAIL MISSING](Statistics-and-Quotes-Finder-Agent.md) |
-| Script-Hook-and-Summary-Agent | `asst_IaM5FTf3cVZ33TjIatXwloWE` | `hook_and_summary_agent_client.py` | ⬜ pending |
-| Script-bRoll-Agent | `asst_ILcqLMcj4zhGbIzUMTrcG73a` | `script_broll_agent_client.py` | ⬜ pending |
-| Script-Shorten-Agent | `asst_script_shorten_v2_only` * | `script_shorten_agent_client.py` | ⬜ pending |
-| Script-Repeat-and-Flow-Agent | `asst_pjVIL7vZnKQzK6x7DfEsa2Ai` | `script_repeat_and_flow_agent_client.py` | ⬜ pending |
-| Script-Youtube-Upload-Details-Agent | `asst_3SXXgX7WbQmrgg2tGDgkynKV` | `youtube_upload_details_agent_client.py` | ⬜ pending |
-| Script-Polisher-Agent | `asst_GhmZPA8ktCsrgFTUAgNbA8F6` | `script_polisher_agent_client.py` | ⬜ pending |
-| Tournament-Agent | `asst_zBkNlAu4higVRIVKkNvqsrTC` | `tournament_agent_client.py` | ⬜ pending |
-| AI-Tips-Agent | `asst_nkrKxpoA69zYpgs6IK8rdHgu` | `ai_tips_agent_client.py` | ⬜ pending |
+All 15 Foundry agents are captured, and every file's instructions match the
+live portal agent (verified through the Foundry API on 2026-10-07; headers
+resynced to the live version and model that day). Agent names are the v2
+Foundry names; the app's clients resolve them by name.
 
-\* The Shorten agent ID is referenced in code as a v2-only sentinel
-(`asst_script_shorten_v2_only`); confirm the real Foundry ID when capturing it.
+| Foundry agent | Live version | Portal model | Called by | Code agent (maf/agents/) |
+|---|---|---|---|---|
+| [Script-Topic-Assistant-Agent](Script-Topic-Assistant-Agent.md) | v13 | claude-opus-5-5 | pipeline, teaching | `pipeline.py` |
+| [Script-Topic-Assistant-List-Agent](Script-Topic-Assistant-List-Agent.md) | v2 | claude-opus-5-5 | pipeline, list | `pipeline.py` |
+| [Script-Topic-Assistant-Predictions-Agent](Script-Topic-Assistant-Predictions-Agent.md) | v3 | claude-opus-5-5 | pipeline, predictions | `pipeline.py` |
+| [Script-Writer-Agent](Script-Writer-Agent.md) | v15 | claude-opus-5-5 | pipeline, teaching | `pipeline.py` |
+| [Script-Writer-List-Agent](Script-Writer-List-Agent.md) | v3 | claude-opus-5-5 | pipeline, list | `pipeline.py` |
+| [Script-Writer-Predictions-Agent](Script-Writer-Predictions-Agent.md) | v2 | gpt-5-mini | pipeline, predictions | `pipeline.py` |
+| [Script-Reviewer-Agent](Script-Reviewer-Agent.md) | v8 | claude-opus-5-5-2 | pipeline, teaching | `pipeline.py` |
+| [Statistics-and-Quotes-Finder-Agent](Statistics-and-Quotes-Finder-Agent.md) | v13 | grok-4.7 | pipeline, teaching | `quotes_stats.py` |
+| [Script-Hook-and-Summary-Agent](Script-Hook-and-Summary-Agent.md) | v10 | claude-opus-5-5 | pipeline + web app | `hook_summary.py` |
+| [Script-bRoll-Agent](Script-bRoll-Agent.md) | v11 | claude-opus-5-5 | web app | `broll.py` |
+| [Script-Repeat-and-Flow-Agent](Script-Repeat-and-Flow-Agent.md) | v8 | claude-opus-5-5 | web app | `repeat_flow.py` |
+| [Script-Shorten-Agent](Script-Shorten-Agent.md) | v8 | claude-opus-5-5 | web app | `shorten.py` |
+| [Script-Youtube-Upload-Details-Agent](Script-Youtube-Upload-Details-Agent.md) | v11 | claude-opus-5-5 | web app | `youtube_details.py` |
+| [Script-Polisher-Agent](Script-Polisher-Agent.md) | v8 | claude-opus-5-5 | legacy console UI only | `polisher.py` |
+| [Script-Demo-Assistant-Agent](Script-Demo-Assistant-Agent.md) | v6 | claude-opus-5-5 | nothing (its prompt is an old Topic Assistant copy) | `pipeline.py` |
+
+The clients for **Tournament-Agent** and **AI-Tips-Agent** reference agents that
+no longer exist in the Foundry project, so there is nothing to capture for them.
+
+Code agents follow the model policy (2026-10-07): Claude Opus 5.5 everywhere,
+except Quotes-and-Statistics on Grok 4.7 through xAI (for X search). The
+Reviewer uses the second Opus 5.5 deployment, `claude-opus-5-5-2`, as the
+portal does.
 
 ## Three video archetypes (manual picker in Create Script)
 

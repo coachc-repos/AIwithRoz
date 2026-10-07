@@ -1,4 +1,4 @@
-<!-- Captured from Azure AI Foundry (v2) on 2026-10-06 | agent: Script-Demo-Assistant-Agent | version: 5 | model: gpt-5.4-mini | tools: [{"type": "web_search"}] -->
+<!-- Captured from Azure AI Foundry (v2) on 2026-10-06 | agent: Script-Demo-Assistant-Agent | version: 6 | model: claude-opus-5-5 | tools: [{"type": "web_search"}] | header resynced 2026-10-07 (instructions unchanged) -->
 
 # Script-Topic-Assistant-Agent - Improved System Prompt
 

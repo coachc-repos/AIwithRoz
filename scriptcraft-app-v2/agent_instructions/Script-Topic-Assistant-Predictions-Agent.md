@@ -1,4 +1,4 @@
-<!-- Captured from Azure AI Foundry (v2) on 2026-10-06 | agent: Script-Topic-Assistant-Predictions-Agent | version: 3 | model: claude-opus-5-5 | tools: [{"type": "web_search"}] -->
+<!-- Captured from Azure AI Foundry (v2) on 2026-10-06 | agent: Script-Topic-Assistant-Predictions-Agent | version: 3 | model: claude-opus-5-5 | tools: [{"type": "web_search"}] | header resynced 2026-10-07 (instructions unchanged) -->
 
 # Bold-Predictions Topic Assistant - System Prompt
 

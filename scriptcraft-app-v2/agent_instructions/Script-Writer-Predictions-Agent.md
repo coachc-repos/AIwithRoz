@@ -1,4 +1,4 @@
-<!-- Captured from Azure AI Foundry (v2) on 2026-10-06 | agent: Script-Writer-Predictions-Agent | version: 2 | model: gpt-5-mini | tools: [{"type": "web_search"}] -->
+<!-- Captured from Azure AI Foundry (v2) on 2026-10-06 | agent: Script-Writer-Predictions-Agent | version: 2 | model: gpt-5-mini | tools: [{"type": "web_search"}] | header resynced 2026-10-07 (instructions unchanged) -->
 
 # PRIMARY DIRECTIVE: USER DESCRIPTION IS PARAMOUNT
 

@@ -1,4 +1,4 @@
-<!-- Captured from Azure AI Foundry (v2) on 2026-10-06 | agent: Statistics-and-Quotes-Finder-Agent | version: 13 | model: grok-4.7 | tools: [{"type": "web_search"}] -->
+<!-- Captured from Azure AI Foundry (v2) on 2026-10-06 | agent: Statistics-and-Quotes-Finder-Agent | version: 13 | model: grok-4.7 | tools: [{"type": "web_search"}] | header resynced 2026-10-07 (instructions unchanged) -->
 
 # Quote and Statistics Agent - System Instructions
 
