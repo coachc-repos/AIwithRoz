@@ -113,10 +113,18 @@ def _writer_addendum() -> str:
     return WRITER_CONTRACT if on else ""
 
 
+TOPIC_MAX_TOKENS = int(os.environ.get("MAF_TOPIC_MAX_TOKENS", "32000"))
+
 SPECS: dict[str, AgentSpec] = {
-    "Script-Topic-Assistant-Agent": AgentSpec("topic", CLAUDE_MODEL, addendum=_topic_addendum()),
-    "Script-Topic-Assistant-List-Agent": AgentSpec("topic", CLAUDE_MODEL, addendum=_topic_addendum()),
-    "Script-Topic-Assistant-Predictions-Agent": AgentSpec("topic", CLAUDE_MODEL, addendum=_topic_addendum()),
+    # Topic plans used 10,249 output tokens (reasoning included) on a captured
+    # request, so they get 32,000. Writers and reviewers write one chapter each
+    # and run seven at a time, so they keep the 16,000 default.
+    "Script-Topic-Assistant-Agent": AgentSpec("topic", CLAUDE_MODEL, max_tokens=TOPIC_MAX_TOKENS,
+                                              addendum=_topic_addendum()),
+    "Script-Topic-Assistant-List-Agent": AgentSpec("topic", CLAUDE_MODEL, max_tokens=TOPIC_MAX_TOKENS,
+                                                   addendum=_topic_addendum()),
+    "Script-Topic-Assistant-Predictions-Agent": AgentSpec("topic", CLAUDE_MODEL, max_tokens=TOPIC_MAX_TOKENS,
+                                                          addendum=_topic_addendum()),
     "Script-Writer-Agent": AgentSpec("writer", CLAUDE_MODEL, web_search=False, addendum=_writer_addendum()),
     "Script-Writer-List-Agent": AgentSpec("writer", CLAUDE_MODEL, web_search=False, addendum=_writer_addendum()),
     # The portal agent runs gpt-5-mini; the code agent follows the model policy.

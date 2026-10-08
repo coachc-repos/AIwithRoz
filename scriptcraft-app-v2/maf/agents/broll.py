@@ -43,7 +43,9 @@ from observability import PROJECT_ENDPOINT, load_env, make_credential, setup_tra
 
 AGENT_NAME = "Script-bRoll-Agent"   # the portal agent, called by name in --compare
 MODEL = os.environ.get("MAF_BROLL_MODEL", CLAUDE_MODEL)
-MAX_TOKENS = int(os.environ.get("MAF_BROLL_MAX_TOKENS", "16000"))
+# The cap includes hidden reasoning. At 16,000 a hosted run (2026-10-08) stopped
+# mid-row after ~4,000 tokens of visible table and lost its last rows.
+MAX_TOKENS = int(os.environ.get("MAF_BROLL_MAX_TOKENS", "32000"))
 
 # Short, self-contained sample used by --compare so the two tables are easy to
 # diff. Replace with --script-file for a full-length check.

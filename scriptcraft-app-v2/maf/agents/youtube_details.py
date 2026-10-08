@@ -55,7 +55,8 @@ from observability import load_env, make_credential, setup_tracing  # noqa: E402
 
 AGENT_NAME = "Script-Youtube-Upload-Details-Agent"
 MODEL = os.environ.get("MAF_YOUTUBE_MODEL", CLAUDE_MODEL)
-MAX_TOKENS = int(os.environ.get("MAF_YOUTUBE_MAX_TOKENS", "16000"))
+# The cap includes hidden reasoning; 16,000 left little room on full scripts.
+MAX_TOKENS = int(os.environ.get("MAF_YOUTUBE_MAX_TOKENS", "32000"))
 
 
 def load_instructions() -> str:

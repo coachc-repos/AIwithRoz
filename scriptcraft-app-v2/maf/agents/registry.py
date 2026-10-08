@@ -11,7 +11,8 @@ from typing import Callable
 from agent_framework import Agent
 
 from agents import (
-    broll, hook_summary, pipeline, polisher, quotes_stats, repeat_flow, shorten, youtube_details,
+    broll, hook_summary, pipeline, polisher, pro_writer, quotes_stats, repeat_flow, shorten,
+    youtube_details,
 )
 
 REGISTRY: dict[str, Callable[..., Agent]] = {
@@ -22,6 +23,8 @@ REGISTRY: dict[str, Callable[..., Agent]] = {
     "Script-Youtube-Upload-Details-Agent": youtube_details.build_code_agent,
     "Script-Polisher-Agent": polisher.build_code_agent,
     "Statistics-and-Quotes-Finder-Agent": lambda credential=None: quotes_stats.build_code_agent(),
+    # Not a portal agent: the app's single-pass Pro writer as an agent (2026-10-08).
+    "Script-Writer-Pro-Agent": pro_writer.build_code_agent,
     **{name: (lambda credential=None, _n=name: pipeline.build_code_agent(_n, credential))
        for name in pipeline.SPECS},
 }

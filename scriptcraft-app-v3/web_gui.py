@@ -1800,7 +1800,8 @@ async def process_script_creation(session_id, topic, audience, tone,
                                   quick_test=False, checkboxes=None,
                                   heygen_template_id="", heygen_api_key="",
                                   heygen_voice_id="", grok_api_key="",
-                                  description="", script_format="teaching"):
+                                  description="", script_format="teaching",
+                                  pro_writer="classic"):
     """Clean script creation with only console capture"""
     logger.info(f"🎬 SCRIPT CREATION STARTED: session={session_id}")
     if quick_test:
@@ -1896,6 +1897,7 @@ async def process_script_creation(session_id, topic, audience, tone,
                         max_chapters=1 if quick_test else 8,
                         hook_summary=checkboxes.get("hook_summary", False),
                         script_format=script_format,
+                        pro_writer=pro_writer,
                     ),
                     # 20 minutes - accounts for Script Writer (~5min) + Script Review (~12min)
                     timeout=1200
@@ -7478,6 +7480,11 @@ def create():
     #   predictions        = bold / visionary, 1 prediction per chapter
     #   list               = Top-N ranked countdown (honors N, lists all)
     video_format = (data.get("video_format") or "teaching").strip().lower()
+    # v3 Script Writer control: for Pro runs, "classic" calls Anthropic directly
+    # (as v2 does) and "agent" uses the hosted Script-Writer-Pro-Agent-MAF.
+    pro_writer = (data.get("pro_writer") or "classic").strip().lower()
+    if pro_writer not in ("classic", "agent"):
+        pro_writer = "classic"
 
     # NEW: Get checkbox selections
     checkboxes = data.get("checkboxes", {})
@@ -7548,6 +7555,7 @@ def create():
                         heygen_voice_id, grok_api_key,
                         description=description,
                         script_format=video_format,
+                        pro_writer=pro_writer,
                     ),
                 )
         except Exception as e:

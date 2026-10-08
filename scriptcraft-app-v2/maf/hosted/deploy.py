@@ -88,6 +88,10 @@ def git_sha() -> str:
 
 def env_for(portal_name: str) -> dict[str, str]:
     env = {"MAF_AGENT": portal_name, "MAF_HOSTED": "1"}
+    if portal_name == "Script-Writer-Pro-Agent":
+        # v3 streams this agent's reply; send SSE keep-alives through the long
+        # reasoning pause (about 100 s) before the first words arrive.
+        env["SSE_KEEPALIVE_INTERVAL"] = "15"
     if portal_name == "Statistics-and-Quotes-Finder-Agent":
         # The Grok agent calls xAI directly (X search); it needs the xAI key.
         key = (os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY") or "").strip()
@@ -156,7 +160,12 @@ def smoke(names: list[str]) -> None:
         t = time.time()
         try:
             client = project.get_openai_client(agent_name=hn)
-            r = client.responses.create(input=SMOKE_INPUT, timeout=900)
+            # Background mode + polling, as the v3 GUI calls these agents: a long
+            # plain call can hit the gateway's 424 proxy_timeout.
+            r = client.responses.create(input=SMOKE_INPUT, background=True, timeout=120)
+            while r.status in ("queued", "in_progress") and time.time() - t < 900:
+                time.sleep(3)
+                r = client.responses.retrieve(r.id, timeout=60)
             text = (r.output_text or "").strip().replace("\n", " ")
             items = r.output or []
             calls = sum(1 for o in items if getattr(o, "type", "") == "function_call")

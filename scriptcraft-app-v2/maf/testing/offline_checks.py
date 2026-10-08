@@ -295,12 +295,22 @@ def _():
     return f"fixed client: valid JSON; {stock_note}"
 
 
-@check("All 15 agents build from the registry")
+@check("Pro writer agent instructions == the v3 app's Pro prompt")
+def _():
+    from agents._common import load_instructions  # noqa: PLC0415
+    from agents.pro_writer import app_prompt  # noqa: PLC0415
+    hosted = load_instructions("Script-Writer-Pro-Agent").strip()
+    assert hosted == app_prompt(), "run: maf/.venv/bin/python -m agents.pro_writer --sync"
+    assert "CHAPTER COUNT (REQUIRED)" in hosted
+    return f"{len(hosted)} chars, in sync"
+
+
+@check("All 16 agents build from the registry")
 def _():
     names = sorted(REGISTRY)
     for n in names:
         build_agent(n)
-    assert len(names) == 15
+    assert len(names) == 16  # 15 portal agents + Script-Writer-Pro-Agent
     return ", ".join(n.replace("Script-", "").replace("-Agent", "") for n in names)
 
 

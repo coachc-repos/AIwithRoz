@@ -69,6 +69,31 @@ SCRIPTCRAFT_SETTINGS_FILE=/tmp/v3_settings.json SCRIPT_ARTIFACTS_BLOB_CONTAINER=
   PORT=8082 python web_gui.py
 ```
 
+## Script Writer control
+
+The Create Script form has a three-way **Script Writer** control. The last
+choice is remembered in the browser, and Re-run Last restores it.
+
+| Option | What writes the script |
+|---|---|
+| ⭐ Pro writer · classic | One Claude Opus 5.5 pass through the Anthropic API, as in v2 |
+| 🤖 Pro writer · agent | The same prompt and request, run by the hosted `Script-Writer-Pro-Agent-MAF` on the Foundry Claude deployment |
+| 🧩 Agentic script writing | Topic Assistant, chapter Writers, Reviewer, Quotes and Hook agents; the Video Format list appears for this option |
+
+Both Pro options build their request with `build_pro_user_message` in
+`linedrive_azure/agents/pro_script_writer.py`, so a comparison changes only
+the serving path. The agent streams its reply, so the Progress Log keeps the
+"📝 writing…" word counts. If the agent fails, the run falls back to the
+classic writer and says so in the log. The create request carries the choice
+as `video_format: "pro"` plus `pro_writer: "classic" | "agent"`.
+
+The Pro prompt requires 7 or 8 chapters of about 250 to 400 spoken words. It
+used to let the model pick the chapter count, so a seven-prediction brief came
+back as 6 chapters with paired items of about 500 words each, and each
+chapter's two HeyGen calls ran long. On the same brief the fixed prompt wrote 8
+chapters of 167 to 307 spoken words. The writer logs the chapter count after
+every run.
+
 ## Logs
 
 Every hosted call prints lines tagged `[maf]`. The Progress Log shows them at

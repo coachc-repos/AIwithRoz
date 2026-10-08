@@ -96,8 +96,9 @@ Host:
 ... alternate spoken paragraphs and image prompts, roughly two image prompts per item ...
 
 Chapter design:
+- CHAPTER COUNT (REQUIRED): write EXACTLY 7 or 8 chapters, never fewer than 7 and never more than 8. Chapter 1 is the setup and the last chapter is the payoff, so 5 or 6 chapters carry the items. Each chapter is voiced later as its own avatar video, so keep the chapters balanced: about 250 to 400 spoken words each, never more than 450. Fit the items to that shape. Give each item its own chapter when the count allows. Pair two items in one chapter only when there are more items than item chapters: with seven items, pair the two closest so they fit in six item chapters; with ten, pair them to fit five or six. With fewer than five items, give the richest items two chapters each (for example the claim, then the evidence), so every chapter still has one clear job.
 - CHAPTER 1 is the SETUP, not an item. Establish the ONE organizing idea that unifies the whole video (for a tools list this is a question like "Where does this tool get its answer?"). Make it concrete, and promise it pays off as a copyable cheat sheet at the end. Then say the order you will go in.
-- COUNTDOWN / LIST: cover the items IN ORDER. You MAY pair TWO items in one chapter when they contrast well, and the chapter title then names both. Never drop or merge items: if the title says ten, all ten appear, numbered, spoken as "Number one", "Number two", and so on. Each item runs the same three beats, in the host's own flowing speech (do NOT print the beat labels):
+- COUNTDOWN / LIST: cover the items IN ORDER. You MAY pair TWO items in one chapter when they contrast well and the chapter-count rule needs it, and the chapter title then names both. Never drop or merge items: if the title says ten, all ten appear, numbered, spoken as "Number one", "Number two", and so on. Each item runs the same three beats, in the host's own flowing speech (do NOT print the beat labels):
    (a) USE IT WHEN — the real job it does well, with ONE concrete everyday example (a flyer, a parent email, a booking sheet, a slide deck, a meeting).
    (b) DO NOT USE IT WHEN — the one job where it quietly fails.
    (c) WHAT THE FAILURE LOOKS LIKE — so the viewer can catch it in the wild. Every failure is a "good to know", never a "gotcha".
@@ -135,28 +136,10 @@ FIDELITY
 Output ONLY the script, starting at "FINAL HOOK:". No preamble, no explanation, and no markdown code fences around the whole thing."""
 
 
-def write_pro_script(title: str, brief: str = "",
-                     model: str = PRO_WRITER_MODEL,
-                     effort: str = PRO_WRITER_EFFORT,
-                     max_tokens: int = 48000,
-                     timeout: float = 600.0) -> Optional[str]:
-    """Write the whole script in one Claude Opus 5.5 (high effort) call.
-
-    Embeds the GOLDEN REFERENCE script as the structure/voice target. Returns
-    the full script text, or None if Claude is unavailable or fails. Streams
-    (required for large max_tokens) and degrades to a plain request if the model
-    rejects effort/thinking.
-    """
-    api_key = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
-    if not api_key:
-        print("   ⚠️ Pro writer unavailable: ANTHROPIC_API_KEY not set")
-        return None
-    try:
-        import anthropic
-    except ImportError:
-        print("   ⚠️ Pro writer unavailable: anthropic SDK not installed")
-        return None
-
+def build_pro_user_message(title: str, brief: str = "") -> str:
+    """The user message for one Pro script: title, brief, and the golden
+    reference. Shared by the classic writer and the hosted Pro writer agent, so
+    both get exactly the same request."""
     _brief = (brief.strip() if brief and brief.strip()
               else "(no brief provided — infer a strong, specific angle "
                    "from the title)")
@@ -181,6 +164,32 @@ def write_pro_script(title: str, brief: str = "",
         "Write the complete script now, following your system instructions and "
         "matching the GOLDEN REFERENCE structure and voice exactly."
     )
+    return user
+
+
+def write_pro_script(title: str, brief: str = "",
+                     model: str = PRO_WRITER_MODEL,
+                     effort: str = PRO_WRITER_EFFORT,
+                     max_tokens: int = 48000,
+                     timeout: float = 600.0) -> Optional[str]:
+    """Write the whole script in one Claude Opus 5.5 (high effort) call.
+
+    Embeds the GOLDEN REFERENCE script as the structure/voice target. Returns
+    the full script text, or None if Claude is unavailable or fails. Streams
+    (required for large max_tokens) and degrades to a plain request if the model
+    rejects effort/thinking.
+    """
+    api_key = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
+    if not api_key:
+        print("   ⚠️ Pro writer unavailable: ANTHROPIC_API_KEY not set")
+        return None
+    try:
+        import anthropic
+    except ImportError:
+        print("   ⚠️ Pro writer unavailable: anthropic SDK not installed")
+        return None
+
+    user = build_pro_user_message(title, brief)
     client = anthropic.Anthropic(api_key=api_key, timeout=timeout, max_retries=2)
     base = dict(
         model=model,
@@ -224,4 +233,108 @@ def write_pro_script(title: str, brief: str = "",
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
         text = re.sub(r"\s*```$", "", text).strip()
+    _report_chapter_count(text)
     return text or None
+
+
+_CHAPTER_LINE = re.compile(r"(?im)^\s*\**\s*heading\s*:\s*\**\s*chapter\s+\d+")
+
+
+def pro_chapter_count(text: str) -> int:
+    """Number of 'Heading: Chapter N' lines in a Pro script."""
+    return len(_CHAPTER_LINE.findall(text or ""))
+
+
+def _report_chapter_count(text: str) -> None:
+    """The prompt requires 7 or 8 chapters (each becomes two HeyGen calls, so
+    fewer chapters means overlong calls). Log the count so drift is visible."""
+    if not text:
+        return
+    n = pro_chapter_count(text)
+    # Worded so the Progress Log's patterns ("Pro writer:", "Chapter ...:") do
+    # not match and move the bar backwards.
+    if 7 <= n <= 8:
+        print(f"   ✅ {n} chapters written (target 7 or 8)")
+    else:
+        print(f"   ⚠️ {n} chapters written, expected 7 or 8")
+
+
+# ---------------------------------------------------------------------------
+# Pro writer AGENT: the same prompt and request, served by the hosted MAF agent
+# Script-Writer-Pro-Agent-MAF (scriptcraft-app-v2/maf/agents/pro_writer.py) on
+# the Foundry Claude deployment. Selected in the GUI's Script Writer control.
+# ---------------------------------------------------------------------------
+PRO_AGENT_NAME = "Script-Writer-Pro-Agent-MAF"
+_PROJECT_ENDPOINT = (
+    "https://linedrive-ai-foundry.services.ai.azure.com/api/projects/linedriveAgents"
+)
+
+
+def _final_message_text(response) -> str:
+    """Text of the last assistant message in a completed Responses result."""
+    texts = []
+    for item in getattr(response, "output", None) or []:
+        if getattr(item, "type", None) != "message":
+            continue
+        parts = [getattr(b, "text", "") or "" for b in getattr(item, "content", None) or []]
+        if any(parts):
+            texts.append("".join(parts))
+    return texts[-1] if texts else ""
+
+
+def write_pro_script_agent(title: str, brief: str = "",
+                           timeout: float = 900.0,
+                           fallback_to_classic: bool = True) -> Optional[str]:
+    """Write the whole script with the hosted Pro writer agent.
+
+    Sends exactly the classic writer's request (build_pro_user_message) and
+    streams the reply, printing the same "📝 writing…" ticks so the Progress Log
+    behaves as in classic mode. If the agent fails, falls back to the classic
+    writer (fallback_to_classic) and says so in the log.
+    """
+    import time as _time
+    user = build_pro_user_message(title, brief)
+    t0 = _time.time()
+    try:
+        from azure.ai.projects import AIProjectClient
+        from azure.identity import DefaultAzureCredential
+
+        client = AIProjectClient(
+            endpoint=_PROJECT_ENDPOINT,
+            credential=DefaultAzureCredential(),
+            allow_preview=True,  # required for get_openai_client(agent_name=...)
+        ).get_openai_client(agent_name=PRO_AGENT_NAME)
+        print(f"   🅿️ Pro writer: {PRO_AGENT_NAME} (hosted MAF agent, "
+              f"{PRO_WRITER_MODEL}, effort={PRO_WRITER_EFFORT}) streaming… [maf]")
+        chunks, total, reported, final = [], 0, 0, None
+        for event in client.responses.create(input=user, stream=True, timeout=timeout):
+            etype = getattr(event, "type", "")
+            if etype == "response.output_text.delta":
+                chunks.append(event.delta)
+                total += len(event.delta)
+                if total - reported >= 3500:  # same cadence as the classic writer
+                    reported = total
+                    print(f"   📝 writing… ~{len(''.join(chunks).split())} words",
+                          flush=True)
+            elif etype == "response.completed":
+                final = event.response
+            elif etype in ("response.failed", "response.incomplete", "error"):
+                detail = getattr(getattr(event, "response", None), "error", None) or event
+                raise RuntimeError(f"{etype}: {str(detail)[:300]}")
+        text = ((_final_message_text(final) if final is not None else "")
+                or "".join(chunks)).strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+            text = re.sub(r"\s*```$", "", text).strip()
+        if not text:
+            raise RuntimeError("empty reply")
+        print(f"   ✅ [maf] {PRO_AGENT_NAME} finished in {_time.time() - t0:.0f}s")
+        _report_chapter_count(text)
+        return text
+    except Exception as e:
+        print(f"   ⚠️ [maf] Pro writer agent failed after {_time.time() - t0:.0f}s: "
+              f"{str(e)[:200]}")
+        if fallback_to_classic:
+            print("   ↩️ [maf] Falling back to the classic Pro writer (Anthropic API)")
+            return write_pro_script(title, brief)
+        return None

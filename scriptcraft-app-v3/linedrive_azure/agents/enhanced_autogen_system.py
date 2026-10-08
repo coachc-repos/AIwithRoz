@@ -1055,6 +1055,7 @@ class EnhancedAutoGenSystem:
         max_chapters: int = 8,
         hook_summary: bool = True,
         script_format: str = SCRIPT_FORMAT_TEACHING,
+        pro_writer: str = "classic",
     ) -> Dict[str, Any]:
         """
         Complete 4-Agent Sequential Workflow with Chapter-by-Chapter Script Writing
@@ -1102,7 +1103,12 @@ class EnhancedAutoGenSystem:
                 print("🅿️  PRO SINGLE-PASS SCRIPT WRITER")
                 print(f"🎬 Title: {script_topic}")
                 print(f"👥 Audience: {audience}  |  💬 Tone: {tone}")
-                print("🤖 Model: Claude Opus 5.5 (effort high), one cohesive pass")
+                if pro_writer == "agent":
+                    print("🤖 Writer: Pro writer AGENT (hosted Script-Writer-Pro-Agent-MAF, "
+                          "Claude Opus 5.5 on Foundry, effort high), one cohesive pass")
+                else:
+                    print("🤖 Writer: Pro writer CLASSIC (Claude Opus 5.5 via the Anthropic "
+                          "API, effort high), one cohesive pass")
                 print("📐 Writes the hook, every chapter, the inline production "
                       "/ Grok Imagine prompts, the VERIFY notes, the cheat-sheet "
                       "overlay, and the trailing reference sections in ONE call")
@@ -1135,14 +1141,21 @@ class EnhancedAutoGenSystem:
             if script_format == SCRIPT_FORMAT_PRO:
                 from linedrive_azure.agents.pro_script_writer import (
                     write_pro_script,
+                    write_pro_script_agent,
                 )
+                _writer_label = ("The hosted Pro writer agent" if pro_writer == "agent"
+                                 else "Claude Opus 5.5")
                 print("📥 Loading the golden reference script as the guide…")
-                print("✍️  Claude Opus 5.5 is writing the ENTIRE script in one "
+                print(f"✍️  {_writer_label} is writing the ENTIRE script in one "
                       "pass. This runs ~3 to 5 minutes with no per-chapter steps "
                       f"— progress prints as it writes. [{get_timestamp()}]")
                 print("-" * 50)
-                pro_text = write_pro_script(
-                    title=script_topic, brief=topic_description)
+                if pro_writer == "agent":
+                    pro_text = write_pro_script_agent(
+                        title=script_topic, brief=topic_description)
+                else:
+                    pro_text = write_pro_script(
+                        title=script_topic, brief=topic_description)
                 if pro_text and len(pro_text) >= 800:
                     _n_ch = len(re.findall(
                         r'(?mi)^\s*Heading:\s*Chapter\b', pro_text))
@@ -1159,7 +1172,9 @@ class EnhancedAutoGenSystem:
                     return {
                         "success": True,
                         "script_content": pro_text,
-                        "workflow_type": "single_pass_pro_claude",
+                        "workflow_type": ("single_pass_pro_agent" if pro_writer == "agent"
+                                          else "single_pass_pro_claude"),
+                        "pro_writer": pro_writer,
                         "topic_enhancement": "",
                         "chapter_scripts": [],
                         "combined_script": pro_text,

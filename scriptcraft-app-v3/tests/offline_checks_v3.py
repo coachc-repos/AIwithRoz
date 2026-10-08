@@ -68,6 +68,41 @@ def _():
     return f"{len(text)} chars from agent_instructions/golden_reference_script.md"
 
 
+@check("Pro prompt requires 7 or 8 balanced chapters; the chapter counter reads 'Heading: Chapter N'")
+def _():
+    from linedrive_azure.agents import pro_script_writer as pw  # noqa: PLC0415
+    assert "CHAPTER COUNT (REQUIRED): write EXACTLY 7 or 8 chapters" in pw.SCRIPT_WRITER_PRO_SYSTEM
+    sample = "FINAL HOOK:\n" + "".join(f"Heading: Chapter {i} - X\nHost:\nWords.\n" for i in range(1, 9))
+    assert pw.pro_chapter_count(sample) == 8
+    return "rule present; counter finds 8 in an 8-chapter sample"
+
+
+@check("Both Pro writers send the same request; the workflow routes classic vs agent")
+def _():
+    from linedrive_azure.agents import pro_script_writer as pw  # noqa: PLC0415
+    msg = pw.build_pro_user_message("T", "B")
+    assert msg.startswith("TITLE: T") and "<golden_reference>" in msg
+    src = open(os.path.join(APP, "linedrive_azure", "agents", "pro_script_writer.py"), encoding="utf-8").read()
+    assert src.count("build_pro_user_message(title, brief)") == 2, "classic and agent must share the builder"
+    assert 'PRO_AGENT_NAME = "Script-Writer-Pro-Agent-MAF"' in src
+    wf = open(os.path.join(APP, "linedrive_azure", "agents", "enhanced_autogen_system.py"), encoding="utf-8").read()
+    assert 'if pro_writer == "agent":' in wf and "write_pro_script_agent(" in wf
+    return "shared builder; agent branch present"
+
+
+@check("Script Writer control: three options, and the create request carries pro_writer")
+def _():
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    for value in ("pro_classic", "pro_agent", "agentic"):
+        assert f'name="writerMode" value="{value}"' in html, value
+    assert "pro_writer: proWriter," in html
+    assert '<option value="pro"' not in html, "Pro is chosen with the control, not the format list"
+    gui = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    assert 'pro_writer = (data.get("pro_writer") or "classic").strip().lower()' in gui
+    assert gui.count("pro_writer=pro_writer,") == 2
+    return "radios, payload, and server plumbing present"
+
+
 @check("Every migrated client routes to its hosted '-MAF' agent")
 def _():
     names = []

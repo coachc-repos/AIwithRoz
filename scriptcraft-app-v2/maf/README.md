@@ -559,6 +559,37 @@ hosted MAF writers first. v3 also fixes the app bugs marked "fixed in v3" above.
 how to run it and the end-to-end test results, and
 `scriptcraft-app-v3/tests/offline_checks_v3.py` for the offline checks.
 
+## Step 6 (done) — the Pro writer as a hosted agent
+
+`agents/pro_writer.py` is the app's single-pass Pro writer as a code agent,
+hosted as `Script-Writer-Pro-Agent-MAF`. It is not a portal agent. Its
+instructions are a verbatim copy of `SCRIPT_WRITER_PRO_SYSTEM` from the v3 app
+in `../agent_instructions/Script-Writer-Pro-Agent.md`. Regenerate the copy with
+`maf/.venv/bin/python -m agents.pro_writer --sync` (run from `maf/`); an
+offline check fails when the two differ. The app sends the same user message
+as the classic writer, golden reference included. The agent runs
+`claude-opus-5-5` through the Foundry Responses path with reasoning effort
+"high" and 48,000 max tokens.
+
+- **Reasoning effort works on the Responses path.** On a short prompt, effort
+  low, default, and high gave 170, 257, and 312 output tokens.
+- **The Anthropic connector needs a role.** MAF's `AnthropicFoundryClient`
+  (Claude on Foundry through the Anthropic Messages API) works locally with
+  Anthropic's own web search and adaptive thinking. The hosted agent identity
+  gets 401 on `POST /anthropic/v1/*` without an extra role assignment, so the
+  agent uses the Responses path.
+- **Output caps include hidden reasoning.** A hosted B-Roll run stopped
+  mid-row at its 16,000-token cap with only about 4,000 tokens of visible
+  table, and the app parsed the rows it got. B-Roll, YouTube, and the three
+  Topic agents now allow 32,000. Writers and reviewers keep 16,000, since they
+  write one chapter each and run seven at a time.
+- **Why hosted agents are slower than portal agents.** The same model writes
+  at the same speed on both paths, about 90 output tokens per second. On one
+  captured Topic request the hosted agent produced 22% more output tokens
+  for nearly the same visible text, and took 25% longer: 115 s against 92 s.
+  The extra tokens are hidden reasoning. A new hosted session adds 10 to 20
+  seconds, and the container itself adds under a second.
+
 ## Troubleshooting: `ConnectError: nodename nor servname` (VPN / split-DNS)
 
 If a run fails with `ConnectError: [Errno 8] nodename nor servname provided`

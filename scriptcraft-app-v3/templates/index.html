@@ -3171,17 +3171,33 @@
                         </div>
                     </div>
 
+                    <style>
+                        .writer-mode-pill { display:inline-flex; align-items:center; gap:6px; padding:6px 12px; border:1px solid #475569; border-radius:999px; background:#1e293b; color:#e2e8f0; cursor:pointer; font-size:0.86em; }
+                        .writer-mode-pill input { accent-color:#14b8a6; margin:0; }
+                        .writer-mode-pill:has(input:checked) { border-color:#14b8a6; background:#0f3d3a; color:#f0fdfa; }
+                    </style>
                     <div class="form-row">
+                        <div class="form-group" style="flex:1;">
+                            <label>✍️ Script Writer:</label>
+                            <div id="writerModeGroup" role="radiogroup" aria-label="Script writer" style="display:flex; gap:6px; flex-wrap:wrap;">
+                                <label class="writer-mode-pill" title="The original Pro mode: one Claude Opus 5.5 pass straight through the Anthropic API"><input type="radio" name="writerMode" value="pro_classic" checked onchange="applyWriterMode()"> ⭐ Pro writer · classic</label>
+                                <label class="writer-mode-pill" title="Same Pro prompt, run by the hosted MAF agent Script-Writer-Pro-Agent-MAF in Foundry"><input type="radio" name="writerMode" value="pro_agent" onchange="applyWriterMode()"> 🤖 Pro writer · agent</label>
+                                <label class="writer-mode-pill" title="Topic Assistant, chapter Writers, Reviewer, Quotes and Hook agents"><input type="radio" name="writerMode" value="agentic" onchange="applyWriterMode()"> 🧩 Agentic script writing</label>
+                            </div>
+                            <div id="writerModeHint" style="color:#94a3b8; font-size:0.78em; margin-top:4px;"></div>
+                        </div>
+                    </div>
+
+                    <div class="form-row" id="videoFormatRow" style="display:none;">
                         <div class="form-group" style="flex:1;">
                             <label for="videoFormat">🎬 Video Format (picks the Topic Assistant + Script Writer agents):</label>
                             <select id="videoFormat">
-                                <option value="pro" selected>⭐ Pro — Claude Opus 5.5, single pass, max effort (best quality; figures out the format itself)</option>
-                                <option value="teaching">Teaching listicle (5 things) — tutorial / how-to, distills to 5</option>
+                                <option value="teaching" selected>Teaching listicle (5 things) — tutorial / how-to, distills to 5</option>
                                 <option value="predictions">Bold predictions / visionary — honors N, 1 prediction per chapter, cinematic</option>
                                 <option value="list">Top-N list / countdown — honors N, lists ALL N, ranked countdown</option>
                             </select>
                             <div style="color:#94a3b8; font-size:0.78em; margin-top:4px;">
-                                Pro writes the whole script (hook, chapters, Grok Imagine prompts, cheat sheet) in one Claude Opus 5.5 pass. Put the number in the title for lists (e.g. “Top 10…”). Teaching/Predictions/List use the Foundry agent pairs.
+                                Teaching/Predictions/List use the hosted MAF agent pairs (Topic Assistant + Script Writer).
                             </div>
                         </div>
                     </div>
@@ -6392,6 +6408,35 @@ Time management content here...`;
             } catch (_e) { return null; }
         }
 
+        // ---- v3 Script Writer control (Pro classic / Pro agent / agentic) ----
+        const _WRITER_HINTS = {
+            pro_classic: 'Writes the whole script (hook, 7 to 8 chapters, Grok Imagine prompts, cheat sheet) in one Claude Opus 5.5 pass through the Anthropic API. This is the original Pro mode. Put the number in the title for lists (e.g. "Top 10...").',
+            pro_agent: 'Same Pro prompt and request, run by the hosted MAF agent Script-Writer-Pro-Agent-MAF on the Foundry Claude deployment, so the run shows in the Foundry portal. Falls back to classic if the agent fails.',
+            agentic: 'Topic Assistant, chapter Writers, Reviewer, Quotes and Hook agents, each a hosted MAF agent. Pick the video format below.'
+        };
+        function getWriterMode() {
+            const el = document.querySelector('input[name="writerMode"]:checked');
+            return el ? el.value : 'pro_classic';
+        }
+        function applyWriterMode() {
+            const mode = getWriterMode();
+            const row = document.getElementById('videoFormatRow');
+            if (row) row.style.display = (mode === 'agentic') ? '' : 'none';
+            const hint = document.getElementById('writerModeHint');
+            if (hint) hint.textContent = _WRITER_HINTS[mode] || '';
+            try { localStorage.setItem('scriptcraft_writer_mode', mode); } catch (e) {}
+        }
+        function setWriterMode(mode) {
+            const el = document.querySelector(`input[name="writerMode"][value="${mode}"]`);
+            if (el) el.checked = true;
+            applyWriterMode();
+        }
+        document.addEventListener('DOMContentLoaded', () => {
+            let saved = null;
+            try { saved = localStorage.getItem('scriptcraft_writer_mode'); } catch (e) {}
+            setWriterMode(saved || 'pro_classic');
+        });
+
         function _updateRerunLastBtn() {
             const btn = document.getElementById('rerunLastBtn');
             if (!btn) return;
@@ -6401,7 +6446,10 @@ Time management content here...`;
                 btn.disabled = false;
                 btn.style.opacity = '';
                 const t = p.topic.length > 55 ? p.topic.slice(0, 52) + '…' : p.topic;
-                btn.title = `Re-run last: "${t}" [${p.video_format || 'teaching'}]`
+                const _mode = p.video_format === 'pro'
+                    ? (p.pro_writer === 'agent' ? 'pro writer agent' : 'pro writer classic')
+                    : (p.video_format || 'teaching');
+                btn.title = `Re-run last: "${t}" [${_mode}]`
                     + ' — replays the exact same inputs. Saved locally; survives a refresh.';
             } else {
                 btn.disabled = true;
@@ -6421,7 +6469,12 @@ Time management content here...`;
             set('audience', p.audience);
             set('tone', p.tone);
             set('productionType', p.production_type);
-            set('videoFormat', p.video_format);
+            if (p.video_format === 'pro') {
+                setWriterMode(p.pro_writer === 'agent' ? 'pro_agent' : 'pro_classic');
+            } else {
+                set('videoFormat', p.video_format);
+                setWriterMode('agentic');
+            }
             chk('quickTest', p.quick_test);
             if (p.grok_api_key) set('grokApiKey', p.grok_api_key);
             // Source-document batch (idea-grounded runs)
@@ -6501,7 +6554,12 @@ Time management content here...`;
             const productionType = productionSelect.value;
             const quickTest = document.getElementById('quickTest').checked;
             // Video archetype → routes to the matching topic-assistant + writer pair.
-            const videoFormat = document.getElementById('videoFormat')?.value || 'teaching';
+            // v3 Script Writer control: Pro classic / Pro agent / agentic pipeline.
+            const writerMode = getWriterMode();
+            const videoFormat = writerMode === 'agentic'
+                ? (document.getElementById('videoFormat')?.value || 'teaching')
+                : 'pro';
+            const proWriter = writerMode === 'pro_agent' ? 'agent' : 'classic';
 
             // Keep Grok key persisted even if user didn't click Save.
             await persistGrokApiKey(true);
@@ -6570,6 +6628,7 @@ Time management content here...`;
                     tone: tone,
                     production_type: productionType,
                     video_format: videoFormat,
+                    pro_writer: proWriter,
                     quick_test: quickTest,
                     checkboxes: checkboxes,
                     grok_api_key: grokApiKey,
