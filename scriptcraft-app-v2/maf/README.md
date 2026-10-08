@@ -422,14 +422,18 @@ new conversion is mostly its own prompt, parser, and `--compare` scoring.
 All 15 portal agents now have code versions. The clients for Tournament-Agent
 and AI-Tips-Agent point at agents that no longer exist in the Foundry project.
 
-### Findings in the live app (not changed by this migration)
+### Findings in the live app (v2 unchanged; "fixed in v3" = `scriptcraft-app-v3`)
 
-- **Flow Analysis is a silent no-op** on scripts with production blocks: the
-  portal agent drops the placeholders, so the app keeps the original script.
+- **Flow Analysis never runs.** The Repeat-and-Flow client reads the reply from
+  a `messages` field that only the retired classic Assistants API returned, so
+  every call ends in "No response" and the app keeps the original script.
+  Even with that fixed, the portal agent drops the production-block
+  placeholders, which also makes the app keep the original. Fixed in v3, which
+  reads the reply and uses the code agent that keeps placeholders.
 - **List and Predictions scripts always end in "Sequential workflow error".**
   `enhanced_autogen_system.py` skips the review step for those formats before it
   creates `revision_feedback`, then reads it at the end (UnboundLocalError).
-  Initializing `revision_feedback = []` before the review step fixes it.
+  Fixed in v3 by binding it, and `chapter_comparisons`, before the review step.
 - **The portal agents' hosted web search breaks the app's parsers** (see Web
   search above): Quotes and YouTube extraction return nothing, B-Roll tables can
   come back without pipes.
@@ -438,9 +442,11 @@ and AI-Tips-Agent point at agents that no longer exist in the Foundry project.
 - **`claude-opus-5-5` capacity (78) throttles the pipeline.** Parallel chapter
   writes hit HTTP 429; the app's Claude fallback then needs `ANTHROPIC_API_KEY`.
 - **The Shorten client's content-filter fallback never runs on Pro scripts**:
-  its splitter ignores "Heading: Chapter N" lines.
-- **Hook-and-Summary drops the parsed opening statement**, and its header regex
-  can match preamble text.
+  its splitter ignores "Heading: Chapter N" lines. Fixed in v3.
+- **Hook-and-Summary drops the parsed opening statement**, so the Process
+  Script flow's "📺 OPENING STATEMENT" section is always empty. Fixed in v3. Its
+  header regex can also match preamble text; the code agent's replies parse
+  correctly, so v3 leaves the regex alone.
 - The saved "10 AI Tools, 10 Mistakes" script ends with a B-Roll table from a
   different video (a 2030 grocery bill).
 
@@ -540,6 +546,18 @@ What it took to host:
 listed (type Hosted) next to its prompt agent, 30 agents in all. Open one for
 its versions, Playground, and logs. Runs appear under Traces, because App
 Insights is connected.
+
+## Step 5 (done) — the v3 web GUI on the hosted agents
+
+`scriptcraft-app-v3/` is a copy of the v2 GUI in which every migrated agent
+runs on its hosted `-MAF` agent; v2 is unchanged. The switch lives in v3's
+`linedrive_azure/agents/base_agent_client.py`: the app sends the same request
+text, each call runs in background mode with polling, warm sessions are reused,
+and every call prints `[maf]` lines that the Progress Log shows. List and
+Predictions chapters, which v2 wrote with direct Claude calls, now go to the
+hosted MAF writers first. v3 also fixes the app bugs marked "fixed in v3" above. See `scriptcraft-app-v3/README.md` for
+how to run it and the end-to-end test results, and
+`scriptcraft-app-v3/tests/offline_checks_v3.py` for the offline checks.
 
 ## Troubleshooting: `ConnectError: nodename nor servname` (VPN / split-DNS)
 

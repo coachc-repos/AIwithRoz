@@ -1,0 +1,34 @@
+TITLE: B-Roll Markers
+FCM: NON-DROP FRAME
+
+001  001      V     C        00:00:05:00 00:00:05:00 00:00:05:00 00:00:05:00
+* FROM CLIP NAME: baseball player hitting homerun
+* COMMENT: B-roll suggestion for dramatic home run moment
+
+002  001      V     C        00:00:15:00 00:00:15:00 00:00:15:00 00:00:15:00
+* FROM CLIP NAME: youth baseball team celebrating
+* COMMENT: B-roll suggestion for team celebration
+
+003  001      V     C        00:00:30:00 00:00:30:00 00:00:30:00 00:00:30:00
+* FROM CLIP NAME: coach giving instructions to players
+* COMMENT: B-roll suggestion for coaching moment
+
+004  001      V     C        00:00:45:00 00:00:45:00 00:00:45:00 00:00:45:00
+* FROM CLIP NAME: close up baseball glove catching ball
+* COMMENT: B-roll suggestion for catching action
+
+005  001      V     C        00:01:00:00 00:01:00:00 00:01:00:00 00:01:00:00
+* FROM CLIP NAME: parents cheering in bleachers
+* COMMENT: B-roll suggestion for audience reaction
+
+006  001      V     C        00:01:15:00 00:01:15:00 00:01:15:00 00:01:15:00
+* FROM CLIP NAME: pitcher throwing fastball
+* COMMENT: B-roll suggestion for pitching action
+
+007  001      V     C        00:01:30:00 00:01:30:00 00:01:30:00 00:01:30:00
+* FROM CLIP NAME: baseball stadium aerial view
+* COMMENT: B-roll suggestion for establishing shot
+
+008  001      V     C        00:01:45:00 00:01:45:00 00:01:45:00 00:01:45:00
+* FROM CLIP NAME: equipment bag with bats and helmets
+* COMMENT: B-roll suggestion for equipment detail shot
