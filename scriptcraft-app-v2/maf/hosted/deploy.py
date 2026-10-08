@@ -92,6 +92,10 @@ def env_for(portal_name: str) -> dict[str, str]:
         # v3 streams this agent's reply; send SSE keep-alives through the long
         # reasoning pause (about 100 s) before the first words arrive.
         env["SSE_KEEPALIVE_INTERVAL"] = "15"
+        # MAF_PRO_PATH=anthropic serves it from Foundry's Anthropic endpoint
+        # (needs the role described in the maf README); default "responses".
+        if os.environ.get("MAF_PRO_PATH"):
+            env["MAF_PRO_PATH"] = os.environ["MAF_PRO_PATH"].strip().lower()
     if portal_name == "Statistics-and-Quotes-Finder-Agent":
         # The Grok agent calls xAI directly (X search); it needs the xAI key.
         key = (os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY") or "").strip()

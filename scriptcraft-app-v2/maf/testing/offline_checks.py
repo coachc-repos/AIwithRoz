@@ -305,6 +305,19 @@ def _():
     return f"{len(hosted)} chars, in sync"
 
 
+@check("Pro writer agent builds on both Foundry endpoints (MAF_PRO_PATH)")
+def _():
+    from agents import pro_writer  # noqa: PLC0415
+    resp = pro_writer.build_code_agent(path="responses")
+    anth = pro_writer.build_code_agent(path="anthropic")
+    assert type(resp.client).__name__ == "FoundryClaudeChatClient"
+    assert resp.default_options["reasoning"] == {"effort": "high"}
+    assert type(anth.client).__name__ == "AnthropicFoundryClient"
+    assert anth.default_options["thinking"] == {"type": "adaptive"}
+    assert anth.default_options["output_config"] == {"effort": "high"}
+    return f"default path: {pro_writer.PRO_PATH}"
+
+
 @check("All 16 agents build from the registry")
 def _():
     names = sorted(REGISTRY)

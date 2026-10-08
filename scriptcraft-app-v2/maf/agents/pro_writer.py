@@ -13,12 +13,19 @@ compared side by side in the v3 GUI:
 - Model settings: claude-opus-5-5, reasoning effort "high", 48,000 max tokens.
   The classic writer asks Anthropic for effort "high" with adaptive thinking.
 
-It uses the same Foundry Responses path as the other agents. The Responses
-`reasoning` option sets Claude's effort there: on a short prompt, effort low,
-default, and high gave 170, 257, and 312 output tokens (2026-10-08). MAF's
-Anthropic connector (AnthropicFoundryClient) also works locally, but the hosted
-agent's identity gets 401 on POST /anthropic/v1/* without an extra role
-assignment, so this agent does not use it.
+Two Foundry endpoints can serve it; MAF_PRO_PATH picks one at build time:
+
+- "responses" (default): Foundry's OpenAI-style Responses endpoint on the
+  project, like every other hosted agent. Foundry translates the request into a
+  Claude call; the Responses `reasoning` option sets Claude's effort (effort
+  low, default, and high gave 170, 257, and 312 output tokens on a short
+  prompt, 2026-10-08).
+- "anthropic": Foundry's Anthropic Messages endpoint on the account, through
+  MAF's AnthropicFoundryClient. Claude's native request, with effort "high"
+  and adaptive thinking, exactly as the classic writer asks Anthropic. The
+  hosted agent's identity needs a role with the data action
+  Microsoft.CognitiveServices/accounts/AIServices/providers/action on the
+  account first; without it every call fails with 401. See the maf README.
 """
 from __future__ import annotations
 
@@ -32,19 +39,29 @@ from observability import PROJECT_ENDPOINT, make_credential
 AGENT_NAME = "Script-Writer-Pro-Agent"
 MAX_TOKENS = int(os.environ.get("MAF_PRO_MAX_TOKENS", "48000"))
 EFFORT = os.environ.get("MAF_PRO_EFFORT", "high")
+PRO_PATH = os.environ.get("MAF_PRO_PATH", "responses").strip().lower()
+FOUNDRY_RESOURCE = os.environ.get("MAF_FOUNDRY_RESOURCE", "Linedrive-ai-foundry")
+_ANTHROPIC_SCOPE = "https://cognitiveservices.azure.com/.default"
 
 
-def build_code_agent(credential=None) -> Agent:
-    return Agent(
-        client=FoundryClaudeChatClient(
-            project_endpoint=PROJECT_ENDPOINT,
+def build_code_agent(credential=None, path: str | None = None) -> Agent:
+    credential = credential or make_credential()
+    if (path or PRO_PATH) == "anthropic":
+        from agent_framework_anthropic import AnthropicFoundryClient  # noqa: PLC0415
+        from azure.identity import get_bearer_token_provider  # noqa: PLC0415
+        client = AnthropicFoundryClient(
             model=CLAUDE_MODEL,
-            credential=credential or make_credential(),
-        ),
-        name=AGENT_NAME,
-        instructions=load_instructions(AGENT_NAME),
-        default_options={"max_tokens": MAX_TOKENS, "reasoning": {"effort": EFFORT}},
-    )
+            resource=FOUNDRY_RESOURCE,
+            azure_ad_token_provider=get_bearer_token_provider(credential, _ANTHROPIC_SCOPE),
+        )
+        options = {"max_tokens": MAX_TOKENS, "thinking": {"type": "adaptive"},
+                   "output_config": {"effort": EFFORT}}
+    else:
+        client = FoundryClaudeChatClient(
+            project_endpoint=PROJECT_ENDPOINT, model=CLAUDE_MODEL, credential=credential)
+        options = {"max_tokens": MAX_TOKENS, "reasoning": {"effort": EFFORT}}
+    return Agent(client=client, name=AGENT_NAME,
+                 instructions=load_instructions(AGENT_NAME), default_options=options)
 
 
 # --------------------------------------------------------------------------- #

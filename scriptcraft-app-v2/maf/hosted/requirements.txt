@@ -4,6 +4,8 @@ agent-framework-core==1.19.0
 agent-framework-foundry==1.13.1
 agent-framework-openai==1.14.4
 agent-framework-foundry-hosting==1.0.0b260918
+agent-framework-anthropic==1.0.0b260918   # Pro agent with MAF_PRO_PATH=anthropic
+anthropic==0.116.0
 azure-ai-agentserver-core==2.2.0
 azure-ai-agentserver-responses==2.3.0b2
 azure-ai-agentserver-invocations==1.2.0

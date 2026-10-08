@@ -6,6 +6,7 @@ agent-framework-core==1.19.0
 agent-framework-foundry==1.13.1
 agent-framework-openai==1.14.4        # Grok via xAI's Responses API (Quotes agent)
 agent-framework-foundry-hosting==1.0.0b260918   # prerelease; hosted/main.py (local runs + Foundry hosting)
+agent-framework-anthropic==1.0.0b260918   # prerelease; Pro agent with MAF_PRO_PATH=anthropic
 azure-identity==1.26.0
 microsoft-opentelemetry==1.3.9
 python-dotenv==1.2.3
