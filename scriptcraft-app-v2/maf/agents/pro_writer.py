@@ -15,17 +15,19 @@ compared side by side in the v3 GUI:
 
 Two Foundry endpoints can serve it; MAF_PRO_PATH picks one at build time:
 
-- "responses" (default): Foundry's OpenAI-style Responses endpoint on the
+- "responses": Foundry's OpenAI-style Responses endpoint on the
   project, like every other hosted agent. Foundry translates the request into a
   Claude call; the Responses `reasoning` option sets Claude's effort (effort
   low, default, and high gave 170, 257, and 312 output tokens on a short
   prompt, 2026-10-08).
-- "anthropic": Foundry's Anthropic Messages endpoint on the account, through
-  MAF's AnthropicFoundryClient. Claude's native request, with effort "high"
-  and adaptive thinking, exactly as the classic writer asks Anthropic. The
-  hosted agent's identity needs a role with the data action
-  Microsoft.CognitiveServices/accounts/AIServices/providers/action on the
-  account first; without it every call fails with 401. See the maf README.
+- "anthropic" (default since 2026-10-08): Foundry's Anthropic Messages
+  endpoint on the account, through MAF's AnthropicFoundryClient. Claude's
+  native request, with effort "high" and adaptive thinking, exactly as the
+  classic writer asks Anthropic. The hosted agent's identity holds the custom
+  role "ScriptCraft Anthropic Model Caller" (one data action,
+  Microsoft.CognitiveServices/accounts/AIServices/providers/action) on the
+  account; without it every call fails with 401 and the v3 GUI falls back to
+  the classic writer. Access took about 15 minutes to apply after the grant.
 """
 from __future__ import annotations
 
@@ -39,7 +41,7 @@ from observability import PROJECT_ENDPOINT, make_credential
 AGENT_NAME = "Script-Writer-Pro-Agent"
 MAX_TOKENS = int(os.environ.get("MAF_PRO_MAX_TOKENS", "48000"))
 EFFORT = os.environ.get("MAF_PRO_EFFORT", "high")
-PRO_PATH = os.environ.get("MAF_PRO_PATH", "responses").strip().lower()
+PRO_PATH = os.environ.get("MAF_PRO_PATH", "anthropic").strip().lower()
 FOUNDRY_RESOURCE = os.environ.get("MAF_FOUNDRY_RESOURCE", "Linedrive-ai-foundry")
 _ANTHROPIC_SCOPE = "https://cognitiveservices.azure.com/.default"
 

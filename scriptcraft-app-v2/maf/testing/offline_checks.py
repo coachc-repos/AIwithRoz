@@ -315,6 +315,7 @@ def _():
     assert type(anth.client).__name__ == "AnthropicFoundryClient"
     assert anth.default_options["thinking"] == {"type": "adaptive"}
     assert anth.default_options["output_config"] == {"effort": "high"}
+    assert pro_writer.PRO_PATH == "anthropic", pro_writer.PRO_PATH
     return f"default path: {pro_writer.PRO_PATH}"
 
 

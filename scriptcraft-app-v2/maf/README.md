@@ -573,22 +573,21 @@ as the classic writer, golden reference included. The agent runs
 
 - **Reasoning effort works on the Responses path.** On a short prompt, effort
   low, default, and high gave 170, 257, and 312 output tokens.
-- **Two Foundry endpoints can serve it.** By default it uses Foundry's
-  OpenAI-style Responses endpoint on the project, like the other agents.
-  Deploying with `MAF_PRO_PATH=anthropic` serves it from Foundry's Anthropic
-  Messages endpoint on the account instead, through MAF's
-  `AnthropicFoundryClient`. That is Claude's native request, with effort
-  "high" and adaptive thinking, exactly as the classic writer asks Anthropic.
-- **The Anthropic endpoint needs a role first.** The agent's own identity
-  (`instance_identity.principal_id` on the agent, `0e026a6a-…` for
-  `Script-Writer-Pro-Agent-MAF`) gets 401 on `POST /anthropic/v1/*` until it
-  has a role with the data action
-  `Microsoft.CognitiveServices/accounts/AIServices/providers/action` on the
-  Foundry account. The built-in Cognitive Services User and Foundry User roles
-  include it, but both also let the holder list account keys and connection
-  secrets. A custom role with only that data action is the narrow option.
-  After the grant, redeploy with
-  `MAF_PRO_PATH=anthropic maf/.venv/bin/python maf/hosted/deploy.py --only Script-Writer-Pro-Agent`.
+- **It runs on Foundry's Anthropic endpoint.** Since 2026-10-08 the agent
+  calls Foundry's Anthropic Messages endpoint on the account through MAF's
+  `AnthropicFoundryClient`: Claude's native request, with effort "high" and
+  adaptive thinking, exactly as the classic writer asks Anthropic.
+  `MAF_PRO_PATH=responses` at deploy time switches it back to the Responses
+  endpoint the other agents use.
+- **That endpoint needs a role.** The agent's own identity
+  (`instance_identity.principal_id`, `0e026a6a-…` for
+  `Script-Writer-Pro-Agent-MAF`) holds the custom role "ScriptCraft Anthropic
+  Model Caller" on the Foundry account. It grants one data action,
+  `Microsoft.CognitiveServices/accounts/AIServices/providers/action`. The
+  built-in Cognitive Services User and Foundry User roles include it too, but
+  both also let the holder list account keys and connection secrets. Access
+  took about 15 minutes to apply after the grant; calls failed with 401 until
+  then. If the role is removed, the v3 GUI falls back to the classic writer.
 - **Output caps include hidden reasoning.** A hosted B-Roll run stopped
   mid-row at its 16,000-token cap with only about 4,000 tokens of visible
   table, and the app parsed the rows it got. B-Roll, YouTube, and the three

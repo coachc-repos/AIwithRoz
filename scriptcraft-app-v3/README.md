@@ -60,13 +60,14 @@ hosted MAF agent. The app's request text is unchanged, so its parsers are too:
   at least 300 seconds (`SCRIPTCRAFT_MAF_MIN_TIMEOUT`), and a run that times
   out is retried once.
 
-To test without touching your project folder or cloud script library, point
-v3 at a separate settings file and turn off the artifact upload:
+To test without touching your project folder, cloud script library, or idea
+history, point v3 at a separate settings file and idea history, and turn off
+the artifact upload:
 
 ```bash
 echo '{"output_dir": "/tmp/scriptcraft-v3-test"}' > /tmp/v3_settings.json
 SCRIPTCRAFT_SETTINGS_FILE=/tmp/v3_settings.json SCRIPT_ARTIFACTS_BLOB_CONTAINER= \
-  PORT=8082 python web_gui.py
+  SCRIPTCRAFT_IDEAS_HISTORY_FILE=/tmp/v3_ideas.json PORT=8083 python web_gui.py
 ```
 
 ## Script Writer control
@@ -77,7 +78,7 @@ choice is remembered in the browser, and Re-run Last restores it.
 | Option | What writes the script |
 |---|---|
 | ⭐ Pro writer · classic | One Claude Opus 5.5 pass through the Anthropic API, as in v2 |
-| 🤖 Pro writer · agent | The same prompt and request, run by the hosted `Script-Writer-Pro-Agent-MAF` on the Foundry Claude deployment |
+| 🤖 Pro writer · agent | The same prompt and request, run by the hosted `Script-Writer-Pro-Agent-MAF` on the Foundry Claude deployment, through Foundry's Anthropic endpoint |
 | 🧩 Agentic script writing | Topic Assistant, chapter Writers, Reviewer, Quotes and Hook agents; the Video Format list appears for this option |
 
 Both Pro options build their request with `build_pro_user_message` in
@@ -133,6 +134,18 @@ and traces).
   over the target, one correction pass runs, as in the MAF Shorten code. The
   second reply is kept only if it is closer to the target and keeps every
   production-block placeholder.
+- **Current ideas, briefs, and predictions.** v2's Idea Generator told Claude
+  to use "current 2026 events" without giving today's date, so an April 2026
+  paper still counted as current, and Grok brainstormed with no search at all.
+  Now both models get today's date and a 60-day window (`IDEA_RECENCY_DAYS`),
+  and every idea ends with the news it builds on and that news's date. Grok
+  searches X, limited to posts from the window, and the web. Claude gets up to
+  8 searches and starts with broad "latest AI news" searches. The brief
+  creator now searches the web too, and its 2026 TOUCHPOINTS must be current
+  and dated. Both Pro writers get today's date and treat anything already
+  underway as news, not a prediction. On "5 big AI predictions for 2027",
+  every idea and the brief built on news from August to October 2026.
+  Idea generation now takes about 3 minutes, mostly Claude's searches.
 - **Labels and port.** The tab title, header badge, version (`3.0-maf`), and
   default port (8082) identify v3.
 

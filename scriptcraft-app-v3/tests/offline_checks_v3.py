@@ -81,13 +81,25 @@ def _():
 def _():
     from linedrive_azure.agents import pro_script_writer as pw  # noqa: PLC0415
     msg = pw.build_pro_user_message("T", "B")
-    assert msg.startswith("TITLE: T") and "<golden_reference>" in msg
+    assert msg.startswith("TODAY: ") and "\n\nTITLE: T\n\n" in msg and "<golden_reference>" in msg
     src = open(os.path.join(APP, "linedrive_azure", "agents", "pro_script_writer.py"), encoding="utf-8").read()
     assert src.count("build_pro_user_message(title, brief)") == 2, "classic and agent must share the builder"
     assert 'PRO_AGENT_NAME = "Script-Writer-Pro-Agent-MAF"' in src
     wf = open(os.path.join(APP, "linedrive_azure", "agents", "enhanced_autogen_system.py"), encoding="utf-8").read()
     assert 'if pro_writer == "agent":' in wf and "write_pro_script_agent(" in wf
     return "shared builder; agent branch present"
+
+
+@check("Ideas and briefs: today's date + recency rules; Grok searches X and the web; briefs search")
+def _():
+    gui = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    import web_gui  # noqa: PLC0415
+    rules = web_gui._recency_rules(60)
+    assert rules.startswith("TODAY is ") and "last 60 days" in rules and "already underway is news" in rules
+    assert "+ _recency_rules()" in gui and gui.count("_recency_rules()") >= 2, "idea + brief prompts"
+    assert "search_days=IDEA_RECENCY_DAYS" in gui and "_xai_x_search(from_date=since)" in gui
+    assert "use_web_search=True, max_searches=4," in gui
+    return rules[:60] + "..."
 
 
 @check("Script Writer control: three options, and the create request carries pro_writer")

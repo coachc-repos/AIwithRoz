@@ -4600,6 +4600,29 @@ IDEA_MODEL = "claude-opus-5-5"
 # ideas are still returned.
 IDEA_GROK_MODEL = os.getenv("IDEA_GROK_MODEL", "grok-4.5").strip() or "grok-4.5"
 
+# v3: ideas, briefs, and Pro scripts must be about what is happening NOW.
+# Without today's date the models treated anything from 2026 as current: an
+# April 2026 paper drove a "2027 predictions" script whose first prediction had
+# already begun. Grok also brainstormed with no search at all.
+IDEA_RECENCY_DAYS = int(os.getenv("IDEA_RECENCY_DAYS", "60"))
+
+
+def _recency_rules(days: int = IDEA_RECENCY_DAYS) -> str:
+    """Today's date plus the currency rules shared by ideas, briefs, and Grok."""
+    import datetime as _dt
+    today = _dt.date.today()
+    since = today - _dt.timedelta(days=days)
+    return (
+        f"TODAY is {today:%B} {today.day}, {today.year}. CURRENCY RULES: build on "
+        f"news, launches, research, and posts from the last {days} days (since "
+        f"{since:%B} {since.day}, {since.year}), and search for them first. If an "
+        "idea rests on something older, such as a report or paper from earlier in "
+        "the year, search for what has happened since and build on the newest "
+        "development, not the original. For predictions, forecast only what has NOT "
+        "started yet: a development that is already underway is news, not a "
+        "prediction, so predict its next step instead."
+    )
+
 # --- Idea Generator content lanes -------------------------------------------
 # Historically the Idea Generator hard-coded a "careers / resumes / layoffs"
 # weighting into its system prompt, so *every* batch drifted back to job-hunting
@@ -4970,7 +4993,12 @@ def _extract_brief(text: str) -> str:
 # Persist generated idea batches so they survive restarts and can be reloaded
 # next time the Idea Generator panel is opened. Stored alongside the app's
 # other settings in ~/.scriptcraft/.
-_IDEAS_HISTORY_PATH = Path.home() / ".scriptcraft" / "idea_generator.json"
+# v3: SCRIPTCRAFT_IDEAS_HISTORY_FILE points the Idea Generator at another
+# history file (for test runs); the default is shared with v2.
+_IDEAS_HISTORY_PATH = Path(
+    os.environ.get("SCRIPTCRAFT_IDEAS_HISTORY_FILE")
+    or (Path.home() / ".scriptcraft" / "idea_generator.json")
+).expanduser()
 _IDEAS_HISTORY_MAX = 25
 
 
@@ -5295,13 +5323,15 @@ def _idea_document_block(storage):
 
 
 def _grok_complete(system: str, user: str, model: str = None,
-                   temperature: float = 0.8) -> str:
+                   temperature: float = 0.8, search_days: int = 0) -> str:
     """Run one Grok (xAI) chat turn and return its text. Raises on failure.
 
     Used by the Idea Generator so Grok brainstorms alongside Claude. `model`
-    defaults to IDEA_GROK_MODEL. Grok has no server-side web-search loop here, so
-    the caller grounds it through the prompt (the live trend list, adjacency
-    context, and any attached document's text) — the same signals Claude gets.
+    defaults to IDEA_GROK_MODEL. With search_days > 0 (v3), Grok gets xAI's
+    server-side X search, limited to posts from the last `search_days` days,
+    plus web search, capped at 4 agentic turns. grok-4.5 with both took about
+    16 s (2026-10-08). Without tools, the caller grounds it through the prompt
+    (trend list, adjacency context, attached document text).
     """
     api_key = _resolve_xai_api_key()
     if not api_key:
@@ -5316,10 +5346,34 @@ def _grok_complete(system: str, user: str, model: str = None,
     _model = model or IDEA_GROK_MODEL
     logger.info("🤖 Grok %s | calling…", _model)
     client = xai_sdk.Client(api_key=api_key)
-    chat = client.chat.create(model=_model, temperature=temperature)
-    chat.append(_xai_system(system))
-    chat.append(_xai_user(user))
-    resp = chat.sample()
+    tools = None
+    if search_days > 0:
+        try:
+            import datetime as _dt
+            from xai_sdk.tools import web_search as _xai_web_search
+            from xai_sdk.tools import x_search as _xai_x_search
+            since = _dt.datetime.now() - _dt.timedelta(days=search_days)
+            tools = [_xai_web_search(), _xai_x_search(from_date=since)]
+        except ImportError as e:
+            logger.warning("Grok search tools unavailable (%s); brainstorming without search", e)
+
+    def _sample(with_tools: bool):
+        kwargs = {"tools": tools, "max_turns": 4} if with_tools else {}
+        chat = client.chat.create(model=_model, temperature=temperature, **kwargs)
+        chat.append(_xai_system(system))
+        chat.append(_xai_user(user))
+        return chat.sample()
+
+    try:
+        resp = _sample(bool(tools))
+    except Exception as e:
+        if not tools:
+            raise
+        logger.warning("Grok search failed (%s); retrying without search", str(e)[:160])
+        resp = _sample(False)
+    usage = getattr(resp, "server_side_tool_usage", None)
+    if usage:
+        logger.info("   🔎 Grok searches: %s", usage)
     out = (getattr(resp, "content", "") or "").strip()
     logger.info("✅ Grok %s returned %d chars", _model, len(out))
     return out
@@ -5432,7 +5486,11 @@ def api_ideas_generate():
         "visible, aim for ~50–60 characters, and front-load the benefit. Every "
         "idea must have a strong cold-open hook and be genuinely different from "
         "the others — no near-duplicates. Use web search to ground ideas in "
-        "real, current 2026 events, products, and announcements."
+        "real, current events, products, and announcements.\n\n"
+        + _recency_rules()
+        + " SEARCH STRATEGY: start with two or three broad searches for the latest "
+        "AI news (this week, this month), then build the ideas on what you find. "
+        "Do not spend searches confirming ideas one at a time."
     )
     if has_request and not has_doc:
         # Topic lock: the producer's topic is the subject of ALL ideas. The brand
@@ -5530,7 +5588,8 @@ def api_ideas_generate():
            if adjacency else "") + ". Respond with ONLY a JSON "
         "array (no prose, no markdown fences) of 10 objects, each with:\n"
         '  "title": a scroll-stopping, click-worthy title (~50–60 chars, keep "AI" visible)\n'
-        '  "angle": one sentence naming the format + the cold-open hook / why it earns the click\n'
+        '  "angle": one sentence naming the format + the cold-open hook / why it earns the click, '
+        'ending with the news it builds on and that news\'s date (e.g. "Builds on: <news>, <Mon D, YYYY>.")\n'
         "Return only the JSON array."
     )
     logger.info("💡 Idea generation requested: %r (lane=%s, top_youtube=%d, adjacency=%d, doc=%s)",
@@ -5556,11 +5615,13 @@ def api_ideas_generate():
 
     def _gen_claude():
         # Claude gets the PDF as a native document block (best grounding).
+        # v3: 8 searches (4 ran out before Claude found news from the recency
+        # window) and a longer per-request timeout for the extra search rounds.
         raw = _anthropic_complete(system, user, max_tokens=4000,
-                                  use_web_search=True, max_searches=4,
+                                  use_web_search=True, max_searches=8,
                                   model=IDEA_MODEL,
                                   documents=[idea_doc] if idea_doc else None,
-                                  timeout=120.0 if idea_doc else 60.0)
+                                  timeout=180.0 if idea_doc else 120.0)
         return _clean_ideas(raw, _CLAUDE_SOURCE), raw
 
     def _gen_grok():
@@ -5573,7 +5634,8 @@ def api_ideas_generate():
                 'base every idea on this:\n"""\n'
                 + idea_doc_text[:_IDEA_DOC_STORE_CHARS]
                 + '\n"""\n\n' + user)
-        raw = _grok_complete(system, grok_user, model=IDEA_GROK_MODEL)
+        raw = _grok_complete(system, grok_user, model=IDEA_GROK_MODEL,
+                             search_days=IDEA_RECENCY_DAYS)
         return _clean_ideas(raw, _GROK_SOURCE), raw
 
     import concurrent.futures as _futures
@@ -5710,7 +5772,13 @@ def api_ideas_describe():
         "You are a creative director writing a production brief for an "
         "energizing, optimistic YouTube explainer video about AI/technology "
         "aimed at a general 2026 audience. Match the example's exact structure "
-        "and voice precisely."
+        "and voice precisely.\n\n"
+        + _recency_rules() +
+        " Before writing, search for the latest developments on this episode's "
+        "subject. Every item in 2026 TOUCHPOINTS must be current and carry its "
+        "month and year. If the chosen idea rests on older material, or any of its "
+        "predictions has already begun, say so in the brief and build on what "
+        "happened since."
         + (
             "\n\nSOURCE DOCUMENT: A file (shown at the start of the message) is "
             "the basis for this episode. Ground the brief in its actual content "
@@ -5746,10 +5814,12 @@ def api_ideas_describe():
     logger.info("✍️ Brief requested for: %r%s", title,
                 f" (grounded in {src_doc_name or 'source doc'})" if doc_blocks else "")
     try:
-        text = _anthropic_complete(system, user, max_tokens=2000,
-                                   use_web_search=False, model=IDEA_MODEL,
+        # v3: web search on (v2 wrote briefs from the model's own knowledge).
+        text = _anthropic_complete(system, user, max_tokens=4000,
+                                   use_web_search=True, max_searches=4,
+                                   model=IDEA_MODEL,
                                    documents=doc_blocks,
-                                   timeout=120.0 if doc_blocks else 60.0)
+                                   timeout=180.0 if doc_blocks else 150.0)
         text = _extract_brief(text)
     except Exception as e:
         logger.error(f"❌ Idea brief generation failed: {e}")

@@ -157,7 +157,15 @@ def build_pro_user_message(title: str, brief: str = "") -> str:
             "its structure, conventions, and voice.\n\n"
             f"<golden_reference>\n{golden}\n</golden_reference>"
         )
+    # v3: the date, so "a real signal from today" means today. The brief (now
+    # written with web search) carries the current facts; anything already
+    # underway is news, not a prediction.
+    import datetime as _dt
+    _today = _dt.date.today()
     user = (
+        f"TODAY: {_today:%B} {_today.day}, {_today.year}. Treat the brief's dated "
+        "facts as the current state of things. Anything that has already happened "
+        "or begun is news, not a prediction.\n\n"
         f"TITLE: {title}\n\n"
         f"BRIEF:\n{_brief}"
         f"{ref_block}\n\n"
