@@ -107,12 +107,15 @@ def _():
     html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
     for value in ("pro_classic", "pro_agent", "agentic"):
         assert f'name="writerMode" value="{value}"' in html, value
+        # The Idea Generator's selected-idea row offers the same choice.
+        assert f'name="writerModeIdea" value="{value}" onchange="setWriterMode(this.value)"' in html, value
+    assert 'input[name="writerModeIdea"][value="${mode}"]' in html, "the two controls stay in step"
     assert "pro_writer: proWriter," in html
     assert '<option value="pro"' not in html, "Pro is chosen with the control, not the format list"
     gui = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
     assert 'pro_writer = (data.get("pro_writer") or "classic").strip().lower()' in gui
     assert gui.count("pro_writer=pro_writer,") == 2
-    return "radios, payload, and server plumbing present"
+    return "dialog + Idea Generator radios, payload, and server plumbing present"
 
 
 @check("Every migrated client routes to its hosted '-MAF' agent")

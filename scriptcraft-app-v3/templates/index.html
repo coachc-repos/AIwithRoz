@@ -1393,6 +1393,12 @@
                     <span style="color:#cbd5e1; font-size:0.9em;">Selected: <strong id="ideaGenUseLabel" style="color:#e2e8f0;"></strong></span>
                     <button id="ideaGenUseBtn" onclick="useSelectedIdea()" style="padding:9px 16px; background:#16a34a; color:#fff; border:none; border-radius:6px; font-weight:600; cursor:pointer;">✍️ Write brief &amp; send to Create Script</button>
                     <button id="ideaGenRegenBtn" onclick="useSelectedIdea(true)" style="display:none; padding:9px 14px; background:#6366f1; color:#fff; border:none; border-radius:6px; font-weight:600; cursor:pointer;" title="Write a FRESH brief from this idea, ignoring the saved one — use after changing the Format or when you want different parameters.">🔄 Regenerate brief (fresh)</button>
+                    <div id="ideaGenWriterRow" role="radiogroup" aria-label="Script writer" style="flex-basis:100%; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                        <span style="color:#cbd5e1; font-size:0.85em; margin-right:4px;" title="Same choice as in the Create Script dialog; changing either one changes both">✍️ Script Writer:</span>
+                        <label class="writer-mode-pill" title="The original Pro mode: one Claude Opus 5.5 pass straight through the Anthropic API"><input type="radio" name="writerModeIdea" value="pro_classic" onchange="setWriterMode(this.value)"> ⭐ Pro writer · classic</label>
+                        <label class="writer-mode-pill" title="Same Pro prompt, run by the hosted MAF agent Script-Writer-Pro-Agent-MAF in Foundry"><input type="radio" name="writerModeIdea" value="pro_agent" onchange="setWriterMode(this.value)"> 🤖 Pro writer · agent</label>
+                        <label class="writer-mode-pill" title="Topic Assistant, chapter Writers, Reviewer, Quotes and Hook agents"><input type="radio" name="writerModeIdea" value="agentic" onchange="setWriterMode(this.value)"> 🧩 Agentic script writing</label>
+                    </div>
                 </div>
             </div>
         </div>
@@ -6424,6 +6430,9 @@ Time management content here...`;
             if (row) row.style.display = (mode === 'agentic') ? '' : 'none';
             const hint = document.getElementById('writerModeHint');
             if (hint) hint.textContent = _WRITER_HINTS[mode] || '';
+            // The Idea Generator shows the same choice after an idea is selected.
+            const ideaEl = document.querySelector(`input[name="writerModeIdea"][value="${mode}"]`);
+            if (ideaEl) ideaEl.checked = true;
             try { localStorage.setItem('scriptcraft_writer_mode', mode); } catch (e) {}
         }
         function setWriterMode(mode) {

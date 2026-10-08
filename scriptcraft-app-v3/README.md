@@ -72,8 +72,11 @@ SCRIPTCRAFT_SETTINGS_FILE=/tmp/v3_settings.json SCRIPT_ARTIFACTS_BLOB_CONTAINER=
 
 ## Script Writer control
 
-The Create Script form has a three-way **Script Writer** control. The last
-choice is remembered in the browser, and Re-run Last restores it.
+The Create Script form has a three-way **Script Writer** control. The Idea
+Generator shows the same three options once you select an idea, so you can
+pick the writer before or after the brief is written; changing either one
+changes both. The last choice is remembered in the browser, and Re-run Last
+restores it.
 
 | Option | What writes the script |
 |---|---|
