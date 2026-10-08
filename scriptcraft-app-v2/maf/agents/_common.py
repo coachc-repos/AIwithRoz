@@ -14,7 +14,7 @@ import re
 import sys
 from typing import Annotated, Any, Awaitable, Callable
 
-from agent_framework import Agent, FunctionTool, tool
+from agent_framework import Agent, Content, FunctionTool, tool
 from agent_framework.foundry import FoundryAgent, FoundryChatClient
 
 from observability import PROJECT_ENDPOINT, make_credential
@@ -28,6 +28,9 @@ GROK_MODEL = os.environ.get("MAF_GROK_MODEL", "grok-4.7")
 XAI_BASE_URL = os.environ.get("XAI_BASE_URL", "https://api.x.ai/v1")
 # Model behind the web_search FUNCTION tool (see make_web_search_tool).
 SEARCH_MODEL = os.environ.get("MAF_SEARCH_MODEL", "gpt-5.4-mini")
+# One web_search call may not take longer than this. A Foundry web search once
+# hung for the client's full 600 s default, which would stall the whole agent.
+SEARCH_TIMEOUT_S = float(os.environ.get("MAF_SEARCH_TIMEOUT", "120"))
 
 # scriptcraft-app-v2/agent_instructions/ in the repo; <zip root>/agent_instructions/
 # in a hosted deployment (maf/hosted/deploy.py packs it next to agents/).
@@ -68,6 +71,44 @@ _SEARCH_INSTRUCTIONS = (
 )
 
 
+class FoundryClaudeChatClient(FoundryChatClient):
+    """FoundryChatClient that takes each streamed function call from its final
+    `response.output_item.done` event instead of joining the argument deltas.
+
+    Why: when Claude makes parallel tool calls, Foundry's Responses adapter puts
+    them all on one output item and computes every argument delta against one
+    shared buffer. Joined, the deltas splice two queries into invalid JSON, e.g.
+    '{"query": "NotebookLM features 2025 ..."}ations"}' (measured 2026-10-07 on
+    claude-opus-5-5 and on the hosted agents). MAF joins the deltas, so each such
+    call failed with "Argument parsing failed"; three in a row end the run with
+    "Function invocation limit reached". The done event carries the call's full,
+    valid arguments. Non-streaming calls were never affected, but the Foundry
+    hosting server always streams.
+
+    Foundry still returns only the last of several parallel calls (streaming or
+    not), so the extra parallel queries are dropped, not corrupted."""
+
+    def _parse_chunk_from_openai(self, event, options, function_call_ids,
+                                 seen_reasoning_delta_item_ids=None):
+        update = super()._parse_chunk_from_openai(
+            event, options=options, function_call_ids=function_call_ids,
+            seen_reasoning_delta_item_ids=seen_reasoning_delta_item_ids)
+        etype = getattr(event, "type", "")
+        if etype == "response.function_call_arguments.delta":
+            update.contents = [c for c in update.contents if c.type != "function_call"]
+        elif etype == "response.output_item.done" and getattr(event.item, "type", "") == "function_call":
+            item = event.item
+            update.contents.append(Content.from_function_call(
+                call_id=item.call_id,
+                name=item.name,
+                arguments=item.arguments or "",
+                additional_properties={"output_index": event.output_index,
+                                       "fc_id": getattr(item, "id", None)},
+                raw_representation=event,
+            ))
+        return update
+
+
 def make_web_search_tool(credential=None) -> FunctionTool:
     """Web search as a FUNCTION tool: a small Azure OpenAI model runs Foundry's
     hosted web search and returns findings with URLs; the calling agent (Claude)
@@ -96,7 +137,15 @@ def make_web_search_tool(credential=None) -> FunctionTool:
         query: Annotated[str, "What to look up: a specific fact, product, statistic, or recent event"],
     ) -> str:
         """Search the public web for current facts, product details, statistics, and recent news. Returns findings with source URLs and dates."""
-        resp = await run_response(searcher, query, "web_search")
+        try:
+            resp = await asyncio.wait_for(run_response(searcher, query, "web_search"),
+                                          timeout=SEARCH_TIMEOUT_S)
+        except Exception as e:  # never let a search failure stall the agent
+            detail = (f"no answer within {SEARCH_TIMEOUT_S:.0f}s" if isinstance(e, TimeoutError)
+                      else f"{type(e).__name__}: {str(e)[:400]}")
+            print(f"   [web_search] FAILED: {detail}", file=sys.stderr, flush=True)
+            return (f"web_search is unavailable right now ({detail}). "
+                    "Do not call web_search again; answer from the script and your own knowledge.")
         return (resp.text or "").strip() or "No results."
 
     return tool(web_search, name="web_search", approval_mode="never_require")
@@ -111,7 +160,7 @@ def build_code_agent(*, name: str, instructions: str, model: str, max_tokens: in
     every word of its reply itself."""
     credential = credential or make_credential()
     return Agent(
-        client=FoundryChatClient(
+        client=FoundryClaudeChatClient(
             project_endpoint=PROJECT_ENDPOINT,
             model=model,
             credential=credential,

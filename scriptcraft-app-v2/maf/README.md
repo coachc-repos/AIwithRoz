@@ -107,6 +107,17 @@ prompts on 2026-10-07). Retire a portal copy only after its checks pass.
   parsers match nothing), a B-Roll table without pipes (zero rows parsed), a
   narrow no-break space inside "Chapter 1", and, on one code run, a revised
   script returned twice.
+- **Parallel tool calls on Claude.** Foundry's Responses adapter returns only
+  the last of several parallel tool calls, so extra parallel searches are
+  dropped. When streaming, it also cuts each call's argument deltas against one
+  shared buffer, so the joined deltas are invalid JSON. Local runs do not
+  stream, but the Foundry hosting server always does. Before the fix, hosted
+  Topic, Topic-Predictions, Reviewer, and Demo stopped with "Function invocation
+  limit reached" after three "Argument parsing failed" tool results.
+  `_common.FoundryClaudeChatClient` builds each streamed call from its final
+  `response.output_item.done` event instead, and `testing/offline_checks.py`
+  replays the broken event sequence. Each search also has a 120-second limit,
+  because one Foundry web search hung for the client's full 600 seconds.
 - **Which agents search.** All Claude agents have the function except the three
   Writers, which work from the Topic plan (switch `web_search=True` in
   `pipeline.SPECS` to give them search). The Writers also get a length rule, to
@@ -433,9 +444,102 @@ and AI-Tips-Agent point at agents that no longer exist in the Foundry project.
 - The saved "10 AI Tools, 10 Mistakes" script ends with a B-Roll table from a
   different video (a 2030 grocery bill).
 
-## Next steps
+## Step 4 (done) — host the code agents in Foundry
 
-4. Host the code agents in Foundry as hosted agents (in progress).
+Every code agent runs as a Foundry **hosted agent**, so it appears in the
+Foundry portal's Agents list (Build > Agents) next to its prompt agent, named
+`<portal name>-MAF` (for example `Script-bRoll-Agent-MAF`). You can open each in
+the Playground, see its versions and status, and view runs under Agents >
+Traces. Instructions and models live in this code, not in the portal; change
+them here and redeploy.
+
+- **`hosted/main.py`** serves one code agent through the Foundry Responses
+  protocol (`agent_framework_foundry_hosting.ResponsesHostServer`, port 8088).
+  The hosted agent's `MAF_AGENT` setting picks which one, so all 15 share one
+  codebase. `MAF_HOSTED=1` switches the credential to the agent's own managed
+  identity.
+- **`hosted/deploy.py`** packs one zip (main.py, `agents/`, `observability.py`,
+  and the captured prompts) and creates each hosted agent with Foundry's
+  source-code deployment: no Docker and no container registry, because Foundry
+  installs `hosted/requirements.txt` itself. Then it waits for each version to
+  turn active and calls each agent once.
+- **Cost:** hosted agents scale to zero. Each session gets its own sandbox
+  (0.5 vCPU, 1 GiB here), billed only while active and released after 5 idle
+  minutes.
+- **Secrets:** the Quotes agent needs the xAI key, which deploy.py sets as an
+  environment variable on that one hosted agent. Move it to Key Vault for
+  production.
+
+```bash
+maf/.venv/bin/python maf/hosted/deploy.py --dry-run      # build the zip, list the plan
+maf/.venv/bin/python maf/hosted/deploy.py                # deploy all 15, wait, smoke-test
+maf/.venv/bin/python maf/hosted/deploy.py --only Script-bRoll-Agent
+maf/.venv/bin/python maf/hosted/deploy.py --smoke-only   # re-test what is deployed
+
+# local run of one hosted agent
+MAF_AGENT=Script-bRoll-Agent maf/.venv/bin/python maf/hosted/main.py
+curl -X POST http://localhost:8088/responses -H "Content-Type: application/json" \
+     -d '{"input": "SCRIPT TITLE: x\n\nSCRIPT:\nHost: hello"}'
+```
+
+### Deployment results (2026-10-07)
+
+All 15 hosted agents are active and pass `deploy.py`'s smoke test: one
+Responses call each with a two-line script. A pass means a non-empty reply, no
+"Function invocation limit reached", and no tool result that is an error. No
+search fell back to the "web_search is unavailable" message.
+
+| Hosted agent | Version | Time | Tool calls |
+|---|---|---|---|
+| Script-Demo-Assistant-Agent-MAF | 3 | 61 s | 2 |
+| Script-Hook-and-Summary-Agent-MAF | 3 | 52 s | 1 |
+| Script-Polisher-Agent-MAF | 3 | 68 s | 2 |
+| Script-Repeat-and-Flow-Agent-MAF | 3 | 25 s | 0 |
+| Script-Reviewer-Agent-MAF | 3 | 145 s | 5 |
+| Script-Shorten-Agent-MAF | 3 | 15 s | 0 |
+| Script-Topic-Assistant-Agent-MAF | 3 | 116 s | 5 |
+| Script-Topic-Assistant-List-Agent-MAF | 3 | 50 s | 2 |
+| Script-Topic-Assistant-Predictions-Agent-MAF | 3 | 58 s | 2 |
+| Script-Writer-Agent-MAF | 3 | 104 s | 0 |
+| Script-Writer-List-Agent-MAF | 3 | 35 s | 0 |
+| Script-Writer-Predictions-Agent-MAF | 3 | 39 s | 0 |
+| Script-Youtube-Upload-Details-Agent-MAF | 3 | 37 s | 0 |
+| Script-bRoll-Agent-MAF | 4 | 28 s | 0 |
+| Statistics-and-Quotes-Finder-Agent-MAF | 3 | 113 s | 8 (xAI X and web searches) |
+
+The hosted Quotes agent on the golden script, with the app's verbatim request:
+
+| Call | Time | Quotes / statistics (app parser) | Links | X posts |
+|---|---|---|---|---|
+| Plain | 117 s | 3 / 3 | 6 | 1 |
+| Streaming | 122 s | 3 / 3 | 5 | 1 |
+| Background | 117 s | 3 / 3 | 6 | 2 |
+
+The X posts are real posts by Gary Marcus (April 2026) and Ethan Mollick
+(2025), each quoted with a **Link:** line.
+
+What it took to host:
+
+- **Zip upload.** Pass the code to `create_version_from_code` as a
+  `(filename, bytes, content type)` tuple. Bare bytes fail with "Code part
+  filename must end with .zip".
+- **File modes.** Zip entries need mode 0644. With 0600 the remote build cannot
+  read `requirements.txt` and fails with "No Python dependency manifest found".
+- **Streamed tool calls.** The hosting server always streams, which exposed the
+  Foundry parallel tool-call bug (see "Parallel tool calls on Claude" in step 3).
+  Topic, Topic-Predictions, Reviewer, and Demo failed until
+  `FoundryClaudeChatClient` was in place.
+- **Long calls.** One plain call to Quotes, sent right after deployment,
+  returned HTTP 424 `proxy_timeout` ("agent container did not respond within
+  ..."). Three repeats, plain, streaming, and background, each finished in
+  about two minutes. For long runs from code, prefer `stream=True`, or
+  `background=True` and poll `responses.retrieve`. The hosting server supports
+  both.
+
+**Where to see them:** Foundry portal > Build > Agents. Each hosted agent is
+listed (type Hosted) next to its prompt agent, 30 agents in all. Open one for
+its versions, Playground, and logs. Runs appear under Traces, because App
+Insights is connected.
 
 ## Troubleshooting: `ConnectError: nodename nor servname` (VPN / split-DNS)
 
@@ -464,7 +568,10 @@ revert.) The deployed cloud app is unaffected — it runs inside Azure.
 ## Notes
 
 - Package set: `agent-framework-foundry` (pulls `agent-framework-core`),
-  `azure-identity`, `python-dotenv`, `microsoft-opentelemetry`.
+  `agent-framework-openai` (Grok via xAI), `agent-framework-foundry-hosting`
+  (prerelease; `hosted/main.py`), `azure-identity`, `python-dotenv`,
+  `microsoft-opentelemetry`. `hosted/requirements.txt` pins what Foundry
+  installs for the hosted agents.
 - The venv here resolves `azure-ai-projects` 2.6.x; the main app pins 2.1.0.
   Keeping MAF in its own venv avoids disturbing the running app until we
   reconcile dependencies at cut-over.
