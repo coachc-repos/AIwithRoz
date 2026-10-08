@@ -20,6 +20,9 @@ Open http://localhost:8082. The tab title reads "ScriptCraft v3" and the header
 badge reads "v3 · MAF agents". The default port is 8082 so v2 can keep 8080.
 v3 needs the same Python packages as v2 (`requirements.txt` is unchanged) and
 reads the same `.env`, `~/.scriptcraft` settings, and API keys.
+`agent_instructions/golden_reference_script.md` is the golden reference that
+Pro mode embeds and the pipeline's style block leads with. It is a copy of
+v2's; the MAF agents' own prompts stay in `scriptcraft-app-v2/agent_instructions`.
 
 ## How the agents are called
 

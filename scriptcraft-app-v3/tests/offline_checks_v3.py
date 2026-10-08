@@ -58,6 +58,16 @@ def _client(module: str, cls: str):
     return getattr(importlib.import_module(f"linedrive_azure.agents.{module}"), cls)()
 
 
+@check("Golden reference script loads (Pro mode prompt and the pipeline's style block need it)")
+def _():
+    from linedrive_azure.agents.pro_script_writer import load_golden_reference  # noqa: PLC0415
+    text = load_golden_reference(max_chars=100000)
+    # load_golden_reference() returns "" when the file is missing, which silently
+    # drops the reference from every Pro and pipeline request.
+    assert len(text) > 5000, f"golden reference missing or short ({len(text)} chars)"
+    return f"{len(text)} chars from agent_instructions/golden_reference_script.md"
+
+
 @check("Every migrated client routes to its hosted '-MAF' agent")
 def _():
     names = []
