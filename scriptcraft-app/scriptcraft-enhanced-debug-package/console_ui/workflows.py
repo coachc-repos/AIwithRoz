@@ -1859,7 +1859,7 @@ async def extract_enhanced_visual_cues_and_download_broll(
 ) -> str:
     """
     Enhanced visual cue extraction with contextual keyword analysis
-    Uses both Pexels and Pixabay for diverse B-roll sources with duplicate detection
+    Uses Pexels for B-roll sources with duplicate detection
     """
     print(f"\n🎬 ENHANCED VISUAL CUES EXTRACTION FOR B-ROLL")
     print("=" * 55)
@@ -1875,14 +1875,6 @@ async def extract_enhanced_visual_cues_and_download_broll(
 
         pexels_available = True
 
-        # Check if Pixabay downloader exists
-        try:
-            from pixabay_video_downloader import PixabayVideoDownloader
-
-            pixabay_available = True
-        except ImportError:
-            pixabay_available = False
-            print("⚠️ Pixabay downloader not available, using Pexels only")
 
         # Extract contextual keywords from script content first
         print("🔍 Analyzing script for contextual keywords...")
@@ -2240,20 +2232,8 @@ async def extract_enhanced_visual_cues_and_download_broll(
         pexels_downloader.metadata_log = pexels_downloader._load_metadata_log()
         print("   ✅ Pexels downloader ready")
 
-        # Initialize Pixabay downloader if available
-        pixabay_downloader = None
-        if pixabay_available:
-            pixabay_downloader = PixabayVideoDownloader(
-                api_key="52113911-b5f6394f010b214e1f07599f2"
-            )
-            pixabay_downloader.output_dir = topic_broll_dir
-            pixabay_downloader.metadata_file = (
-                topic_broll_dir / "pixabay_video_metadata_log.json"
-            )
-            pixabay_downloader.metadata_log = pixabay_downloader._load_metadata_log()
-            print("   ✅ Pixabay downloader ready")
 
-        total_sources = 2 if pixabay_available else 1
+        total_sources = 1
         print(
             f"   📊 Using {total_sources} video source{'s' if total_sources > 1 else ''}"
         )
@@ -2398,74 +2378,6 @@ async def extract_enhanced_visual_cues_and_download_broll(
                 except Exception as e:
                     print(f"      ❌ Pexels error for '{search_term}': {e}")
 
-                # Try Pixabay if available
-                if pixabay_available and pixabay_downloader:
-                    try:
-                        print(f"      🔍 Searching Pixabay...")
-                        videos = pixabay_downloader.search_videos(
-                            search_term, per_page=5
-                        )
-
-                        if videos:
-                            # Find first video that hasn't been downloaded yet
-                            selected_video = None
-                            for video in videos:
-                                video_id = str(video.get("id", ""))
-                                # Pixabay uses different structure, adapt as needed
-                                video_url = (
-                                    video.get("videos", {})
-                                    .get("large", {})
-                                    .get("url", "")
-                                )
-                                unique_id = f"pixabay_{video_id}_{video_url}"
-
-                                if unique_id not in downloaded_video_ids:
-                                    selected_video = video
-                                    downloaded_video_ids.add(unique_id)
-                                    break
-
-                            if selected_video:
-                                user_name = selected_video.get(
-                                    "user", "Unknown")
-                                duration = selected_video.get("duration", 0)
-                                print(
-                                    f"      ✅ Pixabay: {user_name} - {duration}s (unique)"
-                                )
-
-                                # Create descriptive filename based on search term
-                                clean_term = re.sub(
-                                    r"[^\w\s-]", "", search_term)
-                                clean_term = re.sub(
-                                    r"\s+", "_", clean_term)[:30]
-                                filename_base = f"Pixabay_{clean_term}_VC{i:02d}"
-
-                                downloaded_file = pixabay_downloader.download_video(
-                                    selected_video, filename_base
-                                )
-
-                                if downloaded_file and Path(downloaded_file).exists():
-                                    cue_downloads.append(downloaded_file)
-                                    file_size = Path(downloaded_file).stat().st_size / (
-                                        1024 * 1024
-                                    )
-                                    file_name = Path(downloaded_file).name
-                                    print(
-                                        f"      ✅ Pixabay Downloaded: {file_name} ({file_size:.1f} MB)"
-                                    )
-                                else:
-                                    print(f"      ❌ Pixabay download failed")
-                            else:
-                                print(
-                                    f"      ⚠️ All Pixabay videos already downloaded for: {search_term}"
-                                )
-                        else:
-                            print(
-                                f"      ⚠️ No Pixabay videos found for: {search_term}")
-
-                    except Exception as e:
-                        print(
-                            f"      ❌ Pixabay error for '{search_term}': {e}")
-
             downloaded_files.extend(cue_downloads)
             print(
                 f"   📊 Downloaded {len(cue_downloads)} unique videos for enhanced cue from {total_sources} source{'s' if total_sources > 1 else ''}"
@@ -2482,7 +2394,7 @@ async def extract_enhanced_visual_cues_and_download_broll(
             for file_path in downloaded_files:
                 file_size = Path(file_path).stat().st_size / (1024 * 1024)
                 source = "Pexels" if "Pexels_" in Path(
-                    file_path).name else "Pixabay"
+                    file_path).name else "Other"
                 print(
                     f"   • [{source}] {Path(file_path).name} ({file_size:.1f} MB)")
 

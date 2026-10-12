@@ -144,7 +144,7 @@ class BRollImageGenerator:
 **Scene Context:** {scene_context}
 
 **Style Guidelines:**
-- Professional stock photo aesthetic (similar to Pexels/Pixabay)
+- Professional stock photo aesthetic (similar to Pexels)
 - Clean, modern, and polished look
 - Well-lit and properly exposed
 - Sharp focus with good composition
