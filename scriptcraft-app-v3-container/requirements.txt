@@ -1,0 +1,28 @@
+# Podcast Generator (ScriptCraft v3) — container requirements.
+# The API SDKs are pinned to the versions the v3 app is tested with locally
+# (scriptcraft-app-v3/requirements.txt), so a rebuild doesn't silently pick up
+# a newer SDK.
+flask==3.1.3
+gunicorn>=21.2
+requests>=2.32
+aiohttp>=3.9
+Pillow>=10.0
+python-docx>=1.1.0
+
+# Azure: Foundry agents (hosted MAF agents via the Responses API), identity, storage.
+# azure-ai-projects 2.x returns the project-scoped v1 OpenAI client the agents need.
+azure-ai-agents>=1.0.0
+azure-ai-projects==2.1.0
+azure-identity==1.25.3
+azure-storage-blob==12.28.0
+openai==2.36.0
+
+# Model APIs
+xai-sdk==1.11.0
+anthropic==0.111.0
+
+autogen-agentchat>=0.4.0
+autogen-core>=0.4.0
+tweepy>=4.14.0
+youtube-transcript-api>=1.0.0
+pypdf>=4.0.0

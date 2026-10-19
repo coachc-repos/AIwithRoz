@@ -220,3 +220,12 @@ scriptcraft-app/scriptcraft-enhanced-debug-package/.env
 
 # MAF migration isolated virtualenv
 scriptcraft-app-v2/maf/.venv/
+
+# Local only (not published): hackathon submission files, and the channel's
+# reference thumbnails for tools/media/grok_thumbnail_generator.py (photos of the
+# host). refs.json, which describes them, is tracked.
+hackathon/
+tools/media/thumbnail_refs/*.jpg
+tools/media/thumbnail_refs/*.jpeg
+tools/media/thumbnail_refs/*.png
+tools/media/thumbnail_refs/*.webp
