@@ -82,9 +82,8 @@ def generate_curl_command(chapter_title, chapter_content, api_key, template_id):
         "title": chapter_title,
         "variables": {
             "script": {
-                "name": "script",
                 "type": "text",
-                "properties": {"content": chapter_content},
+                "content": chapter_content,
             }
         },
     }
@@ -94,7 +93,7 @@ def generate_curl_command(chapter_title, chapter_content, api_key, template_id):
 
     curl_cmd = (
         "curl --request POST \\\n"
-        f"     --url 'https://api.heygen.com/v2/template/{template_id}/generate' \\\n"
+        f"     --url 'https://api.heygen.com/v3/templates/{template_id}' \\\n"
         "     --header 'accept: application/json' \\\n"
         "     --header 'content-type: application/json' \\\n"
         f"     --header 'x-api-key: {api_key}' \\\n"

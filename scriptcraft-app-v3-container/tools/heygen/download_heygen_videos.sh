@@ -68,7 +68,7 @@ check_dependencies() {
 get_video_status() {
     local video_id="$1"
     
-    curl -s --location "https://api.heygen.com/v1/video_status.get?video_id=${video_id}" \
+    curl -s --location "https://api.heygen.com/v3/videos/${video_id}" \
         --header "X-Api-Key: ${API_KEY}"
 }
 
@@ -76,7 +76,7 @@ get_video_status() {
 list_videos() {
     log_info "Fetching recent videos from HeyGen..."
     
-    response=$(curl -s --location "https://api.heygen.com/v1/video.list" \
+    response=$(curl -s --location "https://api.heygen.com/v3/videos?limit=100" \
         --header "X-Api-Key: ${API_KEY}")
     
     if [ $? -ne 0 ]; then
@@ -85,7 +85,7 @@ list_videos() {
     fi
     
     # Check for errors
-    error=$(echo "$response" | jq -r '.error // empty')
+    error=$(echo "$response" | jq -r '(.error | if type == "object" then .message else . end) // empty')
     if [ -n "$error" ]; then
         log_error "API Error: $error"
         return 1
@@ -112,7 +112,7 @@ download_video() {
     # Parse status
     status=$(echo "$status_response" | jq -r '.data.status // "unknown"')
     video_url=$(echo "$status_response" | jq -r '.data.video_url // empty')
-    video_title=$(echo "$status_response" | jq -r '.data.video_title // empty')
+    video_title=$(echo "$status_response" | jq -r '.data.title // empty')
     
     echo "   Status: $status"
     
@@ -172,7 +172,7 @@ download_all_recent() {
     fi
     
     # Extract video IDs
-    video_ids=$(echo "$videos_response" | jq -r '.data.videos[]?.video_id // empty')
+    video_ids=$(echo "$videos_response" | jq -r '.data[]?.id // empty')
     
     if [ -z "$video_ids" ]; then
         log_warning "No videos found"
@@ -231,7 +231,7 @@ show_list() {
     printf "%-40s %-12s %-20s\n" "VIDEO ID" "STATUS" "TITLE"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
-    echo "$videos_response" | jq -r '.data.videos[] | "\(.video_id)\t\(.status)\t\(.video_title // "Untitled")"' | \
+    echo "$videos_response" | jq -r '.data[] | "\(.id)\t\(.status)\t\(.title // "Untitled")"' | \
     while IFS=$'\t' read -r id status title; do
         # Truncate title if too long
         title="${title:0:20}"
@@ -242,9 +242,9 @@ show_list() {
     echo ""
     
     # Count by status
-    completed=$(echo "$videos_response" | jq '[.data.videos[] | select(.status == "completed")] | length')
-    processing=$(echo "$videos_response" | jq '[.data.videos[] | select(.status == "processing")] | length')
-    pending=$(echo "$videos_response" | jq '[.data.videos[] | select(.status == "pending" or .status == "waiting")] | length')
+    completed=$(echo "$videos_response" | jq '[.data[] | select(.status == "completed")] | length')
+    processing=$(echo "$videos_response" | jq '[.data[] | select(.status == "processing")] | length')
+    pending=$(echo "$videos_response" | jq '[.data[] | select(.status == "pending" or .status == "waiting")] | length')
     
     echo "Summary: $completed completed, $processing processing, $pending pending"
 }

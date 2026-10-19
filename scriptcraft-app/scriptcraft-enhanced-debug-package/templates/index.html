@@ -5737,18 +5737,15 @@ Thank you for watching!`;
             title: title || 'Test Video',
             variables: {
                 script: {
-                    name: 'script',
                     type: 'text',
-                    properties: {
-                        content: scriptText
-                    }
+                    content: scriptText
                 }
             }
         };
 
         // Show the equivalent curl command
         var curlCmd = 'curl --request POST \\\n' +
-            "     --url 'https://api.heygen.com/v2/template/" + templateId + "/generate' \\\n" +
+            "     --url 'https://api.heygen.com/v3/templates/" + templateId + "' \\\n" +
             "     --header 'accept: application/json' \\\n" +
             "     --header 'content-type: application/json' \\\n" +
             "     --header 'x-api-key: " + apiKey + "' \\\n" +

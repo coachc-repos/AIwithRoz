@@ -801,17 +801,14 @@ def generate_heygen_curl_commands(
         # The template's voice is already configured — just pass the script text
         def build_variables_json(escaped_content):
             return f"""    "script": {{
-      "name": "script",
       "type": "text",
-      "properties": {{
-        "content": "{escaped_content}"
-      }}
+      "content": "{escaped_content}"
     }}"""
 
         def build_curl(escaped_title, escaped_content):
             variables_block = build_variables_json(escaped_content)
             return f"""curl --request POST \\
-     --url 'https://api.heygen.com/v2/template/{template_id}/generate' \\
+     --url 'https://api.heygen.com/v3/templates/{template_id}' \\
      --header 'accept: application/json' \\
      --header 'content-type: application/json' \\
      --header 'x-api-key: {api_key}' \\
