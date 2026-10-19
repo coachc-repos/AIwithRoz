@@ -46,8 +46,7 @@ class EmotionalThumbnailGenerator:
             template_path: Path to optional template image (if provided, will be used as reference)
             output_dir: Output directory for thumbnails (defaults to ~/Dev/Thumbnails)
         """
-        self.api_key = api_key or os.getenv(
-            "GOOGLE_API_KEY", "AIzaSyDRyFKaGX1aBTya9Ljb_CaCM6-7I0USVhg")
+        self.api_key = api_key or os.getenv("GOOGLE_API_KEY", "")
 
         # Template is optional - if provided and exists, use it
         self.template_path = None

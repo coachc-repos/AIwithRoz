@@ -1,0 +1,27 @@
+{
+  "about": "The channel's own thumbnails, used as references by grok_thumbnail_generator.py. Each render sends 2 references that show the host's face (matched to the planned expression) and up to 2 that show the planned layout. Add a new thumbnail by dropping the image here and describing it below; images not listed are used as layout references only.",
+  "refs": [
+    {"file": "62_percent_green_arrow.jpg", "layouts": ["big_number"], "host": true, "expression": "shocked",
+     "description": "Huge white '62%' top-left, glowing neon-green up arrow below it; host on the right, shocked, pointing left; deep crimson gradient."},
+    {"file": "3_gold_neon.jpg", "layouts": ["big_number"], "host": true, "expression": "shocked",
+     "description": "Giant 3D gold '3!' with red neon inlay on the left; host on the right, shocked, pointing at it with both hands; crimson background."},
+    {"file": "15_9_billion_money_arrow.jpg", "layouts": ["big_number"], "host": true, "expression": "shocked",
+     "description": "'$15.9 BILLION!?' in white and gold top-left, a neon-green arrow made of flying dollar bills, a gold bar in the host's hand; host on the right, shocked, pointing left."},
+    {"file": "4_collage_arrow.jpg", "layouts": ["big_number"], "host": true, "expression": "smirk",
+     "description": "Huge white '4' with a red glow over a faded collage (electric car, rocket, X logo, AI head), curved white arrow; host on the right, knowing smirk, pointing left; crimson."},
+    {"file": "4_gold_hud_portrait.jpg", "layouts": ["big_number", "public_figure"], "host": false, "expression": "",
+     "description": "Glowing gold '4' with HUD data lines on the left; a public figure in profile on the right holding a glowing jeweled gauntlet; dark red-purple."},
+    {"file": "300_spotlight_portrait.jpg", "layouts": ["public_figure", "big_number"], "host": true, "expression": "smile",
+     "description": "Host on the left, warm smile, pointing right at a public figure lit by a spotlight from above, looking up; huge white '300' with red glow bottom-right; red-to-blue split."},
+    {"file": "portrait_vs_host_split.jpg", "layouts": ["public_figure", "comparison"], "host": true, "expression": "shocked",
+     "description": "A public figure on the left under a blue spotlight, looking up; host on the right against red, shocked, pointing up; no text."},
+    {"file": "paid_to_panic_torn_paper.jpg", "layouts": ["headline_text"], "host": true, "expression": "smirk",
+     "description": "'PAID TO PANIC' in huge white letters top-left on dark navy; host peeking through a large torn-paper hole edged in red glow on the right, smirking; a smaller torn hole with a figure holding cash."},
+    {"file": "real_or_ai_split_face.jpg", "layouts": ["comparison", "headline_text"], "host": true, "expression": "smirk",
+     "description": "'REAL or AI?' across the top (AI in yellow), a face split down the middle, real skin versus a glowing AI wireframe mesh, '2026' chip; host on the right, knowing smirk, pointing left; crimson."},
+    {"file": "alley_silhouettes.jpg", "layouts": ["mystery_scene"], "host": true, "expression": "worried",
+     "description": "Three dark silhouetted men in a brick alley lit red on the left and blue by a streetlamp; host on the right, worried, pointing at them; no text."},
+    {"file": "closet_hooded_figures.jpg", "layouts": ["mystery_scene"], "host": true, "expression": "worried",
+     "description": "Three hooded figures with glowing red eyes inside a dark closet, a binary-code note pinned to the wall; host peeking around the door on the right, worried; no text."}
+  ]
+}

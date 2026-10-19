@@ -289,11 +289,13 @@ class ScriptRepeatAndFlowAgentClient(BaseAgentClient):
 
         # Locate the first chapter heading in the improved script. We accept
         # variants like "Chapter 1 - Title", "Chapter 1: Title",
-        # "## Chapter 1: Title (1:23)", etc. The capture group anchors on the
-        # word "Chapter" itself so positions point at real content (not the
-        # leading whitespace consumed by \s*).
+        # "## Chapter 1: Title (1:23)", and "Heading: Chapter 1 - Title" (the
+        # form Pro scripts and v3 agentic chapters use). The capture group
+        # holds the whole heading line, markup included, so the restored
+        # heading keeps the same form and is inserted at the start of the
+        # Chapter 2 line (not after its "##").
         chapter_re = re.compile(
-            r"(?:^|\n)[ \t]*(?:#+[ \t]*)?\*{0,2}(Chapter\s+(\d+)\b[^\n]*)",
+            r"(?:^|\n)[ \t]*((?:#+[ \t]*)?\*{0,2}[ \t]*(?:Heading[ \t]*:[ \t]*)?Chapter\s+(\d+)\b[^\n]*)",
             re.IGNORECASE,
         )
         first_match = chapter_re.search(improved_script)
@@ -310,6 +312,8 @@ class ScriptRepeatAndFlowAgentClient(BaseAgentClient):
         original_match = chapter_re.search(original_script or "")
         if original_match and int(original_match.group(2)) == 1:
             ch1_heading = original_match.group(1).strip()
+        elif re.match(r"\W*heading", first_match.group(1), re.IGNORECASE):
+            ch1_heading = "Heading: Chapter 1 - Introduction"
         else:
             ch1_heading = "Chapter 1 - Introduction"
 
@@ -318,8 +322,8 @@ class ScriptRepeatAndFlowAgentClient(BaseAgentClient):
         # options, visual cues, intro Host blocks — is Chapter 1's body, so
         # placing the heading right above Chapter 2 keeps the chapter list
         # complete and ordered without disrupting prepended sections.
-        # Use start(1) so we insert exactly at the "Chapter" word, not at the
-        # leading newline/whitespace.
+        # Use start(1) so we insert exactly at the start of the heading line,
+        # not at the leading newline/whitespace.
         insert_at = first_match.start(1)
         prefix = improved_script[:insert_at].rstrip()
         suffix = improved_script[insert_at:]

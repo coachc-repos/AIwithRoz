@@ -336,6 +336,228 @@ def _():
     return "Running line at 14%, search line at 14%, unknown line dropped"
 
 
+def _eas():
+    from linedrive_azure.agents import enhanced_autogen_system as eas  # noqa: PLC0415
+    return eas
+
+
+@check("Agentic chapters: each chapter keeps exactly one 'Heading: Chapter N - Title' line")
+def _():
+    eas = _eas()
+    norm = eas._normalize_chapter_heading
+    body = "[Visual Cue: A cleanroom door slides open.]\n\n**Host:**\nPrediction number one."
+    # The Predictions writer's format: a markdown heading with a timing, then a Heading: line.
+    both = ("## Chapter 2: Prediction #1 - Intel 14A Becomes Terafab's Production Anchor (1:00)\n\n"
+            "Heading: Chapter 2 - Prediction #1 - Intel 14A Becomes Terafab's Production Anchor\n\n" + body)
+    want = "Heading: Chapter 2 - Prediction #1 - Intel 14A Becomes Terafab's Production Anchor\n\n" + body
+    assert norm(both, 2, "ignored") == want, norm(both, 2, "ignored")
+    assert norm(want, 2) == want, "not idempotent"
+    # Only the markdown heading: its timing is dropped.
+    assert norm("## Chapter 9: The Map, Redrawn (1:00)\n\n" + body, 9).startswith("Heading: Chapter 9 - The Map, Redrawn\n\n")
+    # The teaching request's "(3+ minutes)" timing, bold markers, and the reviewer's bare Heading: line.
+    assert norm("## Chapter 1: Setup (3+ minutes)\n" + body, 1).startswith("Heading: Chapter 1 - Setup\n")
+    assert norm("**Chapter 4: Samsung Steps In**\n" + body, 4).startswith("Heading: Chapter 4 - Samsung Steps In\n")
+    assert norm("Heading: The Closing Vision\n" + body, 9).startswith("Heading: Chapter 9 - The Closing Vision\n")
+    # No heading at all: the chapter plan's title is used. A wrong number is replaced.
+    assert norm(body, 3, "Prediction #2 - X (2:30)").startswith("Heading: Chapter 3 - Prediction #2 - X\n\n")
+    assert norm("## Chapter 7: Wrong Number\n" + body, 6).startswith("Heading: Chapter 6 - Wrong Number\n")
+    # Text after the heading is untouched, including a later line that mentions a chapter.
+    later = body + "\nChapter 3 of the story starts here."
+    assert norm("## Chapter 3: T\n\n" + later, 3) == "Heading: Chapter 3 - T\n\n" + later
+    return "two headings -> one, timings dropped, idempotent, body unchanged"
+
+
+@check("Agentic script: one title block when the review is skipped (List/Predictions)")
+def _():
+    src = open(os.path.join(APP, "linedrive_azure", "agents", "enhanced_autogen_system.py"), encoding="utf-8").read()
+    assert "complete_revised_script_content = combined_script" not in src
+    assert src.count("complete_revised_script_content = combined_chapters") == 3
+    assert 'combined_chapters = "\\n\\n---\\n\\n".join(all_chapter_scripts)' in src
+    return "skip and fallback paths use the chapters without the extra title block"
+
+
+@check("De-shout: shouted lines are toned down, acronyms on normal lines are kept")
+def _():
+    ds = _eas()._deshout_text
+    assert ds("BUILDING AI APPS WITH PYTHON") == "Building AI Apps With Python"
+    assert ds("THE FUTURE OF WORK") == "The Future Of Work"
+    assert ds("AI-POWERED WORKFLOWS") == "AI-Powered Workflows"
+    for keep in ("Chapter 3: Prediction #2 - Terafab Places a Public ASML EUV Order",
+                 "Chapter 5: Prediction #4 - TSMC Turns the Snub into a New Playbook",
+                 "NVIDIA H100 vs AMD MI300X"):
+        assert ds(keep) == keep, ds(keep)
+    assert ds("A\nTHE FUTURE OF WORK\nTSMC") == "A\nThe Future Of Work\nTSMC"
+    return "'ASML EUV' and 'TSMC' stay; 'THE FUTURE OF WORK' -> 'The Future Of Work'"
+
+
+@check("Repeat-and-Flow: a dropped 'Heading: Chapter 1' line is restored, like a dropped '## Chapter 1'")
+def _():
+    cls = _client("script_repeat_and_flow_agent_client", "ScriptRepeatAndFlowAgentClient")
+    fix = cls._restore_missing_chapter_one
+    original = "Heading: Chapter 1 - The Week Musk Took Back the Keys\n\nHost: a\n\nHeading: Chapter 2 - Intel\n\nHost: b"
+    dropped = "Host: a\n\nHeading: Chapter 2 - Intel\n\nHost: b"
+    out = fix(dropped, original)
+    assert out.split("\n\n")[1] == "Heading: Chapter 1 - The Week Musk Took Back the Keys", out
+    assert fix(original, original) == original
+    md = fix("Host: a\n\n## Chapter 2: Intel\n\nHost: b", "## Chapter 1: Start\n\nHost: a")
+    assert md == "Host: a\n\n## Chapter 1: Start\n\n## Chapter 2: Intel\n\nHost: b", md
+    plain = fix("Host: a\n\nChapter 2 - Intel\n\nHost: b", "")
+    assert plain == "Host: a\n\nChapter 1 - Introduction\n\nChapter 2 - Intel\n\nHost: b", plain
+    return "Heading:, ## and plain forms restored in their own form"
+
+
+@check("Progress timer: the 2.5-minute hint matches the Script Writer choice; Process Script gets none")
+def _():
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    fn = re.search(r"function _writerTimerHint\(writerMode, videoFormat, quickTest\) \{(.*?)\n        \}", html, re.S)
+    assert fn, "hint function missing"
+    body = fn.group(1)
+    assert "if (writerMode === 'pro_classic') return 'Pro writes in one pass" in body
+    assert "if (writerMode === 'pro_agent') return 'the Pro writer agent writes in one pass" in body
+    assert "agentic writing plans, writes, and reviews each chapter" in body
+    assert html.count("Pro writes in one pass") == 1, "the Pro hint must only come from _writerTimerHint"
+    assert "startProgressTimer(_writerTimerHint(writerMode, videoFormat, quickTest));" in html
+    assert "s >= 150 && _progressTimerHint ? ' · ' + _progressTimerHint : ''" in html
+    calls = re.findall(r"startProgressTimer\(([^)]*)\)", html)
+    assert "" in calls, "Process Script should start the timer without a hint"
+    return "Pro classic, Pro agent, and agentic hints differ; Process Script has none"
+
+
+@check("Pipeline reference: runs report the stages they completed, and saved versions keep them")
+def _():
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+
+    st = web_gui._artifact_stages
+    assert st({}) == set()
+    assert st({"broll_rows": [1], "broll_images": [1], "grok_videos": [1], "curl_commands": "x",
+               "youtube_details": "x", "demo_packages": "x", "flow_analysis_report": "x"}) == {
+        "broll_table", "broll_images", "grok", "heygen", "youtube", "demo", "flow"}
+    src = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    assert '{"script"} | _stages_run | _artifact_stages(streamer.result)' in src, "create result"
+    assert '{"load"} | _stages_run | _artifact_stages(streamer.result)' in src, "process result"
+    assert '"stages_run": sorted({"load", "hook"} | _stages_run),' in src, "hook-only result"
+    assert '"stages_run": result.get("stages_run"),' in src, "version manifest"
+    for stage in ("hook", "shorten", "flow", "grok", "heygen", "demo"):
+        assert f'_stages_run.add("{stage}")' in src, stage
+    eas = open(os.path.join(APP, "linedrive_azure", "agents", "enhanced_autogen_system.py"), encoding="utf-8").read()
+    assert eas.count('"hook_generated":') == 2, "Pro and agentic returns both report hook_generated"
+    return "artifact stages mapped; create, process, hook-only and saved versions carry stages_run"
+
+
+@check("Pipeline reference: every diagram step has a stage key, and finished runs record them")
+def _():
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    docs = html[html.index('<div id="mobileWorkflowDocs"'):html.index("<!-- Current Output Directory display strip -->")]
+    keys = re.findall(r'<div class="mwd-step" data-stage="([a-z_]+)">', docs)
+    assert len(keys) == 19 and docs.count('class="mwd-step"') == 19, keys
+    assert set(keys) == {"script", "load", "hook", "shorten", "flow", "broll_table", "broll_images",
+                         "grok", "heygen", "youtube", "demo"}, set(keys)
+    assert "function recordStagesRun(scriptId, stages)" in html
+    assert "function renderPipelineHighlights()" in html
+    assert html.count("recordStagesRun(window.currentScriptId, message.stages_run);") == 4
+    assert "recordStagesRun(window.currentScriptId, ['load'].concat((ver && ver.stages_run) || []));" in html
+    return "19 steps keyed; create, process, both hook-only paths, and script load record stages"
+
+
+@check("LinkedIn drafts never say 'my' (the profile promotes the channel but didn't make it)")
+def _():
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+
+    f = web_gui._linkedin_without_my
+    assert f("Check out my new video") == "Check out the new video"
+    assert f("My latest breakdown") == "The latest breakdown"
+    assert f('Watch "Why My AI Failed". My take: yes.') == 'Watch "Why My AI Failed". The take: yes.'
+    assert f("#MyAI myth Amy") == "#MyAI myth Amy"
+    src = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    gen = src[src.index("def _generate_linkedin_post("):src.index("@app.route(\"/api/linkedin/generate\"")]
+    assert 'NEVER use the word \\"my\\"' in gen and "text = _linkedin_without_my(text)" in gen
+    return "prompt rule present; 'my' -> 'the' outside quoted titles"
+
+
+@check("Render Audio: a WAV can come from a finished video file (ffmpeg) as well as a Resolve timeline")
+def _():
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+
+    c = web_gui.app.test_client()
+    assert c.post("/api/extract-audio", json={"video_path": ""}).get_json()["error"] == "Choose the finished video first."
+    assert "Video not found" in c.post("/api/extract-audio", json={"video_path": "/nonexistent/x.mp4"}).get_json()["error"]
+    src = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    worker = src[src.index("def _audio_extract_worker("):src.index('@app.route("/api/extract-audio"')]
+    assert '"-map", "0:a:0", "-vn", "-c:a", "pcm_s16le"' in worker and "audio_render_streams" in worker
+    assert 'status="done", output_file=output_file' in worker
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert 'name="renderAudioSource" value="video"' in html and 'name="renderAudioSource" value="resolve"' in html
+    assert "fetch('/api/youtube/pick-video-path')" in html
+    assert "source === 'resolve' ? '/api/resolve/render-audio' : '/api/extract-audio'" in html
+    assert "Stage 1 — Render Audio (WAV)" in html
+    return "endpoint validates input; worker writes 16-bit PCM WAV on the shared progress stream; dialog offers both sources"
+
+
+@check("Thumbnails: Grok Imagine generator plans channel-style concepts and picks host + layout references")
+def _():
+    sys.path.insert(0, os.path.dirname(APP))  # repo root, for tools.media
+    from tools.media import grok_thumbnail_generator as g  # noqa: PLC0415
+
+    refs = g.load_references()
+    assert len(refs) >= 11 and sum(r["host"] for r in refs) >= 9, len(refs)
+    # Claude's loose answers map onto the fixed keys.
+    c = g._clean_concept({"layout": "big number", "expression": "knowing smirk", "text": "62%"}, 1, "62%")
+    assert (c["layout"], c["expression"], c["host_side"], c["text"]) == ("big_number", "smirk", "right", "62%")
+    assert g._clean_concept({}, 1, "THE CHIP WAR IS HERE NOW")["text"] == "THE CHIP WAR IS"
+    # References: 2 that show the host (planned expression first), then layout references.
+    picked = g.pick_references({"layout": "mystery_scene", "expression": "worried"}, refs)
+    assert 3 <= len(picked) <= g.MAX_REFERENCES and picked[0]["host"] and picked[1]["host"]
+    assert picked[0]["expression"] == "worried"
+    assert any("mystery_scene" in r["layouts"] for r in picked)
+    big = g.pick_references({"layout": "big_number", "expression": "shocked"}, refs)
+    assert big[0]["expression"] == "shocked" and sum("big_number" in r["layouts"] for r in big) >= 3
+    prompt = g.build_render_prompt(c)
+    assert '"62%", spelled exactly like that' in prompt and "do not copy their objects" in prompt
+    assert "There is no text anywhere" in g.build_render_prompt({**c, "text": ""})
+    fb = g.fallback_concepts(["CHIP WAR", "62% UP"], 2)
+    assert len(fb) == 4 and fb[2]["layout"] == "big_number" and fb[0]["layout"] == "headline_text"
+    src = open(g.__file__, encoding="utf-8").read()
+    assert '_full.png' in src and "YOUTUBE_MAX_BYTES" in src, "full-res copies renamed; 2 MB limit kept"
+    web = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    assert web.count("_make_thumbnail_generator(") >= 4, "create, process and the Thumbnails tool use the helper"
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert '<select id="thumbEngine"' in html and "engine: engine || 'grok'" in html
+    return f"{len(refs)} refs; concepts normalized; host+layout references; engine choice wired"
+
+
+@check("API Keys dialog: a saved key overrides .env and the shell at startup, as the dialog says")
+def _():
+    import json as _json
+    import tempfile
+    from pathlib import Path
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+
+    keep_path, keep_env = web_gui.SCRIPTCRAFT_SETTINGS_PATH, os.environ.get("ANTHROPIC_API_KEY")
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            f = Path(d) / "settings.json"
+            f.write_text(_json.dumps({"anthropic_api_key": "saved-in-dialog"}))
+            web_gui.SCRIPTCRAFT_SETTINGS_PATH = f
+            os.environ["ANTHROPIC_API_KEY"] = "old-from-dotenv"
+            web_gui._hydrate_env_from_settings()
+            assert os.environ["ANTHROPIC_API_KEY"] == "saved-in-dialog", os.environ["ANTHROPIC_API_KEY"]
+            f.write_text(_json.dumps({}))                       # nothing saved: .env value stays
+            os.environ["ANTHROPIC_API_KEY"] = "old-from-dotenv"
+            web_gui._hydrate_env_from_settings()
+            assert os.environ["ANTHROPIC_API_KEY"] == "old-from-dotenv"
+        finally:
+            web_gui.SCRIPTCRAFT_SETTINGS_PATH = keep_path
+            if keep_env is None:
+                os.environ.pop("ANTHROPIC_API_KEY", None)
+            else:
+                os.environ["ANTHROPIC_API_KEY"] = keep_env
+    return "saved key wins over the environment; without one, the environment value stays"
+
+
 if __name__ == "__main__":
     width = max(len(n) for n, _, _ in RESULTS)
     for name, ok, detail in RESULTS:

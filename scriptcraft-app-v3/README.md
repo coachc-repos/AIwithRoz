@@ -46,7 +46,7 @@ hosted MAF agent. The app's request text is unchanged, so its parsers are too:
   polls until it finishes. Long plain calls can hit the Foundry gateway's
   timeout (HTTP 424 `proxy_timeout`). The app's per-call `timeout` still
   bounds each run, as in v2.
-- **Warm sessions.** A hosted session that was used in the last 4 minutes is
+- **Warm sessions.** A hosted session that was used in the last 2 minutes is
   reused. A warm session answered in about 5 seconds and a new one in 11 to 20
   seconds. One session served four parallel calls without trouble.
 - **Not migrated.** Tournament-Agent and AI-Tips-Agent have no MAF version and
@@ -127,6 +127,20 @@ and traces).
   primary (zero em dashes and zero curly quotes in the test chapters), and
   direct Claude is the fallback. `SCRIPTCRAFT_CLAUDE_PRIMARY_WRITER=1` restores
   the v2 order.
+- **One heading per chapter.** The List and Predictions writers' instructions
+  ask for two heading lines per chapter, `## Chapter N: Title (X:XX)` and then
+  `Heading: Chapter N - Title`. Those formats skip the review that used to
+  collapse them, so their scripts showed most chapter titles twice and the
+  GUI's chapter splitters saw an extra chapter start. Every agentic chapter now
+  keeps exactly one `Heading: Chapter N - Title` line, the form Pro scripts use,
+  after writing and again after review. The same runs printed the title block
+  twice; a skipped review now passes the chapters on without their own title
+  block. Repeat and Flow's check for a dropped Chapter 1 heading also recognizes
+  `Heading:` lines now.
+- **Acronyms in chapter titles.** The Topic plan's "de-shout" step, which tones
+  down ALL-CAPS text that Azure's content filter flagged, also turned acronyms
+  such as TSMC and ASML EUV into "Tsmc" and "Asml Euv". It now changes only
+  lines that are actually shouting.
 - **Flow Analysis works.** The Repeat-and-Flow client read the reply from a
   `messages` field that no backend returns, so in v2 every Flow Analysis ended
   in "No response" and the app kept the original script. v3 reads `response`.
@@ -149,6 +163,23 @@ and traces).
   underway as news, not a prediction. On "5 big AI predictions for 2027",
   every idea and the brief built on news from August to October 2026.
   Idea generation now takes about 3 minutes, mostly Claude's searches.
+- **Thumbnails in the channel's style.** The 🖼️ thumbnail tool, and the
+  pipelines' thumbnail step, now use Grok Imagine by default
+  (`tools/media/grok_thumbnail_generator.py`). Claude plans each thumbnail in
+  one of the channel's layouts (big number, headline, public figure, mystery
+  scene, comparison), and `grok-imagine-image-2.0` renders it from the
+  channel's own thumbnails in `tools/media/thumbnail_refs/`: 2 that show the
+  host, matched to the planned expression, plus examples of the layout. Each
+  thumbnail is saved at 1280x720 for YouTube (under its 2 MB limit), with the
+  full-resolution original and a JSON of every concept and prompt in `full/`.
+  The dialog's Engine menu switches back to Gemini, and
+  `SCRIPTCRAFT_THUMBNAIL_ENGINE=gemini` makes Gemini the default. To add a
+  reference, put the image in `thumbnail_refs/` and describe it in `refs.json`.
+- **Keys saved in the API Keys dialog stick.** The dialog says saved keys
+  override environment variables, but at startup the app loaded `.env` first
+  and used a saved key only where nothing was set, so a key changed in the
+  dialog reverted to the `.env` value at the next restart while the dialog
+  still showed the new one. Saved keys now win at startup too.
 - **Labels and port.** The tab title, header badge, version (`3.0-maf`), and
   default port (8082) identify v3.
 
@@ -170,7 +201,8 @@ driven through the same HTTP endpoints the browser uses.
 The Progress Log showed every hosted call, its web searches, and the Quotes
 agent's X searches. `tests/offline_checks_v3.py` covers the routing, the
 background polling, rate-limit and timeout handling, the three client fixes,
-and the Progress Log lines without calling a model.
+chapter headings, the title block, and the Progress Log lines without
+calling a model.
 
 Known limits:
 

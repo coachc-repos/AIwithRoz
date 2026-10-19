@@ -87,20 +87,51 @@ _DESHOUT_KEEP = {
     "KPI", "CRM", "ERP", "SAAS", "PAAS", "IAAS", "IT", "PC", "OS", "DB", "ID",
     "FAQ", "PDF", "CSV", "RAM", "SSD", "USB", "2D", "3D", "4K", "HD", "USA",
     "UK", "EU", "CEO", "CTO", "CFO", "B2B", "B2C", "QA", "ETL", "VPN", "DNS",
+    "AMD", "IBM", "TSMC", "ASML", "EUV", "NVIDIA", "HBM", "NPU", "TPU", "ASIC",
+    "FPGA", "AGI", "MCP", "NASA", "FDA", "FTC", "SEC",
 }
+
+# All-caps function words never appear in normal writing, so one of them marks a
+# shouted line ("THE FUTURE OF WORK"). So do two or more long all-caps words
+# ("AI-POWERED WORKFLOWS"). A line whose only all-caps words are short acronyms
+# ("Terafab Places a Public ASML EUV Order") is not shouting and is left alone.
+_SHOUT_WORDS = {
+    "THE", "AN", "AND", "OR", "OF", "TO", "IN", "ON", "AT", "BY", "FOR", "FROM",
+    "WITH", "WITHOUT", "INTO", "ABOUT", "YOUR", "YOU", "OUR", "WE", "THEY",
+    "THEIR", "MY", "ME", "IS", "ARE", "WAS", "WERE", "BE", "THIS", "THAT",
+    "THESE", "THOSE", "HOW", "WHY", "WHAT", "WHEN", "WHERE", "WHO", "WILL",
+    "CAN", "NOT", "NO", "DO", "DOES", "STOP", "NEVER", "ALWAYS", "NOW", "BEST",
+    "MUST", "JUST", "ALL", "EVERY",
+}
+
+
+def _is_shouting(line: str) -> bool:
+    words = []
+    for token in line.split():
+        if any(c.islower() for c in token):
+            continue
+        words += [w for w in re.findall(r"[A-Za-z]+", token)
+                  if len(w) >= 2 and w.upper() not in _DESHOUT_KEEP]
+    if any(w.upper() in _SHOUT_WORDS for w in words):
+        return True
+    return sum(1 for w in words if len(w) >= 5) >= 2
 
 
 def _deshout_text(text: str) -> str:
     """Tone down ALL-CAPS 'shouting' so Azure's content filter doesn't reject
     the topic plan / chapter titles as aggressive.
 
-    A whitespace token that is entirely upper-case (no lowercase letter) has
-    each of its letter runs title-cased, except runs that are a known acronym
-    (kept as-is). Tokens that already contain a lowercase letter are untouched.
+    Only shouting lines change (see _is_shouting). In those, a whitespace token
+    that is entirely upper-case (no lowercase letter) has each of its letter runs
+    title-cased, except runs that are a known acronym (kept as-is). Tokens that
+    already contain a lowercase letter are untouched. Other lines keep their
+    acronyms, so "TSMC" and "ASML EUV" are no longer turned into "Tsmc" and
+    "Asml Euv".
     Examples:
         "BUILDING AI APPS WITH PYTHON" -> "Building AI Apps With Python"
         "THE FUTURE OF WORK"           -> "The Future Of Work"
         "AI-POWERED WORKFLOWS"         -> "AI-Powered Workflows"
+        "Prediction #2 - Terafab Places a Public ASML EUV Order" -> unchanged
     """
     if not text:
         return text
@@ -115,7 +146,81 @@ def _deshout_text(text: str) -> str:
             return w  # already mixed/normal case -> not shouting
         return re.sub(r"[A-Za-z]+", _fix_run, w)
 
-    return re.sub(r"\S+", _fix_token, text)
+    return "\n".join(
+        re.sub(r"\S+", _fix_token, line) if _is_shouting(line) else line
+        for line in text.split("\n"))
+
+
+# ---------------------------------------------------------------------------
+# One heading per chapter.
+#
+# The List and Predictions writers' instructions ask for two heading lines per
+# chapter, "## Chapter N: Title (X:XX)" and then "Heading: Chapter N - Title",
+# and the teaching request asks for both as well. The teaching reviewer rewrites
+# each chapter with one Heading: line, but List and Predictions skip the review,
+# so both lines reached the script, and the GUI's chapter splitters
+# (web_gui._CH_BOUNDARY_RE) treat each of them as a chapter start.
+# _normalize_chapter_heading replaces the heading lines a chapter starts with by
+# exactly one "Heading: Chapter N - Title" line, the form Pro scripts use.
+# ---------------------------------------------------------------------------
+_CH_HEADING_LINE_RE = re.compile(
+    r"^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*)?[ \t]*(Heading[ \t]*:[ \t]*)?(?:\*\*)?[ \t]*"
+    r"Chapter[\s\u00a0\u202f]+\d+[ \t]*[:.\-\u2013\u2014]?[ \t]*(.*?)[ \t]*$",
+    re.IGNORECASE)
+_BARE_HEADING_LINE_RE = re.compile(
+    r"^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*)?[ \t]*Heading[ \t]*:[ \t]*(.+?)[ \t]*$",
+    re.IGNORECASE)
+# A trailing "(1:00)", "(0:00-1:30)" or "(2+ minutes)" timing on a heading.
+_HEADING_TIMING_RE = re.compile(
+    r"[ \t]*\((?:\d{1,2}:\d{2}(?:[ \t]*[-\u2013\u2014][ \t]*\d{1,2}:\d{2})?"
+    r"|\d+\+?[ \t]*(?:min|mins|minutes?))\)[ \t]*$",
+    re.IGNORECASE)
+
+
+def _clean_heading_title(title: str) -> str:
+    title = (title or "").strip().strip("*").strip()
+    title = _HEADING_TIMING_RE.sub("", title)
+    return title.strip().strip("*").strip().strip('"\u201c\u201d').strip()
+
+
+def _normalize_chapter_heading(chapter_text: str, chapter_num: int,
+                               fallback_title: str = "") -> str:
+    """Return the chapter with exactly one heading line: "Heading: Chapter N - Title".
+
+    Every heading line at the top of the chapter ("## Chapter N: Title (X:XX)",
+    "Heading: Chapter N - Title", "Heading: Title", "**Chapter N: Title**") is
+    removed. The title comes from the first Heading: line, else the first
+    Chapter line, else fallback_title (the chapter plan's title), without any
+    timing. N is always the pipeline's chapter number. The rest of the chapter
+    is unchanged, and running this twice gives the same text.
+    """
+    lines = (chapter_text or "").split("\n")
+    i = 0
+    from_heading = from_chapter = ""
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip():
+            i += 1
+            continue
+        m = _CH_HEADING_LINE_RE.match(line)
+        if m:
+            title = _clean_heading_title(m.group(2))
+            if m.group(1):
+                from_heading = from_heading or title
+            else:
+                from_chapter = from_chapter or title
+            i += 1
+            continue
+        m = _BARE_HEADING_LINE_RE.match(line)
+        if m:
+            from_heading = from_heading or _clean_heading_title(m.group(1))
+            i += 1
+            continue
+        break
+    title = from_heading or from_chapter or _clean_heading_title(fallback_title)
+    heading = f"Heading: Chapter {chapter_num} - {title}" if title else f"Heading: Chapter {chapter_num}"
+    body = "\n".join(lines[i:]).strip("\n")
+    return f"{heading}\n\n{body}" if body else heading
 
 
 # ---------------------------------------------------------------------------
@@ -1181,6 +1286,9 @@ class EnhancedAutoGenSystem:
                         "script_review": "Single-pass Pro writer (no review)",
                         "thumbnail_hook_text": "",
                         "thumbnail_hook_text_options": [],
+                        # The Pro writer writes the FINAL HOOK itself.
+                        "hook_generated": bool(re.search(
+                            r"(?mi)^\s*\**\s*FINAL HOOK\s*:", pro_text)),
                         "chapters_count": _n_ch,
                         "target_minutes_per_chapter": 0,
                         "comparison_file": None,
@@ -1808,10 +1916,18 @@ Visual Cue: [what to show on screen]
                         "error": f"Script Writer failed on Chapter {r['index']}: {r.get('error')}",
                     }
 
-            # Preserve chapter order
-            all_chapter_scripts = [r["response"] for r in chapter_results]
+            # Preserve chapter order. Each chapter keeps exactly one heading line
+            # (see _normalize_chapter_heading).
+            all_chapter_scripts = [
+                _normalize_chapter_heading(
+                    r["response"], r["index"], r.get("chapter_topic", ""))
+                for r in chapter_results
+            ]
 
-            # Combine all chapters into full script
+            # Combine all chapters into full script. combined_chapters has no
+            # title block: _format_sequential_workflow_result adds the only one,
+            # so a skipped review must not pass combined_script along.
+            combined_chapters = "\n\n---\n\n".join(all_chapter_scripts)
             combined_script = f"""
 Title: {script_topic}
 **Script Type:** Video
@@ -1820,9 +1936,7 @@ Title: {script_topic}
 
 ---
 
-""" + "\n\n---\n\n".join(
-                all_chapter_scripts
-            )
+""" + combined_chapters
 
             print(
                 f"\n🔗 Combined all {len(chapters)} chapters into full script ({len(combined_script)} chars)"
@@ -2052,7 +2166,8 @@ Just provide the clean, production-ready revised chapter content above.
                 for r in review_results:
                     i = r["index"]
                     if r["success"]:
-                        revised_chapters.append(r["revised"])
+                        revised_chapters.append(_normalize_chapter_heading(
+                            r["revised"], i, chapters[i - 1]))
                         chapter_comparisons.append({
                             'chapter_num': i,
                             'original': r["original"],
@@ -2068,7 +2183,8 @@ Just provide the clean, production-ready revised chapter content above.
                     else:
                         print(
                             f"   ⚠️ Chapter {i} revision failed ({r.get('error')}), using original")
-                        revised_chapters.append(r["original"])
+                        revised_chapters.append(_normalize_chapter_heading(
+                            r["original"], i, chapters[i - 1]))
                         fallback_msg = f"Used original version (revision failed: {r.get('error')})"
                         revision_feedback.append({
                             'chapter': i,
@@ -2106,7 +2222,7 @@ Just provide the clean, production-ready revised chapter content above.
                 # Intentional skip for non-teaching archetypes — use the
                 # combined (unreviewed) chapters directly.
                 review_skipped = True
-                complete_revised_script_content = combined_script
+                complete_revised_script_content = combined_chapters
                 script_review = f"Review skipped for '{script_format}' format"
             except Exception as review_error:
                 # Script Review failed or timed out - skip and use combined chapters
@@ -2115,13 +2231,13 @@ Just provide the clean, production-ready revised chapter content above.
                 print(
                     f"\n⚠️  Script Review failed or timed out: {error_msg[:100]}")
                 print("✅ FALLBACK: Skipping review and using combined chapters directly")
-                complete_revised_script_content = combined_script
+                complete_revised_script_content = combined_chapters
                 script_review = "Script review skipped due to timeout/error"
 
             # Ensure we have content to proceed
             if not complete_revised_script_content:
                 print("⚠️  No revised script content available, using combined chapters")
-                complete_revised_script_content = combined_script
+                complete_revised_script_content = combined_chapters
 
             review_end = get_timestamp()
             if review_skipped:
@@ -2454,6 +2570,7 @@ Just provide the clean, production-ready revised chapter content above.
                 "script_review": script_review,
                 "thumbnail_hook_text": thumbnail_hook_text,
                 "thumbnail_hook_text_options": thumbnail_hook_text_options,
+                "hook_generated": bool(hook_summary_result.get("success")),
                 "chapters_count": len(chapters),
                 "target_minutes_per_chapter": minutes_per_chapter,
                 "comparison_file": comparison_file_path if chapter_comparisons else None,

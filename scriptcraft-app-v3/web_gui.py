@@ -95,9 +95,12 @@ def _save_scriptcraft_settings(settings: dict) -> bool:
         return False
 
 
-# On startup, hydrate environment variables from saved settings so any module
-# that reads os.getenv(...) (e.g. GOOGLE_API_KEY for Gemini) picks them up
-# even when the user only set them through the API Keys modal.
+# On startup, copy keys saved in the API Keys dialog into the environment, so
+# any module that reads os.getenv(...) (e.g. GOOGLE_API_KEY for Gemini) uses
+# them. A saved key overrides .env and the shell, as the dialog says. (v3 fix:
+# it used to fill only unset variables, and .env loads first, so a key changed
+# in the dialog reverted to the .env value at the next restart while the dialog
+# still showed the new one.)
 def _hydrate_env_from_settings() -> None:
     try:
         s = _load_scriptcraft_settings()
@@ -110,7 +113,7 @@ def _hydrate_env_from_settings() -> None:
         }
         for setting_key, env_var in mapping.items():
             val = (s.get(setting_key) or "").strip()
-            if val and not os.environ.get(env_var):
+            if val:
                 os.environ[env_var] = val
     except Exception as e:
         logger.warning(f"⚠️ Could not hydrate env from saved settings: {e}")
@@ -1252,6 +1255,31 @@ async def _save_script_md_and_docx(script_title: str, script_content: str) -> tu
         return str(md_path), None
 
 
+def _make_thumbnail_generator(output_dir=None, engine=None):
+    """The thumbnail generator for a run.
+
+    "grok" (default): tools/media/grok_thumbnail_generator.py, Grok Imagine
+    renders in the channel's style from the reference thumbnails in
+    tools/media/thumbnail_refs/. "gemini": the classic emotional generator.
+    SCRIPTCRAFT_THUMBNAIL_ENGINE sets the default; the Thumbnails tool can pick
+    per run. Falls back to Gemini when Grok can't start (for example, no xAI key).
+    """
+    choice = (engine or os.getenv("SCRIPTCRAFT_THUMBNAIL_ENGINE") or "grok").strip().lower()
+    if choice != "gemini":
+        try:
+            from tools.media.grok_thumbnail_generator import GrokThumbnailGenerator
+            gen = GrokThumbnailGenerator(output_dir=output_dir)
+            logger.info(f"🖼️ Thumbnail engine: Grok Imagine ({gen.model}), "
+                        f"{len(gen.refs)} style references")
+            return gen
+        except Exception as e:
+            logger.warning(f"⚠️ Grok thumbnail generator unavailable ({e}); using Gemini")
+    from tools.media.emotional_thumbnail_generator import EmotionalThumbnailGenerator
+    logger.info("🖼️ Thumbnail engine: Gemini (classic)")
+    return EmotionalThumbnailGenerator(output_dir=output_dir) if output_dir \
+        else EmotionalThumbnailGenerator()
+
+
 def _guess_emotion_from_filename(filename: str) -> str:
     """Infer variation emotion label from filename pattern like *_v2_*.png."""
     match = re.search(r'_v(\d+)_', filename)
@@ -1795,6 +1823,31 @@ class ProgressStreamer:
             logger.error(f"Failed to send update: {e}")
 
 
+def _artifact_stages(result: dict) -> set:
+    """Pipeline stages a finished run's artifacts show it ran.
+
+    Keys match the data-stage attributes of the Pipeline reference panel in
+    templates/index.html. Hook, Shorten, Flow, Grok Imagine and HeyGen are also
+    recorded where they succeed, because some leave no artifact behind.
+    """
+    stages = set()
+    if result.get("broll_table") or result.get("broll_rows"):
+        stages.add("broll_table")
+    if result.get("broll_images"):
+        stages.add("broll_images")
+    if result.get("grok_videos"):
+        stages.add("grok")
+    if result.get("curl_commands"):
+        stages.add("heygen")
+    if result.get("youtube_details"):
+        stages.add("youtube")
+    if result.get("demo_packages"):
+        stages.add("demo")
+    if result.get("flow_analysis_report"):
+        stages.add("flow")
+    return stages
+
+
 async def process_script_creation(session_id, topic, audience, tone,
                                   video_length, production_type, goals,
                                   quick_test=False, checkboxes=None,
@@ -1804,6 +1857,7 @@ async def process_script_creation(session_id, topic, audience, tone,
                                   pro_writer="classic"):
     """Clean script creation with only console capture"""
     logger.info(f"🎬 SCRIPT CREATION STARTED: session={session_id}")
+    _stages_run = set()  # stages this run completed (Pipeline reference panel)
     if quick_test:
         logger.info("⚡ QUICK TEST: 1-chapter mode enabled")
 
@@ -1903,6 +1957,8 @@ async def process_script_creation(session_id, topic, audience, tone,
                     timeout=1200
                 )
                 print("🔍 DEBUG: Async workflow completed successfully")
+                if isinstance(result, dict) and result.get("hook_generated"):
+                    _stages_run.add("hook")
 
             except asyncio.TimeoutError:
                 print("🔍 DEBUG: AsyncIO timeout occurred")
@@ -2048,6 +2104,7 @@ async def process_script_creation(session_id, topic, audience, tone,
                                     f"✅ Shortened: Host words {_before_host} → {_after}",
                                     98,
                                 )
+                                _stages_run.add("shorten")
                 except Exception as _se:
                     logger.error(f"❌ Shorten (create flow) error: {_se}")
 
@@ -2350,6 +2407,7 @@ async def process_script_creation(session_id, topic, audience, tone,
                         heygen_script = scrub_heygen_text(_hg_src)
 
                     if heygen_script:
+                        _stages_run.add("heygen")
                         heygen_section = f"\n\n{'=' * 80}\n"
                         heygen_section += "# 🎬 HEYGEN READY SCRIPT\n"
                         heygen_section += f"{'=' * 80}\n\n"
@@ -2634,7 +2692,7 @@ async def process_script_creation(session_id, topic, audience, tone,
                     # Route thumbnails into configured output_dir/thumbnails when available.
                     _thumb_out_dir = run_output_dir / "thumbnails"
                     # No api_key param - use environment
-                    thumbnail_gen = EmotionalThumbnailGenerator(
+                    thumbnail_gen = _make_thumbnail_generator(
                         output_dir=_thumb_out_dir)
                     print(f"✅ Generator initialized successfully")
                     print(f"   Template: {thumbnail_gen.template_path}")
@@ -2771,6 +2829,8 @@ async def process_script_creation(session_id, topic, audience, tone,
                 "markdown_path": saved_markdown_path,
                 "docx_path": saved_docx_path,
             }
+            streamer.result["stages_run"] = sorted(
+                {"script"} | _stages_run | _artifact_stages(streamer.result))
 
             # Persist every artifact of this version so the script restores its
             # tabs when reopened later (Grok videos persist separately by id).
@@ -2842,6 +2902,7 @@ async def process_existing_script(
         return
 
     streamer = progress_streams[session_id]
+    _stages_run = set()  # stages this run completed (Pipeline reference panel)
 
     # One-shot sanitizer: strip the legacy "Hi, I'm Roz's AI Digital Twin..."
     # boilerplate intro (and its trailing `---` rule) from any uploaded /
@@ -3155,6 +3216,7 @@ async def process_existing_script(
                                 f"(target ~{_target_words})",
                                 14,
                             )
+                            _stages_run.add("shorten")
                             # Auto-save shortened script using the loaded
                             # filename + "_shortened" suffix. Prefer the
                             # source script's own directory (when the user
@@ -3245,6 +3307,7 @@ async def process_existing_script(
                     "🖼️ Adding Grok Imagine prompts per chapter…", 13)
                 cleaned_script, _gi_added = _inject_grok_imagine_prompts(
                     cleaned_script, video_title=script_title)
+                _stages_run.add("grok")
                 streamer.send_update(
                     f"✅ Added {_gi_added} Grok Imagine prompt(s) across chapters"
                     if _gi_added else
@@ -3338,6 +3401,7 @@ async def process_existing_script(
         opening_statement = ""
 
         if hook_result.get("success", False):
+            _stages_run.add("hook")
             # Extract all three hooks from the result
             # Use hook1 or fallback to hook (for backward compatibility)
             hook1_text = hook_result.get("hook1", hook_result.get("hook", ""))
@@ -3465,6 +3529,7 @@ async def process_existing_script(
                     "script_title": script_title,
                     "original_script": script_content,
                     "session_id": session_id,
+                    "stages_run": sorted({"load", "hook"} | _stages_run),
                 }
                 streamer.send_update(
                     f"🎯 {len(_hooks_list)} hook options ready — pick one to finalize",
@@ -3904,6 +3969,7 @@ async def process_existing_script(
                         "⚠️ No Host: markers found - scrubbing cleaned script for HeyGen")
                     heygen_script = scrub_heygen_text(_hg_src)
                 if heygen_script:
+                    _stages_run.add("heygen")
                     heygen_section = f"\n\n{'=' * 80}\n"
                     heygen_section += "# 🎬 HEYGEN READY SCRIPT\n"
                     heygen_section += f"{'=' * 80}\n\n{heygen_script}"
@@ -4130,6 +4196,7 @@ async def process_existing_script(
 
                 if demo_result.get("success", False):
                     demo_packages = demo_result.get("response", "")
+                    _stages_run.add("demo")
                     demo_section = f"\n\n{'=' * 80}\n# 🔧 DEMO PACKAGE\n"
                     demo_section += f"{'=' * 80}\n\n{demo_packages}"
                     final_output += demo_section
@@ -4166,7 +4233,7 @@ async def process_existing_script(
                 )
 
                 _thumb_out_dir = run_output_dir / "thumbnails"
-                thumbnail_gen = EmotionalThumbnailGenerator(
+                thumbnail_gen = _make_thumbnail_generator(
                     output_dir=_thumb_out_dir)
                 if thumbnail_hook_text_options:
                     logger.info(
@@ -4311,6 +4378,7 @@ async def process_existing_script(
                             f"✅ Flow analysis complete - script improved ({len(improved_script)} chars)",
                             int(progress)
                         )
+                        _stages_run.add("flow")
                     else:
                         logger.warning(
                             "⚠️ Flow agent returned empty improved script")
@@ -4353,6 +4421,8 @@ async def process_existing_script(
             "markdown_path": saved_markdown_path,
             "docx_path": saved_docx_path,
         }
+        streamer.result["stages_run"] = sorted(
+            {"load"} | _stages_run | _artifact_stages(streamer.result))
         # Persist every artifact of this version so the script restores its tabs
         # when reopened later (Grok videos are persisted separately by Script-ID).
         try:
@@ -7090,6 +7160,22 @@ def _linkedin_configured() -> bool:
     return bool(_linkedin_token())
 
 
+# LinkedIn posts go out from a personal profile that promotes the @AIwithRoz
+# channel but did not create it, so a draft never says "my" ("my new video" ->
+# "the new video"). Quoted titles are left as written.
+_LI_MY_RE = re.compile(r"\bmy\b", re.IGNORECASE)
+_LI_QUOTED_RE = re.compile(r'("[^"\n]*"|\u201c[^\u201d\n]*\u201d)')
+
+
+def _linkedin_without_my(text: str) -> str:
+    def _the(m):
+        w = m.group(0)
+        return "THE" if w.isupper() else ("The" if w[0].isupper() else "the")
+    parts = _LI_QUOTED_RE.split(text or "")
+    return "".join(part if i % 2 else _LI_MY_RE.sub(_the, part)
+                   for i, part in enumerate(parts))
+
+
 def _generate_linkedin_post(mode: str, title: str = "", youtube_url: str = "",
                             topic: str = "") -> str:
     """Draft a LinkedIn post with Claude. mode: 'episode' | 'random'.
@@ -7125,14 +7211,19 @@ def _generate_linkedin_post(mode: str, title: str = "", youtube_url: str = "",
     system = (
         "You are the social media manager for the @AIwithRoz brand on LinkedIn. "
         "You write professional-but-human, value-first posts that earn saves and "
-        "shares. Output ONLY the post text — no surrounding quotes, no preamble, "
-        "no markdown headings."
+        "shares. The post is published from a LinkedIn profile that promotes the "
+        "@AIwithRoz channel but did not create it, so NEVER use the word \"my\": "
+        "say \"the\" instead (\"the new video\", not \"my new video\"; \"the "
+        "channel\", not \"my channel\"), and never write as if the poster made "
+        "the video (no \"I made\", \"I just published\"). Output ONLY the post "
+        "text — no surrounding quotes, no preamble, no markdown headings."
     )
     user = f"{instruction}\n\n{ctx}\n\nKeep it under ~1300 characters."
     text = _anthropic_complete(system, user, max_tokens=700,
                                use_web_search=False).strip()
     if len(text) >= 2 and text[0] in "\"'" and text[-1] == text[0]:
         text = text[1:-1].strip()
+    text = _linkedin_without_my(text)
     if link:
         text = f"{text}\n\n{link}"
     return text
@@ -11474,7 +11565,7 @@ def thumbnail_test():
     return render_template("thumbnail_test.html")
 
 
-def _thumbnail_test_worker(session_id, topic, headlines, variations_per_option):
+def _thumbnail_test_worker(session_id, topic, headlines, variations_per_option, engine=None):
     """Background worker: generates test thumbnails and streams progress events."""
     q = thumbnail_test_streams.get(session_id)
 
@@ -11502,8 +11593,11 @@ def _thumbnail_test_worker(session_id, topic, headlines, variations_per_option):
             EmotionalThumbnailGenerator,
         )
 
-        thumbnail_gen = EmotionalThumbnailGenerator()
-        _log(f"✅ Generator initialized")
+        thumbnail_gen = _make_thumbnail_generator(engine=engine)
+        _log(f"✅ Generator initialized: "
+             + ("Grok Imagine, " + str(getattr(thumbnail_gen, "model", "")) + ", "
+                + str(len(getattr(thumbnail_gen, "refs", []))) + " style references"
+                if getattr(thumbnail_gen, "engine", "") == "grok" else "Gemini (classic)"))
         _log(f"   Template: {thumbnail_gen.template_path}")
         _log(f"   Output:   {thumbnail_gen.output_dir}")
 
@@ -11577,6 +11671,7 @@ def generate_test_thumbnails():
                      for h in raw_headlines if str(h or "").strip()][:3]
         variations_per_option = int(
             data.get("variations_per_option") or 0) or None
+        engine = (data.get("engine") or "").strip().lower() or None
 
         session_id = str(uuid.uuid4())
         thumbnail_test_streams[session_id] = _queue.Queue()
@@ -11593,7 +11688,7 @@ def generate_test_thumbnails():
 
         thread = _threading.Thread(
             target=_thumbnail_test_worker,
-            args=(session_id, topic, headlines, variations_per_option),
+            args=(session_id, topic, headlines, variations_per_option, engine),
             daemon=True,
         )
         thread.start()
@@ -13384,6 +13479,139 @@ def api_resolve_render_audio_progress(session_id):
 
 
 # ---------------------------------------------------------------------------
+# Audio from a finished video file (no DaVinci Resolve project needed).
+#
+# Videos from an outside producer arrive without a Resolve project, so the
+# Render Audio tool can also extract the WAV straight from the video with
+# ffmpeg. Progress goes to the same session queue and SSE stream the Resolve
+# render uses, so the modal and the YouTube pipeline treat both the same way.
+# ---------------------------------------------------------------------------
+def _find_media_tool(name: str):
+    """Path to ffmpeg/ffprobe; the GUI's PATH may not include Homebrew."""
+    import shutil
+    for cand in (name, f"/opt/homebrew/bin/{name}", f"/usr/local/bin/{name}"):
+        path = shutil.which(cand) or (cand if Path(cand).is_file() else None)
+        if path:
+            return path
+    return None
+
+
+def _audio_extract_worker(session_id: str, video_path: str, output_file: str):
+    """Extract the video's first audio track to a 16-bit PCM WAV with ffmpeg."""
+    import subprocess
+    q = audio_render_streams.get(session_id)
+    if q is None:
+        return
+
+    def push(msg, progress=None, status="progress", **extra):
+        payload = {"type": status, "message": msg}
+        if progress is not None:
+            payload["progress"] = progress
+        payload.update(extra)
+        q.put(payload)
+
+    try:
+        ffmpeg, ffprobe = _find_media_tool("ffmpeg"), _find_media_tool("ffprobe")
+        if not ffmpeg or not ffprobe:
+            raise RuntimeError("ffmpeg is not installed. Install it with: brew install ffmpeg")
+        push(f"🎬 Reading {Path(video_path).name}…", 5)
+        probe = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_name,sample_rate,channels:format=duration",
+             "-of", "json", video_path],
+            capture_output=True, text=True, timeout=120)
+        if probe.returncode != 0:
+            raise RuntimeError(probe.stderr.strip() or "ffprobe could not read the video")
+        info = json.loads(probe.stdout or "{}")
+        streams = info.get("streams") or []
+        if not streams:
+            raise RuntimeError("This video has no audio track.")
+        audio = streams[0]
+        duration = float((info.get("format") or {}).get("duration") or 0)
+        push(f"   • Audio track: {audio.get('codec_name')}, {audio.get('sample_rate')} Hz, "
+             f"{audio.get('channels')} channel(s), {duration / 60:.1f} min", 10)
+        push(f"🎵 Extracting WAV → {output_file}", 12)
+        proc = subprocess.Popen(
+            [ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
+             "-i", video_path, "-map", "0:a:0", "-vn", "-c:a", "pcm_s16le",
+             "-progress", "pipe:1", "-nostats", output_file],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        last, errors = 12, []
+        for line in proc.stdout:
+            key, sep, val = line.strip().partition("=")
+            if not sep:
+                if line.strip():
+                    errors.append(line.strip())
+                continue
+            if key in ("out_time_us", "out_time_ms") and duration > 0 and val.isdigit():
+                pct = 12 + int(87 * min(1.0, int(val) / 1e6 / duration))
+                if pct >= last + 5:
+                    last = pct
+                    push(f"   • {pct}%", pct)
+        if proc.wait() != 0:
+            raise RuntimeError(errors[-1] if errors else "ffmpeg failed")
+        size_mb = Path(output_file).stat().st_size / 1e6
+        push(f"✅ Audio extracted to: {output_file} ({size_mb:.0f} MB)",
+             100, status="done", output_file=output_file)
+        audio_render_results[session_id] = {"success": True, "output_file": output_file}
+    except Exception as e:
+        logger.error(f"❌ _audio_extract_worker failed: {e}", exc_info=True)
+        push(f"❌ {e}", status="error")
+        audio_render_results[session_id] = {"success": False, "error": str(e)}
+
+
+@app.route("/api/extract-audio", methods=["POST"])
+def api_extract_audio_start():
+    """Start extracting a WAV from a finished video file.
+
+    Body JSON: {"video_path": "/path/video.mp4", "script_title": "base name",
+                "output_dir": "/optional/dir"}
+    Returns the same shape as /api/resolve/render-audio, with progress on the
+    same stream URL.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        raw = (data.get("video_path") or "").strip()
+        if not raw:
+            return jsonify({"success": False, "error": "Choose the finished video first."}), 400
+        video = Path(raw).expanduser()
+        if not video.is_file():
+            return jsonify({"success": False, "error": f"Video not found: {video}"}), 400
+        script_title = (data.get("script_title") or video.stem).strip() or video.stem
+        safe_title = re.sub(r'[^A-Za-z0-9._-]+', '_', script_title).strip('_') or "audio"
+        override_dir = (data.get("output_dir") or "").strip()
+        if override_dir:
+            try:
+                output_parent = Path(override_dir).expanduser().resolve()
+                output_parent.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                return jsonify({"success": False, "error": f"Invalid output_dir: {e}"}), 400
+        else:
+            output_parent = _get_output_parent_dir()
+        output_path = str(output_parent / safe_title)
+
+        session_id = str(uuid.uuid4())
+        audio_render_streams[session_id] = _queue.Queue()
+        audio_render_results.pop(session_id, None)
+        _threading.Thread(
+            target=_audio_extract_worker,
+            args=(session_id, str(video), output_path + ".wav"),
+            daemon=True,
+        ).start()
+        logger.info(f"🎵 Audio extract started: session={session_id} video='{video}' "
+                    f"output='{output_path}.wav'")
+        return jsonify({
+            "success": True,
+            "session_id": session_id,
+            "output_path": output_path,
+            "stream_url": f"/api/resolve/render-audio/progress/{session_id}",
+        })
+    except Exception as e:
+        logger.error(f"❌ /api/extract-audio failed to start: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Whisper transcription
 # ---------------------------------------------------------------------------
 
@@ -13810,6 +14038,7 @@ def _persist_version_artifacts(script_id: str, version_id: str, result: dict,
             "curl_commands": result.get("curl_commands"),
             "hooks": result.get("hooks"),
             "hook_labels": result.get("hook_labels"),
+            "stages_run": result.get("stages_run"),
             "thumbnails": thumb_entries,
             "broll_images": broll_entries,
         }

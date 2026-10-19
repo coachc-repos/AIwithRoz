@@ -1258,7 +1258,7 @@
                     <span class="toolbar-icon">🔍</span>
                     <span class="toolbar-text">Inspect Resolve</span>
                 </button>
-                <button class="toolbar-btn" onclick="testThumbnails()" id="testThumbBtn" title="Test Thumbnails">
+                <button class="toolbar-btn" onclick="testThumbnails()" id="testThumbBtn" title="Generate thumbnails (Grok Imagine, in the channel's style)">
                     <span class="toolbar-icon">🖼️</span>
                     <span class="toolbar-text">Test Thumbnails</span>
                 </button>
@@ -1389,16 +1389,19 @@
                 </div>
                 <div id="ideaGenStatus" style="margin-top:10px; color:#94a3b8; font-size:0.88em; min-height:18px;"></div>
                 <div id="ideaGenList" style="margin-top:8px; display:flex; flex-direction:column; gap:8px;"></div>
-                <div id="ideaGenUseRow" style="display:none; margin-top:14px; align-items:center; gap:12px; flex-wrap:wrap;">
-                    <span style="color:#cbd5e1; font-size:0.9em;">Selected: <strong id="ideaGenUseLabel" style="color:#e2e8f0;"></strong></span>
-                    <button id="ideaGenUseBtn" onclick="useSelectedIdea()" style="padding:9px 16px; background:#16a34a; color:#fff; border:none; border-radius:6px; font-weight:600; cursor:pointer;">✍️ Write brief &amp; send to Create Script</button>
-                    <button id="ideaGenRegenBtn" onclick="useSelectedIdea(true)" style="display:none; padding:9px 14px; background:#6366f1; color:#fff; border:none; border-radius:6px; font-weight:600; cursor:pointer;" title="Write a FRESH brief from this idea, ignoring the saved one — use after changing the Format or when you want different parameters.">🔄 Regenerate brief (fresh)</button>
-                    <div id="ideaGenWriterRow" role="radiogroup" aria-label="Script writer" style="flex-basis:100%; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                        <span style="color:#cbd5e1; font-size:0.85em; margin-right:4px;" title="Same choice as in the Create Script dialog; changing either one changes both">✍️ Script Writer:</span>
+                <!-- One row: the selected idea (shrinks, with an ellipsis), the Script
+                     Writer choice, then the buttons. Wraps only when the window is
+                     too narrow to fit it with at least 110px of title. -->
+                <div id="ideaGenUseRow" style="display:none; margin-top:14px; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <span style="flex:1 1 110px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#cbd5e1; font-size:0.9em;">Selected: <strong id="ideaGenUseLabel" style="color:#e2e8f0;"></strong></span>
+                    <div id="ideaGenWriterRow" role="radiogroup" aria-label="Script writer" style="flex:0 0 auto; display:flex; align-items:center; gap:5px; flex-wrap:nowrap;">
+                        <span style="color:#cbd5e1; font-size:0.85em; margin-right:2px; white-space:nowrap;" title="Same choice as in the Create Script dialog; changing either one changes both">✍️ Script Writer:</span>
                         <label class="writer-mode-pill" title="The original Pro mode: one Claude Opus 5.5 pass straight through the Anthropic API"><input type="radio" name="writerModeIdea" value="pro_classic" onchange="setWriterMode(this.value)"> ⭐ Pro writer · classic</label>
                         <label class="writer-mode-pill" title="Same Pro prompt, run by the hosted MAF agent Script-Writer-Pro-Agent-MAF in Foundry"><input type="radio" name="writerModeIdea" value="pro_agent" onchange="setWriterMode(this.value)"> 🤖 Pro writer · agent</label>
                         <label class="writer-mode-pill" title="Topic Assistant, chapter Writers, Reviewer, Quotes and Hook agents"><input type="radio" name="writerModeIdea" value="agentic" onchange="setWriterMode(this.value)"> 🧩 Agentic script writing</label>
                     </div>
+                    <button id="ideaGenUseBtn" onclick="useSelectedIdea()" style="flex:0 0 auto; white-space:nowrap; padding:8px 12px; background:#16a34a; color:#fff; border:none; border-radius:6px; font-weight:600; cursor:pointer;">✍️ Write brief &amp; send to Create Script</button>
+                    <button id="ideaGenRegenBtn" onclick="useSelectedIdea(true)" style="display:none; flex:0 0 auto; white-space:nowrap; padding:8px 10px; background:#6366f1; color:#fff; border:none; border-radius:6px; font-weight:600; cursor:pointer;" title="Write a FRESH brief from this idea, ignoring the saved one — use after changing the Format or when you want different parameters.">🔄 Regenerate brief (fresh)</button>
                 </div>
             </div>
         </div>
@@ -1723,7 +1726,63 @@
                 const open = (body.style.display === 'none' || !body.style.display);
                 body.style.display = open ? 'block' : 'none';
                 if (chev) chev.textContent = open ? '▾' : '▸';
+                if (open) renderPipelineHighlights();
             }
+
+            // ---- Pipeline reference: highlight the stages already run on this script ----
+            // Each finished Create or Process run reports the stages it completed
+            // (server: stages_run). They are kept per Script-ID in this browser and
+            // merged back from the version's saved artifacts when a script is loaded.
+            const _PIPE_STAGES_PREFIX = 'scriptcraft_stages_run::';
+            function _stagesRunFor(scriptId) {
+                if (!scriptId) return new Set();
+                try { return new Set(JSON.parse(localStorage.getItem(_PIPE_STAGES_PREFIX + scriptId) || '[]')); }
+                catch (e) { return new Set(); }
+            }
+            function recordStagesRun(scriptId, stages) {
+                if (scriptId && Array.isArray(stages) && stages.length) {
+                    const all = _stagesRunFor(scriptId);
+                    stages.forEach(st => all.add(st));
+                    try { localStorage.setItem(_PIPE_STAGES_PREFIX + scriptId, JSON.stringify([...all])); } catch (e) {}
+                }
+                renderPipelineHighlights();
+            }
+            function renderPipelineHighlights() {
+                const id = window.currentScriptId || '';
+                const done = _stagesRunFor(id);
+                document.querySelectorAll('#mobileWorkflowDocs .mwd-step[data-stage]').forEach(el => {
+                    const on = done.has(el.dataset.stage);
+                    el.classList.toggle('mwd-done', on);
+                    if (on) el.setAttribute('title', 'Already run on this script');
+                    else el.removeAttribute('title');
+                });
+                const status = document.getElementById('mwdRunStatus');
+                if (!status) return;
+                const title = String(window.currentScriptTitle || '').trim();
+                status.textContent = '';
+                if (!id) {
+                    status.textContent = 'Create or load a script to see which stages have run on it.';
+                    return;
+                }
+                if (done.size) {
+                    const sw = document.createElement('span');
+                    sw.className = 'mwd-swatch';
+                    status.appendChild(sw);
+                }
+                status.appendChild(document.createTextNode(done.size
+                    ? 'Highlighted: stages already run on the current script'
+                    : 'No stages recorded yet for the current script'));
+                if (title) {
+                    status.appendChild(document.createTextNode(' ('));
+                    const b = document.createElement('strong');
+                    b.textContent = title;
+                    status.appendChild(b);
+                    status.appendChild(document.createTextNode(')'));
+                }
+                status.appendChild(document.createTextNode('.'));
+            }
+            if (document.readyState !== 'loading') renderPipelineHighlights();
+            else document.addEventListener('DOMContentLoaded', renderPipelineHighlights);
 
             function toggleIdeaGenPanel(forceOpen) {
                 const body = document.getElementById('ideaGenBody');
@@ -1876,7 +1935,9 @@
                 });
                 const useRow = document.getElementById('ideaGenUseRow');
                 useRow.style.display = 'flex';
-                document.getElementById('ideaGenUseLabel').textContent = _ideaGenState.ideas[i].title || '';
+                const _useLabel = document.getElementById('ideaGenUseLabel');
+                _useLabel.textContent = _ideaGenState.ideas[i].title || '';
+                _useLabel.parentElement.title = _useLabel.textContent;  // full title when the row cuts it off
                 // If this idea already has a saved brief, make the button say so.
                 const hasBrief = !!(_ideaGenState.ideas[i] && _ideaGenState.ideas[i].brief && String(_ideaGenState.ideas[i].brief).trim());
                 const ub = document.getElementById('ideaGenUseBtn');
@@ -2649,6 +2710,20 @@
                     color: #94a3b8;
                     font-size: 0.7em;
                 }
+                /* Stages already run on the current script (see renderPipelineHighlights). */
+                #mobileWorkflowDocs .mwd-step.mwd-done {
+                    border-color: #14b8a6;
+                    background: #0f3d3a;
+                    color: #f0fdfa;
+                    box-shadow: 0 0 0 3px rgba(20,184,166,0.25), 0 0 16px rgba(20,184,166,0.45);
+                }
+                #mobileWorkflowDocs .mwd-step.mwd-done .mwd-num { background: #14b8a6; color: #042f2e; }
+                #mobileWorkflowDocs .mwd-step.mwd-done .mwd-label { color: #5eead4; font-weight: 600; }
+                #mobileWorkflowDocs .mwd-run-status { margin: 0 0 14px; color: #94a3b8; font-size: 0.85em; }
+                #mobileWorkflowDocs .mwd-swatch {
+                    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+                    background: #0f3d3a; border: 2px solid #14b8a6; vertical-align: -1px; margin-right: 6px;
+                }
         </style>
         <div id="workflowDocsPanel" style="margin:0 15px 14px 15px;">
             <div onclick="toggleWorkflowDocs()" style="display:flex; align-items:center; gap:10px; padding:14px 18px; cursor:pointer; user-select:none; background:#0f172a; border:1px solid #334155; border-radius:10px;" title="Show or hide the pipeline reference diagram">
@@ -2657,52 +2732,53 @@
                 <span id="workflowDocsChevron" style="margin-left:auto; color:#94a3b8; font-size:1.1em;">▸</span>
             </div>
         <div id="mobileWorkflowDocs" aria-label="Workflow documentation" style="display:none; margin-top:8px;">
+            <p id="mwdRunStatus" class="mwd-run-status"></p>
             <div class="mwd-pipeline">
                 <h4>🚀 Script Creation Pipeline <span class="mwd-badge">visual reference</span></h4>
                 <p class="mwd-sub">Stages run end-to-end when you tap <strong>Create Script</strong> on desktop.</p>
                 <div class="mwd-row" role="img" aria-label="Script creation pipeline steps">
-                    <div class="mwd-step">✍️<span class="mwd-num">1</span><span class="mwd-label">Script</span></div>
+                    <div class="mwd-step" data-stage="script">✍️<span class="mwd-num">1</span><span class="mwd-label">Script</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">🎯<span class="mwd-num">2</span><span class="mwd-label">Hook</span></div>
+                    <div class="mwd-step" data-stage="hook">🎯<span class="mwd-num">2</span><span class="mwd-label">Hook</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">✂️<span class="mwd-num">3</span><span class="mwd-label">Shorten</span></div>
+                    <div class="mwd-step" data-stage="shorten">✂️<span class="mwd-num">3</span><span class="mwd-label">Shorten</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">🔄<span class="mwd-num">4</span><span class="mwd-label">Flow</span></div>
+                    <div class="mwd-step" data-stage="flow">🔄<span class="mwd-num">4</span><span class="mwd-label">Flow</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">🎥<span class="mwd-num">5</span><span class="mwd-label">B-Roll Tbl</span></div>
+                    <div class="mwd-step" data-stage="broll_table">🎥<span class="mwd-num">5</span><span class="mwd-label">B-Roll Tbl</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">🎨<span class="mwd-num">6</span><span class="mwd-label">B-Roll Img</span></div>
+                    <div class="mwd-step" data-stage="broll_images">🎨<span class="mwd-num">6</span><span class="mwd-label">B-Roll Img</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">🤖<span class="mwd-num">7</span><span class="mwd-label">Grok</span></div>
+                    <div class="mwd-step" data-stage="grok">🤖<span class="mwd-num">7</span><span class="mwd-label">Grok</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step"><img src="{{ url_for('static', filename='heygen_icon.png') }}" alt="HeyGen" onerror="this.replaceWith(document.createTextNode('🎬'))" style="height:30px; width:auto;"><span class="mwd-num">8</span><span class="mwd-label">HeyGen</span></div>
+                    <div class="mwd-step" data-stage="heygen"><img src="{{ url_for('static', filename='heygen_icon.png') }}" alt="HeyGen" onerror="this.replaceWith(document.createTextNode('🎬'))" style="height:30px; width:auto;"><span class="mwd-num">8</span><span class="mwd-label">HeyGen</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">📺<span class="mwd-num">9</span><span class="mwd-label">YouTube</span></div>
+                    <div class="mwd-step" data-stage="youtube">📺<span class="mwd-num">9</span><span class="mwd-label">YouTube</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">🧪<span class="mwd-num">10</span><span class="mwd-label">Demo</span></div>
+                    <div class="mwd-step" data-stage="demo">🧪<span class="mwd-num">10</span><span class="mwd-label">Demo</span></div>
                 </div>
             </div>
             <div class="mwd-pipeline">
                 <h4>⚙️ Script Processing Pipeline <span class="mwd-badge">visual reference</span></h4>
                 <p class="mwd-sub">Run any stage independently after loading an existing script on desktop.</p>
                 <div class="mwd-row" role="img" aria-label="Script processing pipeline steps">
-                    <div class="mwd-step">📁<span class="mwd-num">1</span><span class="mwd-label">Load</span></div>
+                    <div class="mwd-step" data-stage="load">📁<span class="mwd-num">1</span><span class="mwd-label">Load</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">🔄<span class="mwd-num">2</span><span class="mwd-label">Flow</span></div>
+                    <div class="mwd-step" data-stage="flow">🔄<span class="mwd-num">2</span><span class="mwd-label">Flow</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">✂️<span class="mwd-num">3</span><span class="mwd-label">Shorten</span></div>
+                    <div class="mwd-step" data-stage="shorten">✂️<span class="mwd-num">3</span><span class="mwd-label">Shorten</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">🎯<span class="mwd-num">4</span><span class="mwd-label">Hook</span></div>
+                    <div class="mwd-step" data-stage="hook">🎯<span class="mwd-num">4</span><span class="mwd-label">Hook</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">🎥<span class="mwd-num">5</span><span class="mwd-label">B-Roll Tbl</span></div>
+                    <div class="mwd-step" data-stage="broll_table">🎥<span class="mwd-num">5</span><span class="mwd-label">B-Roll Tbl</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">🎨<span class="mwd-num">6</span><span class="mwd-label">B-Roll Img</span></div>
+                    <div class="mwd-step" data-stage="broll_images">🎨<span class="mwd-num">6</span><span class="mwd-label">B-Roll Img</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">🤖<span class="mwd-num">7</span><span class="mwd-label">Grok</span></div>
+                    <div class="mwd-step" data-stage="grok">🤖<span class="mwd-num">7</span><span class="mwd-label">Grok</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step"><img src="{{ url_for('static', filename='heygen_icon.png') }}" alt="HeyGen" onerror="this.replaceWith(document.createTextNode('🎬'))" style="height:30px; width:auto;"><span class="mwd-num">8</span><span class="mwd-label">HeyGen</span></div>
+                    <div class="mwd-step" data-stage="heygen"><img src="{{ url_for('static', filename='heygen_icon.png') }}" alt="HeyGen" onerror="this.replaceWith(document.createTextNode('🎬'))" style="height:30px; width:auto;"><span class="mwd-num">8</span><span class="mwd-label">HeyGen</span></div>
                     <div class="mwd-arrow"></div>
-                    <div class="mwd-step">🧪<span class="mwd-num">9</span><span class="mwd-label">Demo</span></div>
+                    <div class="mwd-step" data-stage="demo">🧪<span class="mwd-num">9</span><span class="mwd-label">Demo</span></div>
                 </div>
             </div>
         </div>
@@ -2789,9 +2865,27 @@
         <div id="renderAudioModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.8); z-index:10073; align-items:center; justify-content:center;">
             <div style="background:#0f172a; border:1px solid #334155; border-radius:10px; width:min(680px, 95vw); max-height:90vh; padding:20px 24px; box-shadow:0 20px 50px rgba(0,0,0,0.6); display:flex; flex-direction:column; gap:12px;">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <h2 style="margin:0; color:#e2e8f0; font-size:1.1em;">🎵 Render Audio from DaVinci Resolve</h2>
+                    <h2 style="margin:0; color:#e2e8f0; font-size:1.1em;">🎵 Render Audio (WAV)</h2>
                     <button onclick="closeRenderAudioModal()" style="background:transparent; color:#94a3b8; border:none; font-size:1.5em; cursor:pointer; line-height:1;">×</button>
                 </div>
+                <div style="display:flex; flex-direction:column; gap:6px;">
+                    <label style="color:#cbd5e1; font-size:0.85em; font-weight:600;">Audio source:</label>
+                    <div role="radiogroup" aria-label="Audio source" style="display:flex; gap:6px; flex-wrap:wrap;">
+                        <label class="writer-mode-pill" title="Extract the audio track from a finished video file with ffmpeg; no Resolve project needed"><input type="radio" name="renderAudioSource" value="video" onchange="setRenderAudioSource(this.value)"> 🎬 Finished video file</label>
+                        <label class="writer-mode-pill" title="Render an audio-only WAV from a timeline in the open DaVinci Resolve project"><input type="radio" name="renderAudioSource" value="resolve" onchange="setRenderAudioSource(this.value)"> 🎛️ DaVinci Resolve timeline</label>
+                    </div>
+                </div>
+                <div id="renderAudioVideoSection" style="display:flex; flex-direction:column; gap:6px;">
+                    <label style="color:#cbd5e1; font-size:0.85em; font-weight:600;">Finished video:</label>
+                    <div style="display:flex; gap:6px; align-items:center;">
+                        <input id="renderAudioVideoPath" type="text" placeholder="/path/to/finished-video.mp4"
+                            style="flex:1; background:#1e293b; border:1px solid #334155; color:#e2e8f0; border-radius:6px; padding:7px 10px; font-size:0.85em; outline:none;">
+                        <button type="button" onclick="pickRenderAudioVideo()"
+                            style="padding:7px 12px; background:#1e293b; border:1px solid #334155; color:#cbd5e1; border-radius:6px; cursor:pointer; font-size:0.82em;">📂 Browse…</button>
+                    </div>
+                    <div style="color:#64748b; font-size:0.72em;">Extracts the video's audio track to a WAV with ffmpeg. No Resolve project needed.</div>
+                </div>
+                <div id="renderAudioResolveSection" style="display:none; flex-direction:column; gap:12px;">
                 <div id="renderAudioInfo" style="color:#94a3b8; font-size:0.82em;">
                     Loading project and timelines from DaVinci Resolve…
                 </div>
@@ -2815,6 +2909,7 @@
                         <div style="color:#64748b; font-size:0.82em;">Loading…</div>
                     </div>
                 </div>
+                </div>
                 <div style="display:flex; flex-direction:column; gap:4px;">
                     <label style="color:#cbd5e1; font-size:0.85em; font-weight:600;">📁 Output Directory:</label>
                     <div style="display:flex; gap:6px; align-items:center;">
@@ -2836,7 +2931,7 @@
                         style="padding:8px 20px; background:#0ea5e9; border:none; color:#fff; border-radius:6px; cursor:pointer; font-size:0.9em; font-weight:600;">
                         🎵 Start Render
                     </button>
-                    <button onclick="refreshRenderAudioTimelines()"
+                    <button id="renderAudioRefreshBtn" onclick="refreshRenderAudioTimelines()"
                         style="padding:8px 14px; background:#1e293b; border:1px solid #334155; color:#94a3b8; border-radius:6px; cursor:pointer; font-size:0.85em;">
                         🔄 Refresh
                     </button>
@@ -3181,6 +3276,7 @@
                         .writer-mode-pill { display:inline-flex; align-items:center; gap:6px; padding:6px 12px; border:1px solid #475569; border-radius:999px; background:#1e293b; color:#e2e8f0; cursor:pointer; font-size:0.86em; }
                         .writer-mode-pill input { accent-color:#14b8a6; margin:0; }
                         .writer-mode-pill:has(input:checked) { border-color:#14b8a6; background:#0f3d3a; color:#f0fdfa; }
+                        #ideaGenWriterRow .writer-mode-pill { padding:5px 10px; white-space:nowrap; }
                     </style>
                     <div class="form-row">
                         <div class="form-group" style="flex:1;">
@@ -6126,6 +6222,7 @@ Time management content here...`;
                         // instead of rendering script output. Clear the in-progress
                         // UI first so the spinner doesn't hang while the modal is up.
                         if (message.awaiting_hook_selection && Array.isArray(message.hooks) && message.hooks.length > 0) {
+                            recordStagesRun(window.currentScriptId, message.stages_run);
                             try {
                                 addProgressMessage('🎯 Hook options generated — pick one to finalize.', 'success');
                                 updateFooterProgress(100, '🎯 Pick a hook');
@@ -6193,6 +6290,7 @@ Time management content here...`;
                             window.currentScriptTitle = scriptTitle;
                             if (message.script_id) window.currentScriptId = message.script_id;
                             if (message.script_version) window.currentScriptVersion = message.script_version;
+                            recordStagesRun(window.currentScriptId, message.stages_run);
                             window.currentBrollImages = brollImages || [];
                             window.currentGrokVideos = grokVideos || [];
                             window.currentThumbnails = thumbnails || [];
@@ -6524,10 +6622,24 @@ Time management content here...`;
         else { document.addEventListener('DOMContentLoaded', () => { try { _updateRerunLastBtn(); } catch (_e) {} }); }
 
         // ---- Live elapsed timer for the progress area (how long it's run) ----
+        // After 2.5 minutes the timer adds the hint the caller passed in, so a
+        // long run reads as normal. Pass no hint when there's nothing to add.
         let _progressTimerInterval = null;
         let _progressTimerStart = 0;
-        function startProgressTimer() {
+        let _progressTimerHint = '';
+        // The hint for Create Script, by Script Writer choice and video format.
+        // Agentic times: teaching runs review every chapter (about 9 to 13 min in
+        // testing); List and Predictions skip the review (about 4 min for 9 chapters).
+        function _writerTimerHint(writerMode, videoFormat, quickTest) {
+            if (writerMode === 'pro_classic') return 'Pro writes in one pass, ~3-5 min is normal';
+            if (writerMode === 'pro_agent') return 'the Pro writer agent writes in one pass, ~3-5 min is normal';
+            if (quickTest) return '';  // one chapter; no typical time to quote
+            if (videoFormat === 'teaching') return 'agentic writing plans, writes, and reviews each chapter, ~10-15 min is normal';
+            return 'agentic writing plans and writes each chapter, ~4-8 min is normal';
+        }
+        function startProgressTimer(hint) {
             _progressTimerStart = Date.now();
+            _progressTimerHint = hint || '';
             const el = document.getElementById('progressTimer');
             if (el) { el.style.display = 'inline-block'; el.textContent = '⏱ 0:00'; }
             if (_progressTimerInterval) clearInterval(_progressTimerInterval);
@@ -6536,7 +6648,7 @@ Time management content here...`;
                 const mm = Math.floor(s / 60), ss = s % 60;
                 const e = document.getElementById('progressTimer');
                 if (e) e.textContent = '⏱ ' + mm + ':' + String(ss).padStart(2, '0') + ' elapsed'
-                    + (s >= 150 ? ' · Pro writes in one pass, ~3-5 min is normal' : '');
+                    + (s >= 150 && _progressTimerHint ? ' · ' + _progressTimerHint : '');
             }, 1000);
         }
         function stopProgressTimer() {
@@ -6594,7 +6706,7 @@ Time management content here...`;
             }
 
             progressDiv.style.display = 'block';
-            startProgressTimer();
+            startProgressTimer(_writerTimerHint(writerMode, videoFormat, quickTest));
             progressText.textContent = quickTest ? '⚡ Quick test: Creating 1-chapter script...' : '🎬 Creating your script with AI...';
             resultDiv.style.display = 'none';
             document.getElementById('debugLog').style.display = 'none';
@@ -6758,6 +6870,7 @@ Time management content here...`;
                         // instead of rendering script output. Clear the in-progress
                         // UI first so the spinner doesn't hang while the modal is up.
                         if (message.awaiting_hook_selection && Array.isArray(message.hooks) && message.hooks.length > 0) {
+                            recordStagesRun(window.currentScriptId, message.stages_run);
                             try {
                                 addProgressMessage('🎯 Hook options generated — pick one to finalize.', 'success');
                                 updateFooterProgress(100, '🎯 Pick a hook');
@@ -6836,6 +6949,7 @@ Time management content here...`;
                         window.lastResultPayload = message;
                         if (message.script_id) window.currentScriptId = message.script_id;
                         if (message.script_version) window.currentScriptVersion = message.script_version;
+                        recordStagesRun(window.currentScriptId, message.stages_run);
                         window.currentBrollImages = brollImages || [];
                         window.currentGrokVideos = grokVideos || [];
                         window.currentThumbnails = thumbnails || [];
@@ -8025,7 +8139,12 @@ Time management content here...`;
                     <label style="display:block;font-size:12px;color:#9ca3af;margin-bottom:4px;">Hook 2</label>
                     <input id="thumbHook2" type="text" placeholder="(optional)" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #374151;background:#111827;color:#f9fafb;margin-bottom:10px;font-size:14px;" />
                     <label style="display:block;font-size:12px;color:#9ca3af;margin-bottom:4px;">Hook 3</label>
-                    <input id="thumbHook3" type="text" placeholder="(optional)" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #374151;background:#111827;color:#f9fafb;margin-bottom:18px;font-size:14px;" />
+                    <input id="thumbHook3" type="text" placeholder="(optional)" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #374151;background:#111827;color:#f9fafb;margin-bottom:10px;font-size:14px;" />
+                    <label style="display:block;font-size:12px;color:#9ca3af;margin-bottom:4px;">Engine</label>
+                    <select id="thumbEngine" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #374151;background:#111827;color:#f9fafb;margin-bottom:18px;font-size:14px;">
+                        <option value="grok">🎨 Grok Imagine — your channel's thumbnail style</option>
+                        <option value="gemini">✨ Gemini — classic emotion variations</option>
+                    </select>
                     <div style="display:flex;gap:8px;justify-content:flex-end;">
                         <button id="thumbHookCancel" style="padding:8px 16px;border-radius:6px;border:1px solid #374151;background:transparent;color:#f9fafb;cursor:pointer;">Cancel</button>
                         <button id="thumbHookGo" style="padding:8px 16px;border-radius:6px;border:none;background:#2563eb;color:white;cursor:pointer;font-weight:600;">Generate</button>
@@ -8035,15 +8154,19 @@ Time management content here...`;
                 document.body.appendChild(overlay);
                 const cleanup = () => { try { document.body.removeChild(overlay); } catch (_) {} };
                 modal.querySelector('#thumbHookCancel').onclick = () => { cleanup(); resolve(null); };
+                const engineSel = modal.querySelector('#thumbEngine');
+                try { engineSel.value = localStorage.getItem('scriptcraft_thumbnail_engine') || 'grok'; } catch (_) {}
                 modal.querySelector('#thumbHookGo').onclick = () => {
                     const topic = modal.querySelector('#thumbHookTopic').value.trim() || defaultTopic || 'AI Testing';
+                    const engine = engineSel.value || 'grok';
+                    try { localStorage.setItem('scriptcraft_thumbnail_engine', engine); } catch (_) {}
                     const hooks = [
                         modal.querySelector('#thumbHook1').value.trim(),
                         modal.querySelector('#thumbHook2').value.trim(),
                         modal.querySelector('#thumbHook3').value.trim(),
                     ].filter(Boolean);
                     cleanup();
-                    resolve({ topic, hooks });
+                    resolve({ topic, hooks, engine });
                 };
                 setTimeout(() => modal.querySelector('#thumbHook1').focus(), 50);
             });
@@ -8060,7 +8183,7 @@ Time management content here...`;
                 console.log('Thumbnail generation cancelled by user');
                 return;
             }
-            const { topic, hooks } = choice;
+            const { topic, hooks, engine } = choice;
             if (hooks.length === 0) {
                 alert('Please enter at least one hook text.');
                 return;
@@ -8096,7 +8219,8 @@ Time management content here...`;
                     body: JSON.stringify({
                         topic: topic,
                         headlines: hooks,
-                        variations_per_option: 3
+                        variations_per_option: 3,
+                        engine: engine || 'grok'
                     })
                 });
                 if (!startResp.ok) throw new Error(`Start failed (${startResp.status})`);
@@ -8419,6 +8543,7 @@ Thank you for watching!`;
             }
             const ver = await _restoreVersionArtifacts(
                 window.currentScriptId, window.currentScriptVersion);
+            recordStagesRun(window.currentScriptId, ['load'].concat((ver && ver.stages_run) || []));
 
             const _thumbs = (ver && ver.thumbnails) || [];
             const _broll = (ver && ver.broll_images) || [];
@@ -9090,8 +9215,48 @@ Thank you for watching!`;
             if (odInput && !odInput.value) {
                 odInput.value = (typeof getSharedOutputDir === 'function' ? getSharedOutputDir() : '');
             }
-            refreshRenderAudioProjects();
-            refreshRenderAudioTimelines();
+            // Finished video (default) or Resolve timeline; Resolve is only
+            // contacted when that source is chosen.
+            let _src = 'video';
+            try { _src = localStorage.getItem('scriptcraft_render_audio_source') || 'video'; } catch (e) {}
+            setRenderAudioSource(_src);
+        }
+
+        function _renderAudioSource() {
+            const el = document.querySelector('input[name="renderAudioSource"]:checked');
+            return el ? el.value : 'video';
+        }
+
+        function setRenderAudioSource(src) {
+            const isResolve = src === 'resolve';
+            const el = document.querySelector(`input[name="renderAudioSource"][value="${isResolve ? 'resolve' : 'video'}"]`);
+            if (el) el.checked = true;
+            document.getElementById('renderAudioVideoSection').style.display = isResolve ? 'none' : 'flex';
+            document.getElementById('renderAudioResolveSection').style.display = isResolve ? 'flex' : 'none';
+            const rb = document.getElementById('renderAudioRefreshBtn');
+            if (rb) rb.style.display = isResolve ? '' : 'none';
+            try { localStorage.setItem('scriptcraft_render_audio_source', isResolve ? 'resolve' : 'video'); } catch (e) {}
+            if (isResolve) {
+                refreshRenderAudioProjects();
+                refreshRenderAudioTimelines();
+            }
+        }
+
+        async function pickRenderAudioVideo() {
+            try {
+                const r = await fetch('/api/youtube/pick-video-path');
+                const d = await r.json();
+                if (!d.success) {
+                    if (!d.cancelled) alert(d.error || 'Could not open the file picker.');
+                    return;
+                }
+                document.getElementById('renderAudioVideoPath').value = d.path;
+                // Name the WAV after the video when no name is set yet.
+                const fn = document.getElementById('renderAudioFilename');
+                if (fn && !fn.value.trim()) fn.value = _safeName(String(d.filename || '').replace(/\.[^.]+$/, ''));
+            } catch (e) {
+                alert('Could not open the file picker: ' + e);
+            }
         }
 
         function closeRenderAudioModal() {
@@ -9238,8 +9403,14 @@ Thank you for watching!`;
         }
 
         async function startAudioRender() {
-            if (!_renderAudioSelectedTimeline) {
+            const source = _renderAudioSource();
+            const videoPath = (document.getElementById('renderAudioVideoPath')?.value || '').trim();
+            if (source === 'resolve' && !_renderAudioSelectedTimeline) {
                 alert('Please select a timeline first.');
+                return;
+            }
+            if (source !== 'resolve' && !videoPath) {
+                alert('Choose the finished video first.');
                 return;
             }
             const filename = document.getElementById('renderAudioFilename').value.trim();
@@ -9278,12 +9449,11 @@ Thank you for watching!`;
                                   || (typeof getSharedOutputDir === 'function' ? getSharedOutputDir() : '')
                                   || '');
                 if (overrideDir && typeof setSharedOutputDir === 'function') setSharedOutputDir(overrideDir);
-                const reqBody = {
-                    timeline_name: _renderAudioSelectedTimeline,
-                    script_title: filename,
-                };
+                const reqBody = source === 'resolve'
+                    ? { timeline_name: _renderAudioSelectedTimeline, script_title: filename }
+                    : { video_path: videoPath, script_title: filename };
                 if (overrideDir) reqBody.output_dir = overrideDir;
-                const res = await fetch('/api/resolve/render-audio', {
+                const res = await fetch(source === 'resolve' ? '/api/resolve/render-audio' : '/api/extract-audio', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(reqBody),
@@ -10544,7 +10714,7 @@ Thank you for watching!`;
 
         function toggleApiKeysVisible(show) {
             const t = show ? 'text' : 'password';
-            ['modalGoogleApiKey', 'modalHeygenApiKey', 'modalGrokApiKey'].forEach(id => {
+            ['modalAnthropicApiKey', 'modalGoogleApiKey', 'modalHeygenApiKey', 'modalGrokApiKey'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) el.type = t;
             });
@@ -12568,13 +12738,13 @@ Thank you for watching!`;
             <div class="ytp-stage-header" onclick="ytpToggleStage('render')"
                  style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; user-select:none;">
               <span class="ytp-stage-icon" style="font-size:1.3em;">🎵</span>
-              <strong style="flex:1;">Stage 1 — Render Audio from DaVinci Resolve</strong>
+              <strong style="flex:1;">Stage 1 — Render Audio (WAV)</strong>
               <span class="ytp-stage-status" data-status="render" style="font-size:0.8em; color:#64748b;">Pending</span>
               <span class="ytp-stage-caret" style="color:#64748b;">▸</span>
             </div>
             <div class="ytp-stage-body" data-body="render" style="display:none; padding:12px 14px; border-top:1px solid #0f172a;">
               <p style="margin:0 0 10px 0; color:#94a3b8; font-size:0.85em;">
-                Render audio-only WAV from a Resolve timeline. Skip this if you already have an audio or video file.
+                Render an audio-only WAV from a finished video file or a DaVinci Resolve timeline. Skip this if you already have an audio file.
               </p>
               <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                 <button type="button" onclick="openRenderAudioModal()"
