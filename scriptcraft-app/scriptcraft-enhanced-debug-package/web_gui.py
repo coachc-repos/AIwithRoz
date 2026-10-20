@@ -3724,22 +3724,107 @@ def export_heygen_curl():
         return jsonify({"error": error_msg}), 500
 
 
+# ---------------------------------------------------------------------------
+# HeyGen v3 API helpers. All HeyGen calls use v3 (https://developers.heygen.com):
+#   GET  /v3/templates            (paginated: data[], has_more, next_token)
+#   GET  /v3/templates/{id}       (data: {id, name, thumbnail_url, variables, ...})
+#   POST /v3/templates/{id}       (generate; variables flattened to {type, ...})
+#   GET  /v3/voices               (paginated; type=public|private)
+#   GET  /v3/videos/{video_id}    (status / video_url / failure_message)
+# The proxy routes below normalise v3 responses back to the field names the
+# frontend already reads (template_id, thumbnail_image_url, preview_audio,
+# variables[{name, type, properties:{content}}]) so the UI keeps working.
+# ---------------------------------------------------------------------------
+HEYGEN_API_BASE = "https://api.heygen.com"
+
+
+def _heygen_headers(api_key: str) -> dict:
+    return {"accept": "application/json", "x-api-key": api_key}
+
+
+def _heygen_v3_list_all(path: str, api_key: str, params: dict = None,
+                        max_pages: int = 50) -> list:
+    """Follow v3 cursor pagination (token/next_token) and return all items."""
+    items, token = [], None
+    query = dict(params or {})
+    query.setdefault("limit", 100)
+    for _ in range(max_pages):
+        if token:
+            query["token"] = token
+        resp = requests.get(f"{HEYGEN_API_BASE}{path}",
+                            headers=_heygen_headers(api_key),
+                            params=query, timeout=15)
+        resp.raise_for_status()
+        body = resp.json() or {}
+        page = body.get("data") or []
+        items.extend(page if isinstance(page, list) else [])
+        token = body.get("next_token")
+        if not body.get("has_more") or not token:
+            break
+    return items
+
+
+def _heygen_template_summary_v3_to_legacy(t: dict) -> dict:
+    out = dict(t)
+    out["template_id"] = t.get("id") or t.get("template_id")
+    out["thumbnail_image_url"] = t.get("thumbnail_url") or t.get("thumbnail_image_url")
+    return out
+
+
+def _heygen_variables_v3_to_legacy(variables) -> dict:
+    """v3 variables are {name: {type, content|voice_id|avatar_id|asset...}}.
+    Present them as {name: {name, type, properties:{...}}} for the UI."""
+    out = {}
+    if not isinstance(variables, dict):
+        return out
+    for name, v in variables.items():
+        if not isinstance(v, dict):
+            out[name] = {"name": name, "type": "text", "properties": {"content": v}}
+            continue
+        props = {k: val for k, val in v.items() if k != "type"}
+        if "content" not in props:
+            for alt in ("voice_id", "avatar_id", "character_id"):
+                if props.get(alt):
+                    props["content"] = props[alt]
+                    break
+        out[name] = {"name": name, "type": v.get("type", "text"), "properties": props}
+    return out
+
+
+def _heygen_body_to_v3(body: dict) -> dict:
+    """Accept a legacy v2 generate body or a v3 body and return a v3 body.
+    v2 {name, type, properties:{content}} -> v3 {type, content}; drops `test`."""
+    body = dict(body or {})
+    body.pop("test", None)
+    variables = body.get("variables") or {}
+    if isinstance(variables, dict):
+        new_vars = {}
+        for name, v in variables.items():
+            if isinstance(v, dict) and isinstance(v.get("properties"), dict):
+                flat = {"type": v.get("type", "text")}
+                flat.update(v["properties"])
+                new_vars[name] = flat
+            else:
+                new_vars[name] = v
+        body["variables"] = new_vars
+    return body
+
+
 @app.route("/api/heygen/templates", methods=["POST"])
 def heygen_list_templates():
-    """Proxy endpoint to fetch HeyGen templates (avoids CORS)"""
+    """Proxy endpoint to fetch HeyGen templates via GET /v3/templates (avoids CORS)."""
     try:
         data = request.get_json()
         api_key = data.get("api_key", "") if data else ""
         if not api_key:
             return jsonify({"error": "No API key provided"}), 400
 
-        resp = requests.get(
-            "https://api.heygen.com/v2/templates",
-            headers={"accept": "application/json", "x-api-key": api_key},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return jsonify(resp.json())
+        templates = _heygen_v3_list_all("/v3/templates", api_key)
+        return jsonify({
+            "error": None,
+            "data": {"templates": [_heygen_template_summary_v3_to_legacy(t)
+                                   for t in templates]},
+        })
 
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else 500
@@ -3752,35 +3837,25 @@ def heygen_list_templates():
 
 @app.route("/api/heygen/template/<template_id>", methods=["POST"])
 def heygen_template_details(template_id):
-    """Proxy endpoint to fetch details for a single HeyGen template.
-    Merges data from the list endpoint (name, thumbnail) and the
-    detail endpoint (variables)."""
+    """Proxy endpoint to fetch details for a single HeyGen template via
+    GET /v3/templates/{id}, which already includes name, thumbnail and
+    variables (no second list call needed)."""
     try:
         data = request.get_json()
         api_key = data.get("api_key", "") if data else ""
         if not api_key:
             return jsonify({"error": "No API key provided"}), 400
 
-        headers = {"accept": "application/json", "x-api-key": api_key}
-
-        # Detail endpoint gives variables
         detail_resp = requests.get(
-            f"https://api.heygen.com/v2/template/{template_id}",
-            headers=headers, timeout=15,
+            f"{HEYGEN_API_BASE}/v3/templates/{template_id}",
+            headers=_heygen_headers(api_key), timeout=15,
         )
         detail_resp.raise_for_status()
-        detail_data = detail_resp.json().get("data", {})
+        detail = detail_resp.json().get("data", {}) or {}
 
-        # List endpoint gives name and thumbnail
-        list_resp = requests.get(
-            "https://api.heygen.com/v2/templates",
-            headers=headers, timeout=15,
-        )
-        list_resp.raise_for_status()
-        templates = list_resp.json().get("data", {}).get("templates", [])
-        summary = next((t for t in templates if t.get("template_id") == template_id), {})
-
-        merged = {**summary, **detail_data, "template_id": template_id}
+        merged = _heygen_template_summary_v3_to_legacy(detail)
+        merged["template_id"] = template_id
+        merged["variables"] = _heygen_variables_v3_to_legacy(detail.get("variables"))
         return jsonify({"error": None, "data": merged})
 
     except requests.exceptions.HTTPError as e:
@@ -3794,20 +3869,21 @@ def heygen_template_details(template_id):
 
 @app.route("/api/heygen/voices", methods=["POST"])
 def heygen_list_voices():
-    """Proxy endpoint to fetch HeyGen voices (avoids CORS)"""
+    """Proxy endpoint to fetch HeyGen voices via GET /v3/voices (avoids CORS).
+    Fetches private (cloned) voices first, then the public library."""
     try:
         data = request.get_json()
         api_key = data.get("api_key", "") if data else ""
         if not api_key:
             return jsonify({"error": "No API key provided"}), 400
 
-        resp = requests.get(
-            "https://api.heygen.com/v2/voices",
-            headers={"accept": "application/json", "x-api-key": api_key},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return jsonify(resp.json())
+        voices = []
+        for vtype in ("private", "public"):
+            for v in _heygen_v3_list_all("/v3/voices", api_key, {"type": vtype}):
+                v = dict(v)
+                v.setdefault("preview_audio", v.get("preview_audio_url") or "")
+                voices.append(v)
+        return jsonify({"error": None, "data": {"voices": voices}})
 
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else 500
@@ -3820,7 +3896,8 @@ def heygen_list_voices():
 
 @app.route("/api/heygen/test-generate", methods=["POST"])
 def heygen_test_generate():
-    """Proxy endpoint to test HeyGen video generation from template."""
+    """Proxy endpoint to test HeyGen video generation from template
+    (POST /v3/templates/{id}). Legacy v2-shaped bodies are converted."""
     try:
         data = request.get_json()
         if not data:
@@ -3828,14 +3905,14 @@ def heygen_test_generate():
 
         api_key = data.get("api_key", "")
         template_id = data.get("template_id", "")
-        request_body = data.get("request_body", {})
+        request_body = _heygen_body_to_v3(data.get("request_body", {}))
 
         if not api_key:
             return jsonify({"error": "No API key provided"}), 400
         if not template_id:
             return jsonify({"error": "No template ID provided"}), 400
 
-        url = f"https://api.heygen.com/v2/template/{template_id}/generate"
+        url = f"{HEYGEN_API_BASE}/v3/templates/{template_id}"
         headers = {
             "accept": "application/json",
             "content-type": "application/json",
@@ -3845,16 +3922,22 @@ def heygen_test_generate():
         logger.info(f"🧪 Test generate: POST {url}")
         logger.info(f"🧪 Request body: {json.dumps(request_body)[:500]}")
 
-        resp = requests.post(url, headers=headers, json=request_body, timeout=30)
+        resp = requests.post(url, headers=headers,
+                             json=request_body, timeout=30)
 
         logger.info(f"🧪 Response status: {resp.status_code}")
         logger.info(f"🧪 Response body: {resp.text[:500]}")
 
-        # Return the full response with status so frontend can show it
         try:
             resp_json = resp.json()
         except Exception:
             resp_json = {"raw_response": resp.text}
+
+        # v3 returns data.id; keep data.video_id for older callers.
+        if isinstance(resp_json, dict) and isinstance(resp_json.get("data"), dict):
+            d = resp_json["data"]
+            if d.get("id") and not d.get("video_id"):
+                d["video_id"] = d["id"]
 
         return jsonify(resp_json), resp.status_code
 
@@ -5931,10 +6014,11 @@ def check_video_status():
         import requests
 
         # Check video status
-        base_url = "https://api.heygen.com/v1/video_status.get"
-        video_status_url = f"{base_url}?video_id={video_id}"
+        # HeyGen v3: GET /v3/videos/{video_id} (replaces v1/video_status.get)
+        video_status_url = f"https://api.heygen.com/v3/videos/{video_id}"
         headers = {
-            "X-Api-Key": api_key
+            "accept": "application/json",
+            "x-api-key": api_key,
         }
 
         try:
@@ -5944,7 +6028,7 @@ def check_video_status():
             response_data = response.json()
 
             if response.status_code != 200:
-                error_msg = response_data.get("message", "Unknown error")
+                error_msg = ((response_data.get("error") or {}).get("message") if isinstance(response_data.get("error"), dict) else response_data.get("error")) or response_data.get("message") or "Unknown error"
                 logger.error(f"❌ HeyGen API error: {error_msg}")
                 return jsonify({
                     "success": False,
@@ -5975,9 +6059,9 @@ def check_video_status():
                     logger.warning(msg)
 
             elif status == "failed":
-                error = response_data.get("data", {}).get(
-                    "error", "Unknown error"
-                )
+                error = (response_data.get("data", {}).get("failure_message")
+                    or response_data.get("data", {}).get("failure_code")
+                    or "Unknown error")
                 result["error"] = error
                 logger.error(f"❌ Video generation failed: {error}")
 
