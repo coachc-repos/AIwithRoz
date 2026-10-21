@@ -2986,6 +2986,31 @@
                     <input type="password" id="modalHeygenApiKey" autocomplete="off" placeholder="sk_V2_..." style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
                 </div>
 
+                <div style="margin:4px 0 14px 0; padding:12px; background:#0b1220; border:1px solid #1e293b; border-radius:6px;">
+                    <div style="font-size:0.85em; color:#e2e8f0; font-weight:700; margin-bottom:4px;">𝕏 X (@AIwithRoz) posting keys</div>
+                    <p style="margin:0 0 10px 0; color:#64748b; font-size:0.75em; line-height:1.5;">Saved values are never shown. Leave a field blank to keep its current value. <a href="#" onclick="clearXKeys(); return false;" style="color:#f87171;">Clear saved X keys</a></p>
+                <div style="margin-bottom:10px;">
+                    <label for="modalXApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_modalXApiKey" class="key-src"></span>𝕏 X API Key <span style="color:#64748b; font-weight:normal;">(X_API_KEY)</span></label>
+                    <input type="password" id="modalXApiKey" autocomplete="off" placeholder="not set" style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
+                </div>
+                <div style="margin-bottom:10px;">
+                    <label for="modalXApiSecret" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_modalXApiSecret" class="key-src"></span>𝕏 X API Secret <span style="color:#64748b; font-weight:normal;">(X_API_SECRET)</span></label>
+                    <input type="password" id="modalXApiSecret" autocomplete="off" placeholder="not set" style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
+                </div>
+                <div style="margin-bottom:10px;">
+                    <label for="modalXAccessToken" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_modalXAccessToken" class="key-src"></span>𝕏 X Access Token <span style="color:#64748b; font-weight:normal;">(X_ACCESS_TOKEN)</span></label>
+                    <input type="password" id="modalXAccessToken" autocomplete="off" placeholder="not set" style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
+                </div>
+                <div style="margin-bottom:10px;">
+                    <label for="modalXAccessSecret" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_modalXAccessSecret" class="key-src"></span>𝕏 X Access Secret <span style="color:#64748b; font-weight:normal;">(X_ACCESS_SECRET)</span></label>
+                    <input type="password" id="modalXAccessSecret" autocomplete="off" placeholder="not set" style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
+                </div>
+                <div style="margin-bottom:10px;">
+                    <label for="modalXBearerToken" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_modalXBearerToken" class="key-src"></span>𝕏 X Bearer Token (optional) <span style="color:#64748b; font-weight:normal;">(X_BEARER_TOKEN)</span></label>
+                    <input type="password" id="modalXBearerToken" autocomplete="off" placeholder="not set" style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
+                </div>
+                </div>
+
                 <div style="margin-bottom:18px;">
                     <label for="modalGrokApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_grok" class="key-src"></span><img src="{{ url_for('static', filename='grok_icon.png') }}" alt="Grok" onerror="this.replaceWith(document.createTextNode('🤖'))" style="height:15px; width:auto; vertical-align:-2px;"> Grok API Key <span style="color:#64748b; font-weight:normal;">(XAI_API_KEY)</span></label>
                     <input type="password" id="modalGrokApiKey" autocomplete="off" placeholder="xai-..." style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
@@ -10394,6 +10419,14 @@ Thank you for watching!`;
                         setSrc('src_google', srcMap.google_api_key);
                         setSrc('src_heygen', srcMap.heygen_api_key);
                         setSrc('src_grok', srcMap.grok_api_key);
+                        // X keys: server returns only masked hints, never values.
+                        const xk = data.x_keys || {};
+                        [['modalXApiKey','x_api_key'],['modalXApiSecret','x_api_secret'],['modalXAccessToken','x_access_token'],['modalXAccessSecret','x_access_secret'],['modalXBearerToken','x_bearer_token']].forEach(([id, key]) => {
+                            const el = document.getElementById(id);
+                            const info = xk[key] || {};
+                            if (el) { el.value = ''; el.placeholder = info.present ? ('saved ' + (info.masked || '') + ' (leave blank to keep)') : 'not set'; }
+                            setSrc('src_' + id, info.source);
+                        });
                         status.textContent = 'Loaded current values.';
                     } else {
                         status.textContent = (data && data.error) || 'Loaded local values only.';
@@ -10476,7 +10509,7 @@ Thank you for watching!`;
 
         function toggleApiKeysVisible(show) {
             const t = show ? 'text' : 'password';
-            ['modalGoogleApiKey', 'modalHeygenApiKey', 'modalGrokApiKey'].forEach(id => {
+            ['modalGoogleApiKey', 'modalHeygenApiKey', 'modalGrokApiKey', 'modalXApiKey', 'modalXApiSecret', 'modalXAccessToken', 'modalXAccessSecret', 'modalXBearerToken'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) el.type = t;
             });
@@ -10490,6 +10523,12 @@ Thank you for watching!`;
                 heygen_api_key: document.getElementById('modalHeygenApiKey').value.trim(),
                 grok_api_key:   document.getElementById('modalGrokApiKey').value.trim(),
             };
+            // X keys: only send fields the user typed (blank = keep current).
+            [['modalXApiKey','x_api_key'],['modalXApiSecret','x_api_secret'],['modalXAccessToken','x_access_token'],['modalXAccessSecret','x_access_secret'],['modalXBearerToken','x_bearer_token']].forEach(([id, key]) => {
+                const el = document.getElementById(id);
+                const v = el ? el.value.trim() : '';
+                if (v) payload[key] = v;
+            });
             status.textContent = 'Saving…';
             status.style.color = '#94a3b8';
             try {
@@ -10511,6 +10550,25 @@ Thank you for watching!`;
                 status.style.color = '#34d399';
                 status.textContent = '✅ Saved.';
                 setTimeout(closeApiKeysModal, 700);
+            } catch (err) {
+                status.style.color = '#f87171';
+                status.textContent = '❌ ' + err.message;
+            }
+        }
+
+        async function clearXKeys() {
+            if (!confirm('Remove the X keys saved in this dialog? (.env values, if any, will still apply.)')) return;
+            const status = document.getElementById('apiKeysModalStatus');
+            try {
+                const resp = await fetch('/api/keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ x_clear: true }),
+                });
+                const data = await resp.json();
+                status.style.color = (resp.ok && data.success) ? '#34d399' : '#f87171';
+                status.textContent = (resp.ok && data.success) ? '✅ Saved X keys cleared.' : ('❌ ' + (data.error || 'Clear failed'));
+                if (resp.ok && data.success) openApiKeysModal();
             } catch (err) {
                 status.style.color = '#f87171';
                 status.textContent = '❌ ' + err.message;

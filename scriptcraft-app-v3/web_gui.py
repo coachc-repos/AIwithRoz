@@ -110,6 +110,11 @@ def _hydrate_env_from_settings() -> None:
             "heygen_voice_id": "HEYGEN_VOICE_ID",
             "grok_api_key": "XAI_API_KEY",
             "anthropic_api_key": "ANTHROPIC_API_KEY",
+            "x_api_key": "X_API_KEY",
+            "x_api_secret": "X_API_SECRET",
+            "x_access_token": "X_ACCESS_TOKEN",
+            "x_access_secret": "X_ACCESS_SECRET",
+            "x_bearer_token": "X_BEARER_TOKEN",
         }
         for setting_key, env_var in mapping.items():
             val = (s.get(setting_key) or "").strip()
@@ -5920,15 +5925,28 @@ X_ACCOUNT_HANDLE = "AIwithRoz"
 
 
 def _x_credentials():
-    """Return the @AIwithRoz OAuth1 credentials from env, or None if incomplete."""
+    """Return the @AIwithRoz OAuth1 credentials, or None if incomplete.
+
+    Same resolution as the HeyGen key: a value saved in the API Keys dialog
+    (settings file) wins, then the process env / root .env. Read on every call,
+    so a save in the dialog takes effect without a restart."""
+    try:
+        settings = _load_scriptcraft_settings()
+    except Exception:
+        settings = {}
+
+    def _r(setting_key, env_var):
+        return ((settings.get(setting_key) or "").strip()
+                or (os.getenv(env_var) or "").strip())
+
     creds = {
-        "api_key": (os.getenv("X_API_KEY") or "").strip(),
-        "api_secret": (os.getenv("X_API_SECRET") or "").strip(),
-        "access_token": (os.getenv("X_ACCESS_TOKEN") or "").strip(),
-        "access_secret": (os.getenv("X_ACCESS_SECRET") or "").strip(),
+        "api_key": _r("x_api_key", "X_API_KEY"),
+        "api_secret": _r("x_api_secret", "X_API_SECRET"),
+        "access_token": _r("x_access_token", "X_ACCESS_TOKEN"),
+        "access_secret": _r("x_access_secret", "X_ACCESS_SECRET"),
     }
     if all(creds.values()):
-        creds["bearer_token"] = (os.getenv("X_BEARER_TOKEN") or "").strip() or None
+        creds["bearer_token"] = _r("x_bearer_token", "X_BEARER_TOKEN") or None
         return creds
     return None
 
@@ -5938,9 +5956,11 @@ def _x_client():
     creds = _x_credentials()
     if not creds:
         raise RuntimeError(
-            "X (@AIwithRoz) credentials are not configured. Add X_API_KEY, "
-            "X_API_SECRET, X_ACCESS_TOKEN, and X_ACCESS_SECRET to the root .env "
-            "(the app must have Read AND Write permission)."
+            "X (@AIwithRoz) credentials are not configured. Add X API Key, "
+            "X API Secret, X Access Token, and X Access Secret in the API Keys "
+            "dialog (🔑), or set X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, and "
+            "X_ACCESS_SECRET in the root .env (the X app must have Read AND "
+            "Write permission)."
         )
     try:
         import tweepy
@@ -9222,14 +9242,43 @@ def api_keys_get():
             "grok_api_key": "XAI_API_KEY",
             "anthropic_api_key": "ANTHROPIC_API_KEY",
         }
+        # X (@AIwithRoz) keys: never return the values, only a masked hint
+        # (last 4 chars) plus where the effective value comes from.
+        def _mask(val):
+            return ("\u2022" * 4 + val[-4:]) if len(val) >= 8 else ("\u2022" * 4 if val else "")
+
+        _x_map = {
+            "x_api_key": "X_API_KEY",
+            "x_api_secret": "X_API_SECRET",
+            "x_access_token": "X_ACCESS_TOKEN",
+            "x_access_secret": "X_ACCESS_SECRET",
+            "x_bearer_token": "X_BEARER_TOKEN",
+        }
         return jsonify({
             "success": True,
             "keys": {k: _v(k, e) for k, e in _map.items()},
             "sources": {k: _src(k, e) for k, e in _map.items()},
+            "x_keys": {
+                k: {"present": bool(_v(k, e)), "masked": _mask(_v(k, e)),
+                    "source": _src(k, e)}
+                for k, e in _x_map.items()
+            },
         })
     except Exception as e:
         logger.error(f"❌ Failed to load API keys: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _reload_x_env_fallback(env_var: str) -> None:
+    """After clearing a saved X key, restore the root .env value (if any) so
+    the env/.env fallback still applies without a restart."""
+    try:
+        from dotenv import dotenv_values
+        val = (dotenv_values(REPO_ROOT / ".env").get(env_var) or "").strip()
+        if val:
+            os.environ[env_var] = val
+    except Exception:
+        pass
 
 
 @app.route("/api/keys", methods=["POST"])
@@ -9245,7 +9294,30 @@ def api_keys_save():
             "grok_api_key": "XAI_API_KEY",
             "anthropic_api_key": "ANTHROPIC_API_KEY",
         }
+        x_mapping = {
+            "x_api_key": "X_API_KEY",
+            "x_api_secret": "X_API_SECRET",
+            "x_access_token": "X_ACCESS_TOKEN",
+            "x_access_secret": "X_ACCESS_SECRET",
+            "x_bearer_token": "X_BEARER_TOKEN",
+        }
         updated = []
+        # X keys: a blank field means "leave unchanged" (the dialog never
+        # receives the saved values); x_clear=true removes all saved X keys.
+        if data.get("x_clear"):
+            for setting_key, env_var in x_mapping.items():
+                if setting_key in settings:
+                    settings.pop(setting_key, None)
+                    os.environ.pop(env_var, None)
+                    _reload_x_env_fallback(env_var)
+                updated.append(setting_key)
+        else:
+            for setting_key, env_var in x_mapping.items():
+                val = (data.get(setting_key) or "").strip()
+                if val:
+                    settings[setting_key] = val
+                    os.environ[env_var] = val
+                    updated.append(setting_key)
         for setting_key, env_var in mapping.items():
             if setting_key in data:
                 val = (data.get(setting_key) or "").strip()
