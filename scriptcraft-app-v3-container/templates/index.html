@@ -3073,17 +3073,17 @@
                 </p>
 
                 <div style="margin-bottom:14px;">
-                    <label for="modalAnthropicApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_anthropic" class="key-src"></span><img src="{{ url_for('static', filename='claude_icon.png') }}" alt="Claude" onerror="this.replaceWith(document.createTextNode('✨'))" style="height:15px; width:auto; vertical-align:-2px;"> Claude API Key <span style="color:#64748b; font-weight:normal;">(ANTHROPIC_API_KEY — script writing, refine, ideas)</span></label>
+                    <label for="modalAnthropicApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_anthropic" class="key-src"></span><img src="{{ url_for('static', filename='claude_icon.png') }}" alt="Claude" onerror="this.replaceWith(document.createTextNode('✨'))" style="height:15px; width:auto; vertical-align:-2px;"> Claude API Key <span style="color:#64748b; font-weight:normal;">(ANTHROPIC_API_KEY — script writing, refine, ideas)</span> <a href="#" onclick="clearSavedKey('anthropic_api_key'); return false;" title="Remove the key saved in this dialog (.env value, if any, still applies)" style="color:#f87171; font-weight:normal; font-size:0.9em;">clear saved</a></label>
                     <input type="password" id="modalAnthropicApiKey" autocomplete="off" placeholder="sk-ant-..." style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
                 </div>
 
                 <div style="margin-bottom:14px;">
-                    <label for="modalGoogleApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_google" class="key-src"></span>🟢 Google API Key <span style="color:#64748b; font-weight:normal;">(GOOGLE_API_KEY — Gemini / thumbnails / B-roll images)</span></label>
+                    <label for="modalGoogleApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_google" class="key-src"></span>🟢 Google API Key <span style="color:#64748b; font-weight:normal;">(GOOGLE_API_KEY — Gemini / thumbnails / B-roll images)</span> <a href="#" onclick="clearSavedKey('google_api_key'); return false;" title="Remove the key saved in this dialog (.env value, if any, still applies)" style="color:#f87171; font-weight:normal; font-size:0.9em;">clear saved</a></label>
                     <input type="password" id="modalGoogleApiKey" autocomplete="off" placeholder="AIza..." style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
                 </div>
 
                 <div style="margin-bottom:14px;">
-                    <label for="modalHeygenApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_heygen" class="key-src"></span><img src="{{ url_for('static', filename='heygen_icon.png') }}" alt="HeyGen" onerror="this.replaceWith(document.createTextNode('🎬'))" style="height:15px; width:auto; vertical-align:-2px;"> HeyGen API Key <span style="color:#64748b; font-weight:normal;">(HEYGEN_API_KEY)</span></label>
+                    <label for="modalHeygenApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_heygen" class="key-src"></span><img src="{{ url_for('static', filename='heygen_icon.png') }}" alt="HeyGen" onerror="this.replaceWith(document.createTextNode('🎬'))" style="height:15px; width:auto; vertical-align:-2px;"> HeyGen API Key <span style="color:#64748b; font-weight:normal;">(HEYGEN_API_KEY)</span> <a href="#" onclick="clearSavedKey('heygen_api_key'); return false;" title="Remove the key saved in this dialog (.env value, if any, still applies)" style="color:#f87171; font-weight:normal; font-size:0.9em;">clear saved</a></label>
                     <input type="password" id="modalHeygenApiKey" autocomplete="off" placeholder="sk_V2_..." style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
                 </div>
 
@@ -3113,7 +3113,7 @@
                 </div>
 
                 <div style="margin-bottom:18px;">
-                    <label for="modalGrokApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_grok" class="key-src"></span><img src="{{ url_for('static', filename='grok_icon.png') }}" alt="Grok" onerror="this.replaceWith(document.createTextNode('🤖'))" style="height:15px; width:auto; vertical-align:-2px;"> Grok API Key <span style="color:#64748b; font-weight:normal;">(XAI_API_KEY)</span></label>
+                    <label for="modalGrokApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_grok" class="key-src"></span><img src="{{ url_for('static', filename='grok_icon.png') }}" alt="Grok" onerror="this.replaceWith(document.createTextNode('🤖'))" style="height:15px; width:auto; vertical-align:-2px;"> Grok API Key <span style="color:#64748b; font-weight:normal;">(XAI_API_KEY)</span> <a href="#" onclick="clearSavedKey('grok_api_key'); return false;" title="Remove the key saved in this dialog (.env value, if any, still applies)" style="color:#f87171; font-weight:normal; font-size:0.9em;">clear saved</a></label>
                     <input type="password" id="modalGrokApiKey" autocomplete="off" placeholder="xai-..." style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
                 </div>
 
@@ -8985,13 +8985,8 @@ Thank you for watching!`;
                 return false;
             }
 
-            try {
-                localStorage.setItem('scriptcraft_grok_api_key', key);
-            } catch (err) {
-                if (!silent) {
-                    alert('❌ Could not save Grok API key locally: ' + err.message);
-                }
-            }
+            // The page only holds a masked hint of a saved key: nothing to save.
+            if (key.startsWith('\u2022\u2022\u2022\u2022')) return true;
 
             try {
                 const response = await fetch('/api/grok/key', {
@@ -9032,17 +9027,8 @@ Thank you for watching!`;
             toggleScriptInput(); // Initialize the UI based on Script checkbox state
             updateScriptInputDurationBadge(); // Initial HeyGen duration estimate
 
-            // Load persisted Grok API key
-            try {
-                const grokKeyInput = document.getElementById('grokApiKey');
-                const savedGrokKey = localStorage.getItem('scriptcraft_grok_api_key') || '';
-                // Only fall back to localStorage if server didn't already populate the field
-                if (grokKeyInput && !grokKeyInput.value && savedGrokKey) {
-                    grokKeyInput.value = savedGrokKey;
-                }
-            } catch (err) {
-                console.warn('Could not load Grok API key from localStorage:', err);
-            }
+            // Grok key is kept on the server only; drop any old browser copy.
+            try { localStorage.removeItem('scriptcraft_grok_api_key'); } catch (err) {}
 
             // Load persisted Grok API key from server settings (preferred)
             fetch('/api/grok/key')
@@ -9051,8 +9037,7 @@ Thank you for watching!`;
                     if (data && data.success && data.api_key) {
                         const grokKeyInput = document.getElementById('grokApiKey');
                         if (grokKeyInput) {
-                            grokKeyInput.value = data.api_key;
-                            localStorage.setItem('scriptcraft_grok_api_key', data.api_key);
+                            grokKeyInput.value = data.api_key;  // masked hint
                         }
                     }
                 })
@@ -10630,20 +10615,27 @@ Thank you for watching!`;
             const toggle = document.getElementById('apiKeysShowToggle');
             if (toggle) toggle.checked = false;
             toggleApiKeysVisible(false);
-            // Pre-fill from hidden inputs as a quick default
-            document.getElementById('modalGoogleApiKey').value = (document.getElementById('googleApiKey')?.value || '').trim();
-            document.getElementById('modalHeygenApiKey').value = (document.getElementById('heygenApiKey')?.value || '').trim();
-            document.getElementById('modalGrokApiKey').value   = (document.getElementById('grokApiKey')?.value   || '').trim();
+            // Fields start blank: the server only ever sends masked hints
+            // (shown as placeholders). Blank on save = keep the current key.
+            ['modalAnthropicApiKey', 'modalGoogleApiKey', 'modalHeygenApiKey', 'modalGrokApiKey'].forEach(id => {
+                const el = document.getElementById(id); if (el) el.value = '';
+            });
             modal.style.display = 'flex';
             // Then refresh from server (authoritative)
             fetch('/api/keys')
                 .then(r => r.json())
                 .then(data => {
                     if (data && data.success && data.keys) {
-                        document.getElementById('modalAnthropicApiKey').value = data.keys.anthropic_api_key || '';
-                        document.getElementById('modalGoogleApiKey').value = data.keys.google_api_key || '';
-                        document.getElementById('modalHeygenApiKey').value = data.keys.heygen_api_key || '';
-                        document.getElementById('modalGrokApiKey').value   = data.keys.grok_api_key   || '';
+                        // Server returns masked hints only (last 4 chars), never values.
+                        const present = data.present || {};
+                        [['modalAnthropicApiKey','anthropic_api_key'],['modalGoogleApiKey','google_api_key'],['modalHeygenApiKey','heygen_api_key'],['modalGrokApiKey','grok_api_key']].forEach(([id, key]) => {
+                            const el = document.getElementById(id);
+                            if (!el) return;
+                            if (!el.dataset.origPlaceholder) el.dataset.origPlaceholder = el.placeholder || '';
+                            const masked = data.keys[key] || '';
+                            el.value = '';
+                            el.placeholder = (present[key] || masked) ? ('saved ' + masked + ' (leave blank to keep)') : (el.dataset.origPlaceholder || 'not set');
+                        });
                         // Show where each effective value comes from.
                         const srcMap = data.sources || {};
                         const setSrc = (id, src) => {
@@ -10755,12 +10747,14 @@ Thank you for watching!`;
 
         async function saveApiKeysModal() {
             const status = document.getElementById('apiKeysModalStatus');
-            const payload = {
-                anthropic_api_key: document.getElementById('modalAnthropicApiKey').value.trim(),
-                google_api_key: document.getElementById('modalGoogleApiKey').value.trim(),
-                heygen_api_key: document.getElementById('modalHeygenApiKey').value.trim(),
-                grok_api_key:   document.getElementById('modalGrokApiKey').value.trim(),
-            };
+            // Only send fields the user typed (blank = keep current), and
+            // never echo a masked hint back as if it were a key.
+            const payload = {};
+            [['modalAnthropicApiKey','anthropic_api_key'],['modalGoogleApiKey','google_api_key'],['modalHeygenApiKey','heygen_api_key'],['modalGrokApiKey','grok_api_key']].forEach(([id, key]) => {
+                const el = document.getElementById(id);
+                const v = el ? el.value.trim() : '';
+                if (v && !v.startsWith('\u2022\u2022\u2022\u2022')) payload[key] = v;
+            });
             // X keys: only send fields the user typed (blank = keep current).
             [['modalXApiKey','x_api_key'],['modalXApiSecret','x_api_secret'],['modalXAccessToken','x_access_token'],['modalXAccessSecret','x_access_secret'],['modalXBearerToken','x_bearer_token']].forEach(([id, key]) => {
                 const el = document.getElementById(id);
@@ -10781,10 +10775,13 @@ Thank you for watching!`;
                     status.textContent = '❌ ' + (data.error || ('Save failed (' + resp.status + ')'));
                     return;
                 }
-                // Sync hidden inputs so existing JS sees the new values immediately
-                const g = document.getElementById('googleApiKey'); if (g) g.value = payload.google_api_key;
-                const h = document.getElementById('heygenApiKey'); if (h) h.value = payload.heygen_api_key;
-                const k = document.getElementById('grokApiKey');   if (k) k.value = payload.grok_api_key;
+                // Sync hidden inputs with masked hints so existing "is a key
+                // set?" checks pass; the server swaps in the real key.
+                const _mask = v => v.length >= 8 ? '\u2022\u2022\u2022\u2022' + v.slice(-4) : '\u2022\u2022\u2022\u2022';
+                [['googleApiKey','google_api_key'],['heygenApiKey','heygen_api_key'],['grokApiKey','grok_api_key']].forEach(([id, key]) => {
+                    const el = document.getElementById(id);
+                    if (el && payload[key]) el.value = _mask(payload[key]);
+                });
                 status.style.color = '#34d399';
                 status.textContent = '✅ Saved.';
                 setTimeout(closeApiKeysModal, 700);
@@ -10807,6 +10804,36 @@ Thank you for watching!`;
                 status.style.color = (resp.ok && data.success) ? '#34d399' : '#f87171';
                 status.textContent = (resp.ok && data.success) ? '✅ Saved X keys cleared.' : ('❌ ' + (data.error || 'Clear failed'));
                 if (resp.ok && data.success) openApiKeysModal();
+            } catch (err) {
+                status.style.color = '#f87171';
+                status.textContent = '❌ ' + err.message;
+            }
+        }
+
+        async function clearSavedKey(key) {
+            if (!confirm('Remove this saved key? (.env value, if any, will still apply.)')) return;
+            const status = document.getElementById('apiKeysModalStatus');
+            try {
+                const resp = await fetch('/api/keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ clear: [key] }),
+                });
+                const data = await resp.json();
+                status.style.color = (resp.ok && data.success) ? '#34d399' : '#f87171';
+                status.textContent = (resp.ok && data.success) ? '✅ Saved key cleared.' : ('❌ ' + (data.error || 'Clear failed'));
+                if (resp.ok && data.success) {
+                    // Refresh the page's masked hints (an .env key may still apply).
+                    try {
+                        const k = await (await fetch('/api/keys')).json();
+                        const hidden = { google_api_key: 'googleApiKey', heygen_api_key: 'heygenApiKey', grok_api_key: 'grokApiKey' };
+                        if (k && k.success && hidden[key]) {
+                            const el = document.getElementById(hidden[key]);
+                            if (el) el.value = (k.keys || {})[key] || '';
+                        }
+                    } catch (_) {}
+                    openApiKeysModal();
+                }
             } catch (err) {
                 status.style.color = '#f87171';
                 status.textContent = '❌ ' + err.message;
