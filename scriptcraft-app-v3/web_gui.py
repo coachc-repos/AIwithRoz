@@ -110,6 +110,11 @@ def _hydrate_env_from_settings() -> None:
             "heygen_voice_id": "HEYGEN_VOICE_ID",
             "grok_api_key": "XAI_API_KEY",
             "anthropic_api_key": "ANTHROPIC_API_KEY",
+            "x_api_key": "X_API_KEY",
+            "x_api_secret": "X_API_SECRET",
+            "x_access_token": "X_ACCESS_TOKEN",
+            "x_access_secret": "X_ACCESS_SECRET",
+            "x_bearer_token": "X_BEARER_TOKEN",
         }
         for setting_key, env_var in mapping.items():
             val = (s.get(setting_key) or "").strip()
@@ -120,6 +125,40 @@ def _hydrate_env_from_settings() -> None:
 
 
 _hydrate_env_from_settings()
+
+
+# ---- API key masking ----
+# The browser never gets a full API key. Pages and /api/keys return a masked
+# hint (4 dots + last 4 chars); routes that receive a key from the browser
+# swap a blank or masked value for the saved/env key on the server.
+_KEY_MASK_PREFIX = "\u2022" * 4
+
+
+def _mask_key(val: str) -> str:
+    val = (val or "").strip()
+    if not val:
+        return ""
+    return (_KEY_MASK_PREFIX + val[-4:]) if len(val) >= 8 else _KEY_MASK_PREFIX
+
+
+def _is_masked_key(val: str) -> bool:
+    return (val or "").strip().startswith(_KEY_MASK_PREFIX)
+
+
+def _saved_or_env_key(setting_key: str, env_var: str) -> str:
+    try:
+        saved = (_load_scriptcraft_settings().get(setting_key) or "").strip()
+    except Exception:
+        saved = ""
+    return saved or os.getenv(env_var, "").strip()
+
+
+def _effective_key(provided, setting_key: str, env_var: str) -> str:
+    """Key the browser sent, unless blank or masked; then the saved/env key."""
+    val = (provided or "").strip()
+    if not val or _is_masked_key(val):
+        return _saved_or_env_key(setting_key, env_var)
+    return val
 
 
 def _get_output_parent_dir() -> Path:
@@ -4610,10 +4649,10 @@ def index():
         version=VERSION,
         agent_mode=(os.environ.get("FOUNDRY_API_MODE") or "v2").lower(),
         container_mode=bool(app.config.get("CONTAINER_MODE", False)),
-        saved_grok_api_key=_resolve("grok_api_key", "XAI_API_KEY"),
-        saved_heygen_api_key=_resolve("heygen_api_key", "HEYGEN_API_KEY"),
+        saved_grok_api_key=_mask_key(_resolve("grok_api_key", "XAI_API_KEY")),
+        saved_heygen_api_key=_mask_key(_resolve("heygen_api_key", "HEYGEN_API_KEY")),
         saved_heygen_voice_id=_resolve("heygen_voice_id", "HEYGEN_VOICE_ID"),
-        saved_google_api_key=_resolve("google_api_key", "GOOGLE_API_KEY"),
+        saved_google_api_key=_mask_key(_resolve("google_api_key", "GOOGLE_API_KEY")),
     )
 
 
@@ -5920,15 +5959,28 @@ X_ACCOUNT_HANDLE = "AIwithRoz"
 
 
 def _x_credentials():
-    """Return the @AIwithRoz OAuth1 credentials from env, or None if incomplete."""
+    """Return the @AIwithRoz OAuth1 credentials, or None if incomplete.
+
+    Same resolution as the HeyGen key: a value saved in the API Keys dialog
+    (settings file) wins, then the process env / root .env. Read on every call,
+    so a save in the dialog takes effect without a restart."""
+    try:
+        settings = _load_scriptcraft_settings()
+    except Exception:
+        settings = {}
+
+    def _r(setting_key, env_var):
+        return ((settings.get(setting_key) or "").strip()
+                or (os.getenv(env_var) or "").strip())
+
     creds = {
-        "api_key": (os.getenv("X_API_KEY") or "").strip(),
-        "api_secret": (os.getenv("X_API_SECRET") or "").strip(),
-        "access_token": (os.getenv("X_ACCESS_TOKEN") or "").strip(),
-        "access_secret": (os.getenv("X_ACCESS_SECRET") or "").strip(),
+        "api_key": _r("x_api_key", "X_API_KEY"),
+        "api_secret": _r("x_api_secret", "X_API_SECRET"),
+        "access_token": _r("x_access_token", "X_ACCESS_TOKEN"),
+        "access_secret": _r("x_access_secret", "X_ACCESS_SECRET"),
     }
     if all(creds.values()):
-        creds["bearer_token"] = (os.getenv("X_BEARER_TOKEN") or "").strip() or None
+        creds["bearer_token"] = _r("x_bearer_token", "X_BEARER_TOKEN") or None
         return creds
     return None
 
@@ -5938,9 +5990,11 @@ def _x_client():
     creds = _x_credentials()
     if not creds:
         raise RuntimeError(
-            "X (@AIwithRoz) credentials are not configured. Add X_API_KEY, "
-            "X_API_SECRET, X_ACCESS_TOKEN, and X_ACCESS_SECRET to the root .env "
-            "(the app must have Read AND Write permission)."
+            "X (@AIwithRoz) credentials are not configured. Add X API Key, "
+            "X API Secret, X Access Token, and X Access Secret in the API Keys "
+            "dialog (🔑), or set X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, and "
+            "X_ACCESS_SECRET in the root .env (the X app must have Read AND "
+            "Write permission)."
         )
     try:
         import tweepy
@@ -7354,10 +7408,10 @@ def test_capture_page():
                     "index.html",
                     version=VERSION,
                     agent_mode=(os.environ.get("FOUNDRY_API_MODE") or "v2").lower(),
-                    saved_grok_api_key=_resolve("grok_api_key", "XAI_API_KEY"),
-                    saved_heygen_api_key=_resolve("heygen_api_key", "HEYGEN_API_KEY"),
+                    saved_grok_api_key=_mask_key(_resolve("grok_api_key", "XAI_API_KEY")),
+                    saved_heygen_api_key=_mask_key(_resolve("heygen_api_key", "HEYGEN_API_KEY")),
                     saved_heygen_voice_id=_resolve("heygen_voice_id", "HEYGEN_VOICE_ID"),
-                    saved_google_api_key=_resolve("google_api_key", "GOOGLE_API_KEY"),
+                    saved_google_api_key=_mask_key(_resolve("google_api_key", "GOOGLE_API_KEY")),
                 ))
                 resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
                 resp.headers['Pragma'] = 'no-cache'
@@ -7652,9 +7706,9 @@ def create():
 
     # Get HeyGen parameters
     heygen_template_id = data.get("heygen_template_id", "")
-    heygen_api_key = data.get("heygen_api_key", "")
+    heygen_api_key = _effective_key(data.get("heygen_api_key", ""), "heygen_api_key", "HEYGEN_API_KEY")
     heygen_voice_id = data.get("heygen_voice_id", "")
-    grok_api_key = data.get("grok_api_key", "")
+    grok_api_key = _effective_key(data.get("grok_api_key", ""), "grok_api_key", "XAI_API_KEY")
 
     # If "All" is checked, enable everything
     if checkboxes.get("all", False):
@@ -7973,9 +8027,9 @@ def process_script():
         tone = data.get("tone", "informative")
         checkboxes = data.get("checkboxes", {})
         heygen_template_id = data.get("heygen_template_id", "")
-        heygen_api_key = data.get("heygen_api_key", "")
+        heygen_api_key = _effective_key(data.get("heygen_api_key", ""), "heygen_api_key", "HEYGEN_API_KEY")
         heygen_voice_id = data.get("heygen_voice_id", "")
-        grok_api_key = data.get("grok_api_key", "")
+        grok_api_key = _effective_key(data.get("grok_api_key", ""), "grok_api_key", "XAI_API_KEY")
         # Optional pre-loaded artifacts that let the workflow skip the
         # corresponding agents (Feature: Load existing YouTube details / B-roll table).
         youtube_details_override = (
@@ -8587,7 +8641,7 @@ def heygen_list_templates():
     """Proxy endpoint to fetch HeyGen templates via GET /v3/templates (avoids CORS)."""
     try:
         data = request.get_json()
-        api_key = data.get("api_key", "") if data else ""
+        api_key = _effective_key(data.get("api_key", "") if data else "", "heygen_api_key", "HEYGEN_API_KEY")
         if not api_key:
             return jsonify({"error": "No API key provided"}), 400
 
@@ -8614,7 +8668,7 @@ def heygen_template_details(template_id):
     variables (no second list call needed)."""
     try:
         data = request.get_json()
-        api_key = data.get("api_key", "") if data else ""
+        api_key = _effective_key(data.get("api_key", "") if data else "", "heygen_api_key", "HEYGEN_API_KEY")
         if not api_key:
             return jsonify({"error": "No API key provided"}), 400
 
@@ -8645,7 +8699,7 @@ def heygen_list_voices():
     Fetches private (cloned) voices first, then the public library."""
     try:
         data = request.get_json()
-        api_key = data.get("api_key", "") if data else ""
+        api_key = _effective_key(data.get("api_key", "") if data else "", "heygen_api_key", "HEYGEN_API_KEY")
         if not api_key:
             return jsonify({"error": "No API key provided"}), 400
 
@@ -8675,7 +8729,7 @@ def heygen_test_generate():
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
-        api_key = data.get("api_key", "")
+        api_key = _effective_key(data.get("api_key", ""), "heygen_api_key", "HEYGEN_API_KEY")
         template_id = data.get("template_id", "")
         request_body = _heygen_body_to_v3(data.get("request_body", {}))
 
@@ -8736,8 +8790,7 @@ def grok_test_video_generate():
 
         duration = max(1, min(15, duration))
 
-        xai_api_key = (data.get("api_key") or "").strip(
-        ) or os.getenv("XAI_API_KEY", "").strip()
+        xai_api_key = _effective_key(data.get("api_key"), "grok_api_key", "XAI_API_KEY")
         if not xai_api_key or xai_api_key == "your-xai-api-key-here":
             return jsonify({
                 "success": False,
@@ -9222,14 +9275,45 @@ def api_keys_get():
             "grok_api_key": "XAI_API_KEY",
             "anthropic_api_key": "ANTHROPIC_API_KEY",
         }
+        # X (@AIwithRoz) keys: never return the values, only a masked hint
+        # (last 4 chars) plus where the effective value comes from.
+        def _mask(val):
+            return ("\u2022" * 4 + val[-4:]) if len(val) >= 8 else ("\u2022" * 4 if val else "")
+
+        _x_map = {
+            "x_api_key": "X_API_KEY",
+            "x_api_secret": "X_API_SECRET",
+            "x_access_token": "X_ACCESS_TOKEN",
+            "x_access_secret": "X_ACCESS_SECRET",
+            "x_bearer_token": "X_BEARER_TOKEN",
+        }
         return jsonify({
             "success": True,
-            "keys": {k: _v(k, e) for k, e in _map.items()},
+            # Masked hints only (4 dots + last 4 chars), same as the X keys.
+            "keys": {k: _mask_key(_v(k, e)) for k, e in _map.items()},
+            "present": {k: bool(_v(k, e)) for k, e in _map.items()},
             "sources": {k: _src(k, e) for k, e in _map.items()},
+            "x_keys": {
+                k: {"present": bool(_v(k, e)), "masked": _mask(_v(k, e)),
+                    "source": _src(k, e)}
+                for k, e in _x_map.items()
+            },
         })
     except Exception as e:
         logger.error(f"❌ Failed to load API keys: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _reload_x_env_fallback(env_var: str) -> None:
+    """After clearing a saved key (X or the others), restore the root .env value (if any) so
+    the env/.env fallback still applies without a restart."""
+    try:
+        from dotenv import dotenv_values
+        val = (dotenv_values(REPO_ROOT / ".env").get(env_var) or "").strip()
+        if val:
+            os.environ[env_var] = val
+    except Exception:
+        pass
 
 
 @app.route("/api/keys", methods=["POST"])
@@ -9245,20 +9329,53 @@ def api_keys_save():
             "grok_api_key": "XAI_API_KEY",
             "anthropic_api_key": "ANTHROPIC_API_KEY",
         }
+        x_mapping = {
+            "x_api_key": "X_API_KEY",
+            "x_api_secret": "X_API_SECRET",
+            "x_access_token": "X_ACCESS_TOKEN",
+            "x_access_secret": "X_ACCESS_SECRET",
+            "x_bearer_token": "X_BEARER_TOKEN",
+        }
         updated = []
-        for setting_key, env_var in mapping.items():
-            if setting_key in data:
+        # X keys: a blank field means "leave unchanged" (the dialog never
+        # receives the saved values); x_clear=true removes all saved X keys.
+        if data.get("x_clear"):
+            for setting_key, env_var in x_mapping.items():
+                if setting_key in settings:
+                    settings.pop(setting_key, None)
+                    os.environ.pop(env_var, None)
+                    _reload_x_env_fallback(env_var)
+                updated.append(setting_key)
+        else:
+            for setting_key, env_var in x_mapping.items():
                 val = (data.get(setting_key) or "").strip()
                 if val:
                     settings[setting_key] = val
                     os.environ[env_var] = val
-                else:
+                    updated.append(setting_key)
+        # Google / HeyGen / Grok / Claude keys: a blank or masked value means
+        # "leave unchanged" (the dialog only gets masked hints). To remove a
+        # saved key, list it in "clear": ["heygen_api_key", ...].
+        to_clear = data.get("clear") or []
+        if isinstance(to_clear, str):
+            to_clear = [to_clear]
+        for setting_key, env_var in mapping.items():
+            if setting_key in to_clear:
+                if setting_key in settings:
                     settings.pop(setting_key, None)
                     os.environ.pop(env_var, None)
+                    _reload_x_env_fallback(env_var)
+                updated.append(setting_key)
+                continue
+            val = (data.get(setting_key) or "").strip()
+            if val and not _is_masked_key(val):
+                settings[setting_key] = val
+                os.environ[env_var] = val
                 updated.append(setting_key)
 
         if not updated:
-            return jsonify({"success": False, "error": "No keys provided"}), 400
+            # Nothing typed (all blank / masked): nothing to change.
+            return jsonify({"success": True, "updated": [], "unchanged": True})
 
         if not _save_scriptcraft_settings(settings):
             return jsonify({"success": False, "error": "Could not save settings"}), 500
@@ -9658,7 +9775,8 @@ def grok_get_saved_key():
     try:
         settings = _load_scriptcraft_settings()
         key = (settings.get("grok_api_key") or "").strip()
-        return jsonify({"success": True, "api_key": key})
+        # Masked hint only; the full key never goes to the browser.
+        return jsonify({"success": True, "api_key": _mask_key(key)})
     except Exception as e:
         logger.error(f"❌ Failed to load saved Grok key: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -10092,6 +10210,9 @@ def grok_save_key():
         api_key = (data.get("api_key") or "").strip()
         if not api_key:
             return jsonify({"success": False, "error": "api_key is required"}), 400
+        if _is_masked_key(api_key):
+            # The browser only holds the masked hint: nothing to change.
+            return jsonify({"success": True, "unchanged": True})
 
         settings = _load_scriptcraft_settings()
         settings["grok_api_key"] = api_key
@@ -10380,8 +10501,7 @@ def grok_generate_selected_videos():
     try:
         data = request.get_json() or {}
         selected_rows = data.get("selected_rows") or []
-        api_key = (data.get("api_key") or "").strip(
-        ) or os.getenv("XAI_API_KEY", "").strip()
+        api_key = _effective_key(data.get("api_key"), "grok_api_key", "XAI_API_KEY")
         script_title = (data.get("script_title") or "").strip()
         # Grok videos are tied to the permanent Script-ID so they accumulate
         # across every processing version of the script.
@@ -12905,7 +13025,7 @@ def check_video_status():
     try:
         data = request.json
         video_id = data.get("video_id", "")
-        api_key = data.get("api_key", "")
+        api_key = _effective_key(data.get("api_key", ""), "heygen_api_key", "HEYGEN_API_KEY")
 
         if not video_id:
             return jsonify({
