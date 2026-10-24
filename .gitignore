@@ -217,3 +217,16 @@ credentials.json
 scriptcraft-app/broll_markers_*.edl
 .pexels_env
 scriptcraft-app/scriptcraft-enhanced-debug-package/.env
+
+# CI test suite and contributor docs.
+# The rules above ignore tests/, test_*.py, *.md, and *.txt so static-web
+# deploys stay small. These exceptions put the automated tests, the agent
+# instructions, and the dev requirements back under version control.
+# Only the Python files directly in tests/ are re-included, so __pycache__
+# under tests/ stays ignored.
+!tests/
+!tests/*.py
+!AGENTS.md
+!.github/
+!.github/**
+!requirements-dev.txt
