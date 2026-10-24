@@ -1,0 +1,6 @@
+# Dependencies for the local and CI test suite only.
+# The app's runtime packages (Azure, HeyGen, Gemini, Resolve) are not
+# installed here. Tests cover pure helpers and the Flask app in-process.
+pytest>=8
+flask>=3
+requests>=2.32

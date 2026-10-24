@@ -95,6 +95,9 @@ When working in [davinci_resolve_api.py](scriptcraft-app-v2/davinci_resolve_api.
 python console_launcher_module.py
 ```
 
+### 9. **Bug fixes are test-first**
+Follow [AGENTS.md](AGENTS.md). For every bug fix, write a test that reproduces the bug and fails, then make the fix, then confirm that test passes and `python -m pytest` stays green. CI runs that same suite on every push and pull request. Do not call live Azure, HeyGen, Gemini, Grok, Pexels, X, or DaVinci Resolve from tests; those need keys or a local app and are not part of CI.
+
 ---
 
 ## 🔧 Development Workflow
