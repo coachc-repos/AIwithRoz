@@ -38,14 +38,31 @@ _GOLDEN_REF_PATH = os.path.join(
 )
 
 
-def load_golden_reference(max_chars: int = 16000) -> str:
+def load_golden_reference(max_chars: int = 32000) -> str:
     """Return the golden reference script (HTML comment header stripped),
-    trimmed to max_chars. Empty string if the file is missing."""
+    trimmed to max_chars. Empty string if the file is missing. The default
+    holds the whole current reference, trailing sections included."""
     try:
         with open(_GOLDEN_REF_PATH, "r", encoding="utf-8") as f:
             txt = f.read()
         txt = re.sub(r"(?s)^\s*<!--.*?-->\s*", "", txt).strip()
         return txt[:max_chars]
+    except Exception:
+        return ""
+
+
+# What the channel's own analytics show works: topics, titles, thumbnails, and
+# the hook and retention mechanics. Shared by ideas, briefs, the writers, and
+# the Title Picker.
+_PLAYBOOK_PATH = os.path.join(os.path.dirname(_GOLDEN_REF_PATH), "channel_playbook.md")
+
+
+def load_channel_playbook() -> str:
+    """The channel playbook (HTML comment header stripped), or '' if missing."""
+    try:
+        with open(_PLAYBOOK_PATH, "r", encoding="utf-8") as f:
+            txt = f.read()
+        return re.sub(r"(?s)^\s*<!--.*?-->\s*", "", txt).strip()
     except Exception:
         return ""
 
@@ -147,15 +164,25 @@ def build_pro_user_message(title: str, brief: str = "") -> str:
     ref_block = ""
     if golden:
         ref_block = (
-            "\n\nGOLDEN REFERENCE — the approved example of a great script. "
-            "MATCH its shape and spoken voice EXACTLY: the FINAL HOOK, the "
-            "'Heading: Chapter N -' lines, the alternating [PRODUCTION BEGIN] / "
-            "[GROK IMAGINE / RESOLVE] / [PRODUCTION END] blocks, the VERIFY "
-            "block for any legal or numeric claim, the [PROMPT OVERLAY] cheat "
-            "sheet in the final chapter, and the trailing '=== …===' reference "
-            "sections. Do NOT copy its topic, its tools, or its wording — only "
-            "its structure, conventions, and voice.\n\n"
+            "\n\nGOLDEN REFERENCE — the channel's best-performing script, the "
+            "approved example of a great one. MATCH its provocative stance, its "
+            "hook and open loop, its numbered structure, its verdict in the final "
+            "chapter, and its spoken voice EXACTLY: the FINAL HOOK, the "
+            "'Heading: Chapter N -' lines, the [PRODUCTION BEGIN] / [PRODUCTION "
+            "END] blocks (cold open, source visuals, Grok Imagine prompts), the "
+            "VERIFY notes for any legal or numeric claim, the [PROMPT OVERLAY] "
+            "in the final chapter, and the trailing '=== …===' sections. Do NOT "
+            "copy its topic, its people, or its wording — only its structure, "
+            "conventions, energy, and voice.\n\n"
             f"<golden_reference>\n{golden}\n</golden_reference>"
+        )
+    playbook = load_channel_playbook()
+    if playbook:
+        ref_block += (
+            "\n\nCHANNEL PLAYBOOK — what this channel's own analytics show earns "
+            "clicks and keeps viewers watching. Apply it to the stance, the hook, "
+            "the structure, the chapter closes, and the packaging:\n\n"
+            f"<channel_playbook>\n{playbook}\n</channel_playbook>"
         )
     # v3: the date, so "a real signal from today" means today. The brief (now
     # written with web search) carries the current facts; anything already

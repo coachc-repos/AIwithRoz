@@ -22,7 +22,11 @@ redeployed or rolled back to.
 * **Disabled in the cloud** (HTTP 503, see `container_app.py`): everything the
   v2 container disables (DaVinci Resolve, local Whisper, native file pickers,
   local downloads, the thumbnail test tool), plus Render Audio from a local
-  video file.
+  video file and 📊 Analytics. Its Google sign-in opens a browser on the
+  machine running the app and keeps the token in `~/.scriptcraft`, so the
+  image does not ship `youtube_analytics.py`.
+* **Channel playbook:** `agent_instructions/channel_playbook.md` ships next to
+  the golden reference, and the same `.dockerignore` exception covers it.
 
 ## Deploy
 

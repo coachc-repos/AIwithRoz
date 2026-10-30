@@ -998,6 +998,137 @@ def _():
     return "5.6 MB thumbnail accepted; a noisy 2K PNG compresses under 2 MB for the fallback; size errors told apart from others"
 
 
+
+@check("Golden reference and channel playbook: the Musk script and the analytics lessons reach the writers, ideas, briefs, and titles")
+def _():
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+    from linedrive_azure.agents import pro_script_writer as psw
+
+    golden = psw.load_golden_reference()
+    assert golden.startswith("FINAL HOOK:") and "Musk" in golden and "Heading: Chapter 7" in golden
+    assert "=== FINAL PACKAGING" in golden and "changes per Roz" not in golden   # revision log left out
+    playbook = psw.load_channel_playbook()
+    assert "Musk Will Win the AI Race - Here is Why" in playbook and "Provocative, not false" in playbook
+    msg = psw.build_pro_user_message("Test title", "Test brief")
+    assert "<golden_reference>" in msg and "<channel_playbook>" in msg and golden[-200:] in msg   # whole reference, not cut
+    real_recent = web_gui._recent_scripts_for_style_context
+    web_gui._recent_scripts_for_style_context = lambda **kw: []      # no cloud lookups offline
+    try:
+        style = web_gui._build_style_context_block()
+    finally:
+        web_gui._recent_scripts_for_style_context = real_recent
+    assert "CHANNEL PLAYBOOK" in style and "GOLDEN REFERENCE" in style
+    assert "Musk Will Win the AI Race" in web_gui._TITLE_SYSTEM and "provocative" in web_gui._TITLE_SYSTEM
+    assert web_gui._GOLDEN_CLOUD_VID == "v2" and "Musk Will Win" in web_gui._GOLDEN_CLOUD_TITLE
+    src = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    ideas = src[src.index("def api_ideas_generate("):src.index("def _gen_claude():")]
+    assert "provocative, opinionated videos" in ideas and "'The Power Play'" in ideas and "+ _channel_playbook_block()" in ideas
+    assert "punchy, optimistic" not in ideas
+    brief = src[src.index("You are a creative director writing a production brief"):src.index("logger.info(\"✍️ Brief requested")]
+    assert "provocative, opinionated YouTube video" in brief and "_channel_playbook_block()" in brief and "energizing, optimistic" not in brief
+    return f"golden reference {len(golden):,} chars embedded whole; playbook in Pro, style context, ideas, briefs, and titles"
+
+
+@check("Analytics: per-video report, retention drops, Studio impressions/CTR import, routes, and the toolbar dialog")
+def _():
+    import io as _io
+    import json
+    import tempfile
+    import types as _types
+    import zipfile
+    from datetime import date
+    from pathlib import Path
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+    import youtube_analytics as ya
+
+    assert ya.window("28", date(2026, 10, 29)) == ("2026-10-01", "2026-10-28")
+    assert ya.window("lifetime", date(2026, 10, 29))[0] == "2005-04-01"
+    assert ya._iso_duration_seconds("PT8M44S") == 524 and ya._iso_duration_seconds("PT1H2M3S") == 3723
+
+    class Exec:
+        def __init__(self, v): self.v = v
+        def execute(self): return self.v
+    calls = {}
+    report = {"columnHeaders": [{"name": n} for n in ["video"] + ya.VIDEO_METRICS],
+              "rows": [["yHyhG6nHsKs", 903, 2574, 171, 32.6, 40, 5, 3, 12],
+                       ["k09qNviJ4oM", 154, 438, 175, 28.2, 9, 1, 0, 2]]}
+    retention = {"columnHeaders": [{"name": "elapsedVideoTimeRatio"}, {"name": "audienceWatchRatio"}, {"name": "relativeRetentionPerformance"}],
+                 "rows": [[0.01, 1.0, 0.5], [0.03, 0.7, 0.5], [0.1, 0.6, 0.55], [0.2, 0.45, 0.4], [0.3, 0.43, 0.4], [0.5, 0.30, 0.3]]}
+    def query(**kw):
+        calls.setdefault("q", []).append(kw)
+        return Exec(retention if kw.get("dimensions") == "elapsedVideoTimeRatio" else report)
+    yta = _types.SimpleNamespace(reports=lambda: _types.SimpleNamespace(query=query))
+    meta = {"items": [
+        {"id": "yHyhG6nHsKs", "snippet": {"title": "Musk Will Win the AI Race - Here is Why", "publishedAt": "2026-08-27T15:00:00Z",
+                                          "thumbnails": {"medium": {"url": "https://i.ytimg.com/vi/x/mq.jpg"}}},
+         "contentDetails": {"duration": "PT8M44S"}},
+        {"id": "k09qNviJ4oM", "snippet": {"title": "Everyone Fears AI Taking Jobs - Nobody Sees the Raise", "publishedAt": "2026-07-20T15:00:00Z", "thumbnails": {}},
+         "contentDetails": {"duration": "PT10M22S"}}]}
+    yt = _types.SimpleNamespace(videos=lambda: _types.SimpleNamespace(list=lambda **kw: Exec(meta)))
+
+    with tempfile.TemporaryDirectory() as d:
+        real = (ya.REACH_PATH, ya.TOKEN_PATH)
+        ya.REACH_PATH, ya.TOKEN_PATH = Path(d) / "reach.json", Path(d) / "token.json"
+        try:
+            csv_text = ("Content,Video title,Video publish time,Duration,Impressions,Impressions click-through rate (%),Views\n"
+                        "Total,,,,54995,2.5,4060\n"
+                        "yHyhG6nHsKs,Musk Will Win the AI Race - Here is Why,\"Aug 27, 2026\",524,\"4,604\",4.7,903\n"
+                        "k09qNviJ4oM,Everyone Fears AI Taking Jobs,\"Jul 20, 2026\",622,443,10.6,154\n")
+            assert ya.parse_studio_export(csv_text.encode())["yHyhG6nHsKs"] == {"impressions": 4604, "ctr": 4.7}
+            buf = _io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as z:
+                z.writestr("Table data.csv", "﻿" + csv_text)
+            assert ya.import_studio_export(buf.getvalue(), "export.zip")["videos"] == 2
+            rep = ya.video_report("28", services=(yta, yt))
+            v0 = rep["videos"][0]
+            assert v0["title"].startswith("Musk") and v0["duration_seconds"] == 524 and v0["impressions"] == 4604 and v0["ctr"] == 4.7
+            assert v0["watch_hours"] == 42.9 and v0["avg_view_duration"] == 171
+            assert calls["q"][0]["dimensions"] == "video" and calls["q"][0]["sort"] == "-views"
+            t = rep["totals"]
+            assert t["views"] == 1057 and t["impressions"] == 5047 and abs(t["ctr"] - round((4604 * 4.7 + 443 * 10.6) / 100 / 5047 * 100, 1)) < 0.05
+            ret = ya.retention("yHyhG6nHsKs", services=(yta, yt))
+            assert calls["q"][-1]["filters"] == "video==yHyhG6nHsKs" and len(ret["points"]) == 6
+            # Falls that start in the first 5 percent (0.01 and 0.03) are the opening; skipped.
+            assert [round(x["t"], 2) for x in ret["drops"]] == [0.2, 0.3, 0.5], ret["drops"]
+            for bad in ("x", "abc/../../etc"):
+                try:
+                    ya.retention(bad, services=(yta, yt)); raise AssertionError("bad id accepted")
+                except ValueError:
+                    pass
+            try:
+                ya.parse_studio_export(b"Video title,Views\nA,1\n"); raise AssertionError("bad csv accepted")
+            except ValueError as e:
+                assert "Impressions" in str(e)
+            c = web_gui.app.test_client()
+            st = c.get("/api/analytics/status").get_json()
+            assert st["success"] and st["connected"] is False and st["reach_videos"] == 2
+            r = c.get("/api/analytics/videos?range=28")
+            assert r.status_code == 401 and r.get_json()["connected"] is False
+            assert c.get("/api/analytics/videos?range=bogus").status_code == 400
+            assert c.post("/api/analytics/import-reach").status_code == 400
+            real_ac = web_gui._anthropic_complete
+            seen = {}
+            web_gui._anthropic_complete = lambda system, user, **kw: (seen.update(user=user) or "## What drives clicks\nNamed players.")
+            try:
+                r = c.post("/api/analytics/insights", json={"videos": rep["videos"], "start": rep["start"], "end": rep["end"]})
+            finally:
+                web_gui._anthropic_complete = real_ac
+            assert r.get_json()["success"] and "Musk Will Win" in seen["user"] and "8:44" in seen["user"] and "| 4.7 |" in seen["user"]
+            assert c.post("/api/analytics/insights", json={}).status_code == 400
+        finally:
+            ya.REACH_PATH, ya.TOKEN_PATH = real
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert 'onclick="openAnalyticsModal()"' in html and "window.openAnalyticsModal = async function" in html
+    assert "function drawRetention(box, points, drops, dur, avd)" in html
+    cont = open(os.path.join(os.path.dirname(APP), "scriptcraft-app-v3-container", "container_app.py"), encoding="utf-8").read()
+    for view in ("status", "connect", "disconnect", "videos", "retention", "import_reach", "insights"):
+        assert f'"api_analytics_{view}",' in cont, view
+    assert "feature_disabled_in_container" in html
+    return "report + metadata + imported CTR merged; impression-weighted CTR; 3 steepest drops; CSV and zip import; routes guard input"
+
+
 if __name__ == "__main__":
     width = max(len(n) for n, _, _ in RESULTS)
     for name, ok, detail in RESULTS:

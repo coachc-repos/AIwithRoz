@@ -21,8 +21,10 @@ badge reads "v3 · MAF agents". The default port is 8082 so v2 can keep 8080.
 v3 needs the same Python packages as v2 (`requirements.txt` is unchanged) and
 reads the same `.env`, `~/.scriptcraft` settings, and API keys.
 `agent_instructions/golden_reference_script.md` is the golden reference that
-Pro mode embeds and the pipeline's style block leads with. It is a copy of
-v2's; the MAF agents' own prompts stay in `scriptcraft-app-v2/agent_instructions`.
+Pro mode embeds and the pipeline's style block leads with. Since 2026-10-29 it
+is the channel's best-performing script, and `channel_playbook.md` beside it
+holds the patterns behind the channel's best analytics (see Changes from v2).
+The MAF agents' own prompts stay in `scriptcraft-app-v2/agent_instructions`.
 
 ## How the agents are called
 
@@ -262,6 +264,35 @@ and traces).
   paragraph (2 of 93 scripts).
 - **Labels and port.** The tab title, header badge, version (`3.0-maf`), and
   default port (8082) identify v3.
+- **Golden reference and channel playbook.** The golden reference is now the
+  channel's best-performing script, "Musk Will Win the AI Race - Here is Why"
+  (`agent_instructions/golden_reference_script.md`; Script-ID ld-80b7325091 in
+  the cloud library, flagged reference and final). The Pro writers embed up to
+  32,000 characters of it instead of 16,000 and are told to match its stance,
+  hook and open loop, numbered structure, and verdict.
+  `agent_instructions/channel_playbook.md` holds the patterns behind the
+  channel's best click-through rate and average view duration: topics, titles,
+  thumbnails, hook, and retention. Idea generation, briefs, both Pro writers,
+  the agentic pipeline's style context, and the Title Picker all read it. Raw
+  metrics stay out of the repo.
+- **Provocative by default.** Ideas, briefs, and titles take a side, name who
+  wins and who loses, and promise a verdict, while staying true and attributed.
+  Ideas gain two formats, The Power Play and Follow the Money. The Grok
+  thumbnail style guide favors the verdict or the conflict as on-image text.
+- **📊 Analytics.** A toolbar dialog lists the channel's videos for the last 7,
+  28, 90, or 365 days, or lifetime. It shows views, average view duration and
+  percentage, watch hours, likes, and subscribers, with sortable columns and
+  total tiles. Click a video to see its audience-retention curve, with the
+  average-view mark and the three steepest drops. ⬇ CSV exports the table,
+  and ✨ Analyze with Claude compares the top and bottom videos against the
+  playbook. It uses its own read-only Google sign-in
+  (`~/.scriptcraft/youtube_analytics_token.json`, with the same
+  `youtube_client_secret.json` as publishing), so publishing is not affected.
+  The Google Cloud project needs the YouTube Analytics API enabled. The
+  Analytics API does not report thumbnail impressions or click-through rate,
+  so ⬆ Import Studio export reads them from a YouTube Studio Advanced mode
+  export (the .zip or its Table data.csv). They are saved to
+  `~/.scriptcraft/youtube_studio_reach.json` and cover that export's date range.
 
 ## Test results
 

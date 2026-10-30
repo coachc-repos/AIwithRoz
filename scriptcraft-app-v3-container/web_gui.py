@@ -5590,11 +5590,18 @@ def api_ideas_generate():
 
     system = (
         "You are the creative producer for @AIwithRoz, a YouTube channel of "
-        "punchy, optimistic explainer videos about using AI in real life "
-        "(2026, general audience). The brand is broad — 'AI for "
-        "everyday life'.\n\n"
+        "provocative, opinionated videos about AI and the people and companies "
+        "behind it (2026, general audience). Every idea takes a side on a "
+        "contested question the viewer cares about, names who wins and who "
+        "loses, and promises a verdict, while staying true: no invented facts, "
+        "quotes, or events.\n\n"
         + lane_block +
         "Bias every idea toward one of these PROVEN breakout formats:\n"
+        "  • 'The Power Play' (a named power player, a bold verdict, and the "
+        "numbered reasons: 'Musk Will Win the AI Race - Here is Why'; this is "
+        "the channel's best performer)\n"
+        "  • 'Follow the Money' (who is getting rich or paying the price: 'The "
+        "People Getting Rich Off Of AI Doom')\n"
         "  • 'I Let AI ___ for a Week' (experiment/challenge — built-in suspense)\n"
         "  • 'AI Teardown' (rebuild something of the viewer's, before→after)\n"
         "  • 'What This Means for YOU' (react to a fresh AI drop, everyday-life lens)\n"
@@ -5611,6 +5618,7 @@ def api_ideas_generate():
         + " SEARCH STRATEGY: start with two or three broad searches for the latest "
         "AI news (this week, this month), then build the ideas on what you find. "
         "Do not spend searches confirming ideas one at a time."
+        + _channel_playbook_block()
     )
     if has_request and not has_doc:
         # Topic lock: the producer's topic is the subject of ALL ideas. The brand
@@ -5889,16 +5897,18 @@ def api_ideas_describe():
         )
 
     system = (
-        "You are a creative director writing a production brief for an "
-        "energizing, optimistic YouTube explainer video about AI/technology "
-        "aimed at a general 2026 audience. Match the example's exact structure "
-        "and voice precisely.\n\n"
+        "You are a creative director writing a production brief for a "
+        "provocative, opinionated YouTube video about AI/technology aimed at a "
+        "general 2026 audience: it takes a clear side, names who wins and who "
+        "loses, and builds to a verdict, while every fact stays true and "
+        "attributed. Match the example's exact structure precisely.\n\n"
         + _recency_rules() +
         " Before writing, search for the latest developments on this episode's "
         "subject. Every item in 2026 TOUCHPOINTS must be current and carry its "
         "month and year. If the chosen idea rests on older material, or any of its "
         "predictions has already begun, say so in the brief and build on what "
         "happened since."
+        + _channel_playbook_block()
         + (
             "\n\nSOURCE DOCUMENT: A file (shown at the start of the message) is "
             "the basis for this episode. Ground the brief in its actual content "
@@ -5923,8 +5933,9 @@ def api_ideas_describe():
         "acknowledgement, no narration, no commentary about your process).\n\n"
         "Between the markers, use EXACTLY this structure, with no markdown "
         "headers other than the capitalized labels shown:\n"
-        "1. An opening paragraph (4–6 sentences) describing the episode in an "
-        "energizing, optimistic, momentum-building voice.\n"
+        "1. An opening paragraph (4–6 sentences) describing the episode in a "
+        "provocative, confident, momentum-building voice that states the side "
+        "the video takes and the verdict it builds to.\n"
         "2. A blank line, then these four labeled blocks, each starting with the "
         "label in caps followed by a colon, in this order: TONE, CORE MESSAGE, "
         "LANGUAGE CUES, 2026 TOUCHPOINTS.\n\n"
@@ -8347,11 +8358,13 @@ _TITLE_LINE_RE = re.compile(
 _TOP_H1_RE = re.compile(r'^(#[ \t]+(?:Direct[ \t]+Video[ \t]*-[ \t]*)?)(.+?)[ \t]*$')
 
 _TITLE_SYSTEM = (
-    "You write YouTube titles for the @AIwithRoz channel: plain-English AI news "
-    "and how-to videos for a general audience. The channel's titles look like: "
-    "\"Elon's Last 10 AI Posts Ranked for YOU\", \"The 7 Wildest 'AI 2027' "
-    "Predictions, Fact-Checked\", \"You Will Not Spot the Scam That Gets You. "
-    "Your AI Will.\", \"Who Actually Wins When AI Doom Goes Viral\".\n\n"
+    "You write YouTube titles for the @AIwithRoz channel: provocative, "
+    "opinionated AI videos for a general audience. The channel's best "
+    "click-through titles state a verdict or a conflict and name a power "
+    "player: \"Musk Will Win the AI Race - Here is Why\", \"The People Getting "
+    "Rich Off Of AI Doom\", \"AI is Breaking the Power Grid and How Elon Plans "
+    "to Fix It\", \"Everyone Fears AI Taking Jobs - Nobody Sees the Raise\". "
+    "Neutral explainer titles (\"What Is Grok Bot?\") draw far fewer clicks.\n\n"
     "Rules:\n"
     "- 5 titles, each under 70 characters, so nothing is cut off in search.\n"
     "- Front-load the most interesting word. Be specific: name the person, "
@@ -8359,8 +8372,10 @@ _TITLE_SYSTEM = (
     "- Honest: promise only what the script delivers; never invent a number, "
     "quote, or claim that is not in the script. Keep the list count when the "
     "script is a numbered list.\n"
-    "- Five different angles: for example a number or ranking, a question, a "
-    "bold claim, a 'what this means for you', and a contrast or versus.\n"
+    "- Five different angles, at least three of them provocative: a verdict "
+    "('X Will Win ... - Here is Why'), who gets rich or who pays, a conflict "
+    "or versus, a number the script is built on, and a 'what this means for "
+    "you'. Take the side the script takes.\n"
     "- Title Case. At most one word in ALL CAPS for emphasis. No emojis, no "
     "hashtags, no clickbait phrases like 'You won't believe'.\n\n"
     "Reply with JSON only, no prose and no code fences: "
@@ -9724,6 +9739,157 @@ def api_keys_save():
 
 _YT_CLIENT_SECRET_PATH = Path.home() / ".scriptcraft" / "youtube_client_secret.json"
 _YT_TOKEN_PATH = Path.home() / ".scriptcraft" / "youtube_token.json"
+
+
+# ---- Channel analytics (📊 Analytics) ----
+# Per-video performance and retention from the YouTube Analytics API, through
+# its own read-only sign-in (youtube_analytics.py). Impressions and CTR come
+# from an imported YouTube Studio export, since the API does not offer them.
+
+def _analytics_error(e: Exception, status: int = 500):
+    import youtube_analytics as ya
+    msg = ya.explain_error(e)
+    logger.error(f"❌ analytics: {msg}")
+    return jsonify({"success": False, "error": msg,
+                    "connected": ya.is_connected()}), status
+
+
+@app.route("/api/analytics/status", methods=["GET"])
+def api_analytics_status():
+    import youtube_analytics as ya
+    from youtube_publisher import CLIENT_SECRET_PATH
+    reach = ya.load_reach()
+    return jsonify({"success": True, "connected": ya.is_connected(),
+                    "has_client_secret": CLIENT_SECRET_PATH.exists(),
+                    "reach_imported_at": reach.get("imported_at"),
+                    "reach_source": reach.get("source"),
+                    "reach_videos": len(reach.get("videos", {}))})
+
+
+@app.route("/api/analytics/connect", methods=["POST"])
+def api_analytics_connect():
+    """Open Google's consent screen on this computer (read-only analytics)."""
+    import youtube_analytics as ya
+    try:
+        ya.connect()
+        return jsonify({"success": True, "connected": True})
+    except FileNotFoundError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        return _analytics_error(e)
+
+
+@app.route("/api/analytics/disconnect", methods=["POST"])
+def api_analytics_disconnect():
+    import youtube_analytics as ya
+    return jsonify({"success": True, "removed": ya.disconnect()})
+
+
+@app.route("/api/analytics/videos", methods=["GET"])
+def api_analytics_videos():
+    import youtube_analytics as ya
+    range_key = (request.args.get("range") or "28").strip()
+    if range_key not in ya.RANGES:
+        return jsonify({"success": False, "error": "Unknown range"}), 400
+    if not ya.is_connected():
+        return jsonify({"success": False, "connected": False,
+                        "error": "Connect YouTube Analytics first."}), 401
+    try:
+        report = ya.video_report(range_key)
+        return jsonify({"success": True, "connected": True, **report})
+    except Exception as e:
+        return _analytics_error(e)
+
+
+@app.route("/api/analytics/retention", methods=["GET"])
+def api_analytics_retention():
+    import youtube_analytics as ya
+    try:
+        data = ya.retention((request.args.get("video_id") or "").strip(),
+                            (request.args.get("range") or "lifetime").strip())
+        return jsonify({"success": True, **data})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        return _analytics_error(e)
+
+
+@app.route("/api/analytics/import-reach", methods=["POST"])
+def api_analytics_import_reach():
+    """Import impressions + CTR from a YouTube Studio export (.csv or .zip)."""
+    import youtube_analytics as ya
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"success": False, "error": "Choose the Studio export (.csv or .zip)."}), 400
+    data = f.read()
+    if len(data) > 20 * 1024 * 1024:
+        return jsonify({"success": False, "error": "The export is over 20 MB."}), 400
+    try:
+        result = ya.import_studio_export(data, f.filename or "")
+        return jsonify({"success": True, **result})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"❌ Studio export import failed: {e}")
+        return jsonify({"success": False, "error": str(e)[:300]}), 500
+
+
+_ANALYTICS_INSIGHTS_SYSTEM = (
+    "You analyze YouTube performance for the @AIwithRoz channel (provocative, "
+    "opinionated AI videos for a general audience). From the table you are "
+    "given, explain what drives click-through rate (titles, topics, named "
+    "people, stance) and what drives average view duration and percentage "
+    "(length, format, topic), comparing the top and bottom videos by name. "
+    "Use only the numbers in the table; do not invent metrics. Where impressions "
+    "or CTR are missing, say so instead of guessing. Then give five specific, "
+    "provocative episode ideas and title patterns the channel should try next, "
+    "and three things to stop doing. Plain English, short sections with "
+    "headings: What drives clicks, What keeps people watching, Make next, Stop "
+    "doing. No preamble."
+)
+
+
+@app.route("/api/analytics/insights", methods=["POST"])
+def api_analytics_insights():
+    """Claude reads the analytics table the dialog shows and explains it."""
+    data = request.get_json(silent=True) or {}
+    videos = data.get("videos") or []
+    if not isinstance(videos, list) or not videos:
+        return jsonify({"success": False, "error": "Load the analytics first."}), 400
+    lines = ["title | published | length | impressions | CTR % | views | avg view duration | avg viewed % | subs gained"]
+    for v in videos[:60]:
+        def _f(x):
+            return "n/a" if x is None or x == "" else str(x)
+        dur = int(v.get("duration_seconds") or 0)
+        avd = int(v.get("avg_view_duration") or 0)
+        lines.append(" | ".join([
+            str(v.get("title") or "")[:120], str(v.get("published_at") or "")[:10],
+            f"{dur // 60}:{dur % 60:02d}", _f(v.get("impressions")), _f(v.get("ctr")),
+            _f(v.get("views")), f"{avd // 60}:{avd % 60:02d}",
+            _f(v.get("avg_view_percentage")), _f(v.get("subscribers_gained"))]))
+    window_note = f"Window: {data.get('start', '?')} to {data.get('end', '?')}."
+    playbook = ""
+    try:
+        from linedrive_azure.agents.pro_script_writer import load_channel_playbook
+        playbook = load_channel_playbook()
+    except Exception:
+        pass
+    user = (window_note + "\n\n" + "\n".join(lines)
+            + ("\n\nThe channel's current playbook, for reference (say where the "
+               "data supports or contradicts it):\n" + playbook if playbook else ""))
+    import anthropic
+    for model in (IDEA_MODEL, ANTHROPIC_MODEL):
+        try:
+            text = _anthropic_complete(_ANALYTICS_INSIGHTS_SYSTEM, user, max_tokens=3000,
+                                       use_web_search=False, model=model, timeout=120.0)
+            return jsonify({"success": True, "insights": _strip_reminder_tags(text).strip(),
+                            "model": model})
+        except anthropic.NotFoundError:
+            continue
+        except Exception as e:
+            logger.error(f"❌ analytics insights failed: {e}")
+            return jsonify({"success": False, "error": str(e)[:300]}), 500
+    return jsonify({"success": False, "error": "No Claude model responded."}), 500
 
 
 @app.route("/api/youtube/credentials/status", methods=["GET"])
@@ -14995,7 +15161,9 @@ def api_script_mark_reference():
 
 
 _GOLDEN_CLOUD_SID = "golden-reference"
-_GOLDEN_CLOUD_VID = "v1"
+# v2 (2026-10-29): the Musk script replaced the Top 10 AI Tools script (v1).
+_GOLDEN_CLOUD_VID = "v2"
+_GOLDEN_CLOUD_TITLE = "GOLDEN REFERENCE — Musk Will Win the AI Race - Here is Why"
 
 
 def _seed_golden_reference_to_cloud() -> bool:
@@ -15019,7 +15187,7 @@ def _seed_golden_reference_to_cloud() -> bool:
         manifest = {
             "script_id": _GOLDEN_CLOUD_SID,
             "version_id": _GOLDEN_CLOUD_VID,
-            "script_title": "GOLDEN REFERENCE — The Top 10 AI Tools, When NOT to Use Them",
+            "script_title": _GOLDEN_CLOUD_TITLE,
             "enhanced_script": body,
             "brief": "",
             "reference": True,
@@ -15042,6 +15210,19 @@ def api_golden_reference_save_to_cloud():
                     "enabled": _artifacts_enabled()})
 
 
+def _channel_playbook_block() -> str:
+    """The channel playbook as a prompt block for ideas and briefs, or ''."""
+    try:
+        from linedrive_azure.agents.pro_script_writer import load_channel_playbook
+        playbook = load_channel_playbook()
+    except Exception:
+        playbook = ""
+    if not playbook:
+        return ""
+    return ("\n\nCHANNEL PLAYBOOK (what this channel's own analytics show earns "
+            "clicks and keeps viewers watching; follow it):\n" + playbook)
+
+
 def _build_style_context_block(exclude_script_id: str = "") -> str:
     """A delimited style-reference block built from recent saved scripts, or ''
     when style memory is unavailable/empty. Fed to the Script Writer so new
@@ -15058,15 +15239,27 @@ def _build_style_context_block(exclude_script_id: str = "") -> str:
         golden = ""
     if golden:
         parts.append(
-            "\n\n--- GOLDEN REFERENCE SCRIPT (the approved target: match this "
-            "STRUCTURE, production conventions, and SPOKEN VOICE exactly — no "
-            "contractions, no em-dashes or en-dashes, numbers and names spelled "
-            "the way the avatar says them, a FINAL HOOK, 'Heading: Chapter N -' "
-            "lines, [PRODUCTION BEGIN] / [GROK IMAGINE / RESOLVE] / [PRODUCTION "
-            "END] blocks, [VERIFY BEFORE RENDER] for legal or numeric claims, a "
-            "cheat-sheet [PROMPT OVERLAY] in the final chapter, and trailing "
-            "=== … === sections. Do NOT copy its topic or wording) ---\n"
+            "\n\n--- GOLDEN REFERENCE SCRIPT (the channel's best-performing "
+            "script, the approved target: match its provocative stance, hook and "
+            "open loop, numbered structure, closing verdict, production "
+            "conventions, and SPOKEN VOICE exactly — no contractions, no "
+            "em-dashes or en-dashes, numbers and names spelled the way the avatar "
+            "says them, a FINAL HOOK, 'Heading: Chapter N -' lines, [PRODUCTION "
+            "BEGIN] / [PRODUCTION END] blocks, [VERIFY BEFORE RENDER] for legal "
+            "or numeric claims, a [PROMPT OVERLAY] in the final chapter, and "
+            "trailing === … === sections. Do NOT copy its topic or wording) ---\n"
             + golden + "\n--- END GOLDEN REFERENCE ---\n"
+        )
+    try:
+        from linedrive_azure.agents.pro_script_writer import load_channel_playbook
+        playbook = load_channel_playbook()
+    except Exception:
+        playbook = ""
+    if playbook:
+        parts.append(
+            "\n\n--- CHANNEL PLAYBOOK (what this channel's analytics show earns "
+            "clicks and keeps viewers watching; apply it) ---\n"
+            + playbook + "\n--- END CHANNEL PLAYBOOK ---\n"
         )
     recent = _recent_scripts_for_style_context(
         exclude_script_id=exclude_script_id)

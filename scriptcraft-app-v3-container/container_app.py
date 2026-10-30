@@ -184,6 +184,16 @@ _DISABLED_VIEWS = {
     "api_resolve_render_audio_progress",
     # Render Audio from a finished video: reads a local video path with ffmpeg
     "api_extract_audio_start",
+    # Channel analytics: the sign-in opens a browser on the server's own machine
+    # and the token stays in ~/.scriptcraft, so the image ships no
+    # youtube_analytics.py and every analytics route is local-only.
+    "api_analytics_status",
+    "api_analytics_connect",
+    "api_analytics_disconnect",
+    "api_analytics_videos",
+    "api_analytics_retention",
+    "api_analytics_import_reach",
+    "api_analytics_insights",
     "create_resolve_project",
     "create_resolve_with_videos",
     "check_aroll_videos",

@@ -1186,6 +1186,41 @@
             }
             .vg-title { font-size: 1em; }
         }
+        /* 📊 Channel analytics dialog */
+        .an-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.72); z-index: 10070; display: flex; align-items: center; justify-content: center; padding: 18px; }
+        .an-modal { background: #0f172a; border: 1px solid #334155; border-radius: 12px; width: min(1320px, 100%); max-height: 94vh; overflow: auto; padding: 18px 20px 22px; box-sizing: border-box; color: #e2e8f0; }
+        .an-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+        .an-head h2 { margin: 0 auto 0 0; font-size: 1.2em; }
+        .an-head select { height: 36px; box-sizing: border-box; padding: 0 10px; border-radius: 6px; border: 1px solid #374151; background: #111827; color: #f9fafb; font-size: 13px; line-height: normal; width: auto; }
+        .an-head .tg-btn { height: 36px; padding: 0 12px; font-size: 13px; }
+        .an-status { font-size: 12px; color: #94a3b8; min-height: 1.2em; margin-bottom: 10px; }
+        .an-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+        .an-tile { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 10px 12px; }
+        .an-tile .v { font-size: 1.55em; font-weight: 800; color: #f9fafb; line-height: 1.15; }
+        .an-tile .l { font-size: 11px; color: #94a3b8; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.06em; }
+        .an-tile .n { font-size: 11px; color: #64748b; margin-top: 3px; }
+        .an-table-wrap { overflow-x: auto; border: 1px solid #1f2937; border-radius: 10px; }
+        .an-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .an-table th { position: sticky; top: 0; background: #111827; color: #94a3b8; font-weight: 600; text-align: right; padding: 9px 10px; border-bottom: 1px solid #334155; cursor: pointer; white-space: nowrap; user-select: none; }
+        .an-table th:first-child, .an-table td:first-child { text-align: left; }
+        .an-table th.sorted { color: #f9fafb; }
+        .an-table td { padding: 7px 10px; border-bottom: 1px solid #1e293b; text-align: right; white-space: nowrap; color: #cbd5e1; }
+        .an-table tbody tr { cursor: pointer; }
+        .an-table tbody tr:hover { background: #111c33; }
+        .an-table tbody tr.selected { background: #172554; }
+        .an-video { display: flex; align-items: center; gap: 10px; min-width: 300px; white-space: normal; }
+        .an-video img { width: 88px; height: 50px; object-fit: cover; border-radius: 4px; flex-shrink: 0; background: #1e293b; }
+        .an-video a { color: #e2e8f0; text-decoration: none; font-weight: 600; line-height: 1.3; }
+        .an-video a:hover { text-decoration: underline; }
+        .an-muted { color: #64748b; }
+        .an-panel { margin-top: 14px; background: #0b1220; border: 1px solid #1f2937; border-radius: 10px; padding: 12px 14px; }
+        .an-panel h3 { margin: 0 0 4px; font-size: 1em; }
+        .an-panel .sub { font-size: 12px; color: #94a3b8; margin-bottom: 8px; }
+        .an-chart { position: relative; }
+        .an-chart svg { width: 100%; height: auto; display: block; }
+        .an-tip { position: absolute; pointer-events: none; background: #111827; border: 1px solid #334155; border-radius: 6px; padding: 6px 8px; font-size: 12px; color: #e2e8f0; white-space: nowrap; display: none; transform: translate(-50%, -110%); }
+        .an-insights { font-size: 14px; line-height: 1.55; color: #cbd5e1; }
+        .an-insights h4 { margin: 12px 0 4px; color: #f9fafb; font-size: 0.98em; }
     </style>
     {% if container_mode %}
     <style>
@@ -1340,6 +1375,10 @@
                 <button class="toolbar-btn" onclick="openLinkedInModal('random')" title="Draft a LinkedIn post with Claude and post it from @AIwithRoz (promote a video or post about anything)">
                     <span class="toolbar-icon" style="display:inline-flex; align-items:center;"><span style="background:#0a66c2; color:#fff; border-radius:5px; padding:2px 6px; font-weight:800; font-size:0.95em; line-height:1.2; letter-spacing:-0.5px;">in</span></span>
                     <span class="toolbar-text">Post to LinkedIn</span>
+                </button>
+                <button class="toolbar-btn" onclick="openAnalyticsModal()" title="Channel analytics: views, click-through rate, average view duration, and retention for every video">
+                    <span class="toolbar-icon">📊</span>
+                    <span class="toolbar-text">Analytics</span>
                 </button>
                 <button class="toolbar-btn" onclick="openApiKeysModal()" title="Manage API Keys">
                     <span class="toolbar-icon">🔑</span>
@@ -14877,5 +14916,303 @@ Thank you for watching!`;
             <div id="footerProgressText" class="footer-progress-text">Ready</div>
         </div>
     </div>
+    <script>
+    // ---- 📊 Channel analytics ----
+    // Per-video views, watch time, average view duration, and retention from the
+    // YouTube Analytics API; impressions and CTR from an imported Studio export.
+    (function () {
+        let an = { range: '28', data: null, sortKey: 'views', sortDesc: true, selected: null };
+        const fmtInt = (n) => (n === null || n === undefined) ? '—' : Number(n).toLocaleString();
+        const fmtTime = (sec) => { sec = Math.round(sec || 0); return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0'); };
+        const fmtPct = (n) => (n === null || n === undefined) ? '—' : Number(n).toFixed(1) + '%';
+        const esc = (t) => { const d = document.createElement('div'); d.textContent = t == null ? '' : String(t); return d.innerHTML; };
+        const $ = (sel) => document.querySelector('#anModal ' + sel);
+        const setStatus = (color, text) => { const st = $('.an-status'); st.style.color = color; st.textContent = text; };
+
+        const COLUMNS = [
+            ['title', 'Video'], ['published_at', 'Published'], ['duration_seconds', 'Length'],
+            ['impressions', 'Impressions'], ['ctr', 'CTR'], ['views', 'Views'],
+            ['avg_view_duration', 'Avg view'], ['avg_view_percentage', 'Avg viewed'],
+            ['watch_hours', 'Watch hrs'], ['likes', 'Likes'], ['subscribers_gained', 'Subs'],
+        ];
+
+        window.openAnalyticsModal = async function () {
+            document.getElementById('anModal')?.remove();
+            const overlay = document.createElement('div');
+            overlay.id = 'anModal';
+            overlay.className = 'an-overlay';
+            overlay.innerHTML = `
+                <div class="an-modal">
+                    <div class="an-head">
+                        <h2>📊 Channel analytics</h2>
+                        <select class="an-range" title="Report window">
+                            <option value="7">Last 7 days</option>
+                            <option value="28" selected>Last 28 days</option>
+                            <option value="90">Last 90 days</option>
+                            <option value="365">Last 365 days</option>
+                            <option value="lifetime">Lifetime</option>
+                        </select>
+                        <button type="button" class="tg-btn tg-btn-secondary an-connect" style="display:none;">🔗 Connect YouTube Analytics</button>
+                        <button type="button" class="tg-btn tg-btn-secondary an-import" title="Impressions and click-through rate: in YouTube Studio open Analytics > Advanced mode, then Export current view > CSV, and choose that file here">⬆ Import Studio export</button>
+                        <input type="file" class="an-import-file" accept=".csv,.zip" style="display:none;">
+                        <button type="button" class="tg-btn tg-btn-secondary an-csv">⬇ CSV</button>
+                        <button type="button" class="tg-btn tg-btn-primary an-insights-btn">✨ Analyze with Claude</button>
+                        <button type="button" class="tg-btn tg-btn-secondary an-close" title="Close">✕</button>
+                    </div>
+                    <div class="an-status"></div>
+                    <div class="an-tiles"></div>
+                    <div class="an-table-wrap"><table class="an-table"><thead></thead><tbody></tbody></table></div>
+                    <div class="an-panel an-retention" style="display:none;"></div>
+                    <div class="an-panel an-insights-panel" style="display:none;"></div>
+                </div>`;
+            document.body.appendChild(overlay);
+            overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+            $('.an-close').onclick = () => overlay.remove();
+            $('.an-range').value = an.range;
+            $('.an-range').onchange = (e) => { an.range = e.target.value; loadReport(); };
+            $('.an-connect').onclick = connect;
+            $('.an-import').onclick = () => $('.an-import-file').click();
+            $('.an-import-file').onchange = importReach;
+            $('.an-csv').onclick = exportCsv;
+            $('.an-insights-btn').onclick = insights;
+            const st = await (await fetch('/api/analytics/status')).json().catch(() => ({}));
+            if (st.error === 'feature_disabled_in_container') {
+                setStatus('#fbbf24', 'Channel analytics runs in the local app only: its Google sign-in opens a browser on your own computer.');
+                return;
+            }
+            if (!st.connected) {
+                $('.an-connect').style.display = '';
+                setStatus('#fbbf24', st.has_client_secret
+                    ? 'Connect YouTube Analytics to load your videos. It opens a Google sign-in in your browser and asks for read-only access; publishing is not affected.'
+                    : 'Upload the Google OAuth client_secret.json in 🔑 API Keys > YouTube Publishing first; analytics uses the same client.');
+                return;
+            }
+            loadReport();
+        };
+
+        async function connect() {
+            const btn = $('.an-connect');
+            btn.disabled = true;
+            setStatus('#94a3b8', '⏳ A Google sign-in opened in your browser. Allow read-only access to YouTube Analytics, then come back here.');
+            try {
+                const r = await fetch('/api/analytics/connect', { method: 'POST' });
+                const d = await r.json();
+                if (!r.ok || !d.success) throw new Error(d.error || ('HTTP ' + r.status));
+                btn.style.display = 'none';
+                loadReport();
+            } catch (e) {
+                setStatus('#f87171', '❌ ' + e.message);
+            } finally { btn.disabled = false; }
+        }
+
+        async function loadReport() {
+            setStatus('#94a3b8', '⏳ Loading analytics…');
+            try {
+                const r = await fetch('/api/analytics/videos?range=' + encodeURIComponent(an.range));
+                const d = await r.json();
+                if (!r.ok || !d.success) {
+                    if (d.connected === false) { $('.an-connect').style.display = ''; }
+                    throw new Error(d.error || ('HTTP ' + r.status));
+                }
+                an.data = d;
+                const reach = d.reach_imported_at
+                    ? `Impressions and CTR from the Studio export imported ${new Date(d.reach_imported_at).toLocaleString()} (they cover that export's date range).`
+                    : 'Impressions and CTR are empty until you import a Studio export (⬆).';
+                setStatus('#94a3b8', `${d.videos.length} videos, ${d.start} to ${d.end}. ${reach} Click a video to see where viewers drop off.`);
+                renderTiles(); renderTable();
+            } catch (e) {
+                setStatus('#f87171', '❌ ' + e.message);
+            }
+        }
+
+        function renderTiles() {
+            const t = an.data.totals;
+            const tile = (v, l, n) => `<div class="an-tile"><div class="v">${v}</div><div class="l">${l}</div>${n ? `<div class="n">${n}</div>` : ''}</div>`;
+            $('.an-tiles').innerHTML =
+                tile(fmtInt(t.impressions), 'Impressions', t.impressions ? 'from the Studio export' : 'import a Studio export') +
+                tile(fmtPct(t.ctr), 'Click-through rate', t.ctr ? 'impression-weighted' : '') +
+                tile(fmtInt(t.views), 'Views') +
+                tile(fmtTime(t.avg_view_duration), 'Avg view duration', 'watch time ÷ views') +
+                tile(Number(t.watch_hours).toLocaleString(), 'Watch hours') +
+                tile(fmtInt(t.subscribers_gained), 'Subscribers gained');
+        }
+
+        function renderTable() {
+            const head = COLUMNS.map(([k, label]) =>
+                `<th data-k="${k}" class="${an.sortKey === k ? 'sorted' : ''}">${label}${an.sortKey === k ? (an.sortDesc ? ' ↓' : ' ↑') : ''}</th>`).join('');
+            $('.an-table thead').innerHTML = `<tr>${head}</tr>`;
+            $('.an-table thead').querySelectorAll('th').forEach(th => th.onclick = () => {
+                const k = th.dataset.k;
+                an.sortDesc = an.sortKey === k ? !an.sortDesc : (k !== 'title');
+                an.sortKey = k; renderTable();
+            });
+            const rows = an.data.videos.slice().sort((a, b) => {
+                const x = a[an.sortKey], y = b[an.sortKey];
+                if (x == null && y == null) return 0;
+                if (x == null) return 1;
+                if (y == null) return -1;
+                const c = typeof x === 'string' ? x.localeCompare(y) : x - y;
+                return an.sortDesc ? -c : c;
+            });
+            $('.an-table tbody').innerHTML = rows.map(v => `
+                <tr data-id="${esc(v.id)}" class="${an.selected === v.id ? 'selected' : ''}">
+                    <td><div class="an-video">${v.thumbnail ? `<img src="${esc(v.thumbnail)}" alt="">` : '<img alt="">'}<a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.title)}</a></div></td>
+                    <td>${esc((v.published_at || '').slice(0, 10))}</td>
+                    <td>${fmtTime(v.duration_seconds)}</td>
+                    <td>${v.impressions == null ? '<span class="an-muted">—</span>' : fmtInt(v.impressions)}</td>
+                    <td>${v.ctr == null ? '<span class="an-muted">—</span>' : fmtPct(v.ctr)}</td>
+                    <td>${fmtInt(v.views)}</td>
+                    <td>${fmtTime(v.avg_view_duration)}</td>
+                    <td>${fmtPct(v.avg_view_percentage)}</td>
+                    <td>${Number(v.watch_hours).toLocaleString()}</td>
+                    <td>${fmtInt(v.likes)}</td>
+                    <td>${fmtInt(v.subscribers_gained)}</td>
+                </tr>`).join('');
+            $('.an-table tbody').querySelectorAll('tr').forEach(tr => tr.onclick = (e) => {
+                if (e.target.closest('a')) return;
+                an.selected = tr.dataset.id;
+                $('.an-table tbody').querySelectorAll('tr').forEach(r => r.classList.toggle('selected', r === tr));
+                showRetention(an.data.videos.find(v => v.id === an.selected));
+            });
+        }
+
+        async function showRetention(video) {
+            const panel = $('.an-retention');
+            panel.style.display = 'block';
+            panel.innerHTML = `<h3>Audience retention · ${esc(video.title)}</h3><div class="sub">⏳ Loading the retention curve…</div>`;
+            panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            try {
+                const r = await fetch('/api/analytics/retention?range=lifetime&video_id=' + encodeURIComponent(video.id));
+                const d = await r.json();
+                if (!r.ok || !d.success) throw new Error(d.error || ('HTTP ' + r.status));
+                if (!d.points.length) { panel.querySelector('.sub').textContent = 'YouTube has no retention data for this video yet.'; return; }
+                const dur = video.duration_seconds || 0;
+                const drops = d.drops.map(x => `${fmtTime(x.t * dur)} (−${(x.drop * 100).toFixed(1)} pts)`).join(', ');
+                panel.innerHTML = `<h3>Audience retention · ${esc(video.title)}</h3>
+                    <div class="sub">Share of viewers still watching at each point, lifetime. Average view ${fmtTime(video.avg_view_duration)} of ${fmtTime(dur)} (${fmtPct(video.avg_view_percentage)}).${drops ? ' Steepest drops: ' + drops + '.' : ''} Hover for each point.</div>
+                    <div class="an-chart"></div>`;
+                drawRetention(panel.querySelector('.an-chart'), d.points, d.drops, dur, video.avg_view_duration);
+            } catch (e) {
+                panel.querySelector('.sub').textContent = '❌ ' + e.message;
+            }
+        }
+
+        // One series, one axis: the share of viewers still watching (y) over the
+        // video's running time (x). Relative retention is in the tooltip.
+        function drawRetention(box, points, drops, dur, avd) {
+            const W = 900, H = 280, L = 48, R = 16, T = 16, B = 34;
+            // Rewatches can push the start above 100%, so round the scale up to the next 25% gridline.
+            const maxY = Math.ceil(Math.max(1, ...points.map(p => p.watch)) * 4) / 4;
+            const x = (t) => L + t * (W - L - R);
+            const y = (v) => T + (1 - v / maxY) * (H - T - B);
+            const line = points.map((p, i) => `${i ? 'L' : 'M'}${x(p.t).toFixed(1)},${y(p.watch).toFixed(1)}`).join(' ');
+            const area = `${line} L${x(points[points.length - 1].t).toFixed(1)},${y(0)} L${x(points[0].t).toFixed(1)},${y(0)} Z`;
+            const ink2 = '#94a3b8', grid = '#1e293b', series = '#38bdf8', surface = '#0b1220';
+            let g = '';
+            for (let v = 0.25; v <= maxY + 1e-9; v += 0.25) {
+                g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="${grid}" stroke-width="1"/>`
+                   + `<text x="${L - 8}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="${ink2}">${Math.round(v * 100)}%</text>`;
+            }
+            for (let i = 0; i <= 4; i++) {
+                const t = i / 4;
+                g += `<text x="${x(t)}" y="${H - 10}" text-anchor="middle" font-size="11" fill="${ink2}">${fmtTime(t * dur)}</text>`;
+            }
+            let marks = '';
+            const ax = dur && avd ? x(Math.min(1, avd / dur)) : null;
+            if (ax !== null) {
+                marks += `<line x1="${ax}" x2="${ax}" y1="${T}" y2="${y(0)}" stroke="${ink2}" stroke-width="1" stroke-dasharray="4 4"/>`
+                       + `<text x="${ax + 6}" y="${T + 12}" font-size="11" fill="${ink2}">avg view ${fmtTime(avd)}</text>`;
+            }
+            drops.forEach(dp => {
+                const p = points.find(q => q.t === dp.t) || points[0];
+                const px = x(p.t), py = y(p.watch);
+                // The curve falls to the right, so the label sits above-right of the marker (clear of the line),
+                // or below-left when the average-view line would run through it.
+                const left = ax !== null && ax > px && ax - px < 72;
+                marks += `<circle cx="${px}" cy="${py}" r="5" fill="${series}" stroke="${surface}" stroke-width="2"/>`
+                       + `<text x="${left ? px - 9 : px + 9}" y="${left ? py + 17 : py - 9}" text-anchor="${left ? 'end' : 'start'}" font-size="11" fill="#e2e8f0">−${(dp.drop * 100).toFixed(1)} pts</text>`;
+            });
+            box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Audience retention curve">
+                ${g}
+                <path d="${area}" fill="${series}" fill-opacity="0.10"/>
+                <path d="${line}" fill="none" stroke="${series}" stroke-width="2" stroke-linejoin="round"/>
+                ${marks}
+                <line class="an-cross" x1="0" x2="0" y1="${T}" y2="${y(0)}" stroke="#e2e8f0" stroke-width="1" visibility="hidden"/>
+                <circle class="an-dot" r="4" fill="${series}" stroke="${surface}" stroke-width="2" visibility="hidden"/>
+                <rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent" class="an-hit"/>
+            </svg><div class="an-tip"></div>`;
+            const svg = box.querySelector('svg'), tip = box.querySelector('.an-tip');
+            const cross = svg.querySelector('.an-cross'), dot = svg.querySelector('.an-dot');
+            svg.querySelector('.an-hit').addEventListener('mousemove', (ev) => {
+                const rect = svg.getBoundingClientRect();
+                const sx = (ev.clientX - rect.left) * (W / rect.width);
+                const t = Math.max(0, Math.min(1, (sx - L) / (W - L - R)));
+                const p = points.reduce((a, b) => Math.abs(b.t - t) < Math.abs(a.t - t) ? b : a);
+                cross.setAttribute('x1', x(p.t)); cross.setAttribute('x2', x(p.t)); cross.setAttribute('visibility', 'visible');
+                dot.setAttribute('cx', x(p.t)); dot.setAttribute('cy', y(p.watch)); dot.setAttribute('visibility', 'visible');
+                const rel = p.relative ? ` · ${p.relative >= 0.5 ? 'above' : 'below'} similar videos (${p.relative.toFixed(2)})` : '';
+                tip.innerHTML = `<b>${fmtTime(p.t * dur)}</b> · ${(p.watch * 100).toFixed(0)}% still watching${rel}`;
+                tip.style.left = (x(p.t) / W * rect.width) + 'px';
+                tip.style.top = (y(p.watch) / H * rect.height) + 'px';
+                tip.style.display = 'block';
+            });
+            svg.querySelector('.an-hit').addEventListener('mouseleave', () => {
+                tip.style.display = 'none'; cross.setAttribute('visibility', 'hidden'); dot.setAttribute('visibility', 'hidden');
+            });
+        }
+
+        async function importReach(ev) {
+            const f = ev.target.files && ev.target.files[0];
+            ev.target.value = '';
+            if (!f) return;
+            setStatus('#94a3b8', '⏳ Importing ' + f.name + '…');
+            try {
+                const fd = new FormData(); fd.append('file', f);
+                const r = await fetch('/api/analytics/import-reach', { method: 'POST', body: fd });
+                const d = await r.json();
+                if (!r.ok || !d.success) throw new Error(d.error || ('HTTP ' + r.status));
+                setStatus('#34d399', `✅ Imported impressions and CTR for ${d.videos} videos.`);
+                if (an.data) loadReport();
+            } catch (e) { setStatus('#f87171', '❌ ' + e.message); }
+        }
+
+        function exportCsv() {
+            if (!an.data) return;
+            const head = ['video_id', 'title', 'published', 'length_seconds', 'impressions', 'ctr_percent', 'views',
+                          'avg_view_seconds', 'avg_viewed_percent', 'watch_hours', 'likes', 'comments', 'shares', 'subscribers_gained'];
+            const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+            const lines = [head.join(',')].concat(an.data.videos.map(v => [v.id, v.title, (v.published_at || '').slice(0, 10), v.duration_seconds,
+                v.impressions, v.ctr, v.views, v.avg_view_duration, v.avg_view_percentage, v.watch_hours, v.likes, v.comments, v.shares,
+                v.subscribers_gained].map(q).join(',')));
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
+            a.download = `channel-analytics_${an.data.start}_to_${an.data.end}.csv`;
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+        }
+
+        async function insights() {
+            if (!an.data) { setStatus('#fbbf24', 'Load the analytics first.'); return; }
+            const btn = $('.an-insights-btn'), panel = $('.an-insights-panel');
+            btn.disabled = true;
+            panel.style.display = 'block';
+            panel.innerHTML = '<h3>✨ What the numbers say</h3><div class="sub">⏳ Claude is reading the table…</div>';
+            try {
+                const r = await fetch('/api/analytics/insights', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ videos: an.data.videos, start: an.data.start, end: an.data.end }) });
+                const d = await r.json();
+                if (!r.ok || !d.success) throw new Error(d.error || ('HTTP ' + r.status));
+                const html = esc(d.insights)
+                    .replace(/^#{1,6}\s*(.+)$/gm, '<h4>$1</h4>')
+                    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+                    .replace(/\n/g, '<br>');
+                panel.innerHTML = `<h3>✨ What the numbers say</h3><div class="sub">Claude's read of this table (${esc(an.data.start)} to ${esc(an.data.end)}).</div><div class="an-insights">${html}</div>`;
+                panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            } catch (e) {
+                panel.querySelector('.sub').textContent = '❌ ' + e.message;
+            } finally { btn.disabled = false; }
+        }
+    })();
+    </script>
 </body>
 </html>

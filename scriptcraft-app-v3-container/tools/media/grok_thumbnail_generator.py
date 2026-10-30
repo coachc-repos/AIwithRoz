@@ -92,7 +92,8 @@ STYLE_GUIDE = f"""The channel's thumbnails share one look:
 - Her gestures: pointing her index finger at the hero element (most common), pointing up, peeking around a door or through torn paper, holding a small object toward the camera.
 - Hero elements: a giant number or stat ("62%", "3!", "$15.9 BILLION!?"); a 1 to 3 word punch phrase ("PAID TO PANIC", "REAL or AI?"); a public figure spotlit against blue; a dramatic dark scene (silhouettes in an alley, hooded figures with glowing red eyes); a symbolic object (silicon wafer, gold bar, money arrow, glowing chip).
 - Backgrounds: deep crimson-red gradient (the default), a red-to-blue split when two sides face off, dark navy with torn-paper holes edged in red glow, a dark red-to-teal gradient with faint glitchy code lines (tech going wrong), or a dark scene lit red and blue. Neon green means growth or money.
-- Text: at most one text element of 1 to 3 words or one number, huge and perfectly spelled. Nothing else written anywhere: no captions, watermarks or logos."""
+- Text: at most one text element of 1 to 3 words or one number, huge and perfectly spelled. Nothing else written anywhere: no captions, watermarks or logos.
+- What earns the most clicks on this channel: a giant 3D gold number with a red neon inlay on crimson beside a recognizable public figure or the host (the "4" beside Musk for "Musk Will Win the AI Race - Here is Why"), and a public figure under a blue spotlight split against the host on red. The text states the verdict or the conflict, not the topic. Neutral explainer looks ("BROKEN?" over a gadget) draw fewer clicks."""
 
 CONCEPT_SYSTEM = f"""You are the art director for the @AIwithRoz YouTube channel. You plan thumbnails that earn the click and look exactly like the channel's existing ones.
 
@@ -104,7 +105,7 @@ Layouts you can use:
 Rules:
 - Use exactly these values: "layout" is one of big_number, headline_text, public_figure, mystery_scene, comparison; "expression" is one of shocked, smirk, smile, worried, skeptical; "host_side" is left or right.
 - Every thumbnail features the host.
-- "text" is the exact on-image text: the hook text as given when it is 4 words or fewer, otherwise its 1 to 3 most powerful words or its key number, keeping the meaning. Use "" only when the layout works better without text.
+- "text" is the exact on-image text: the hook text as given when it is 4 words or fewer, otherwise its 1 to 3 most powerful words or its key number, keeping the meaning. Prefer the word or number that carries the verdict or the conflict. Use "" only when the layout works better without text.
 - Never invent a statistic: a number in "text" must appear in the hook text, the title or the script.
 - Use public_figure only for a real person the topic or title names. Show them as a dignified, recognizable portrait (spotlit, looking up, or in profile). Never show a real person in a demeaning, violent, sexual or criminal-looking scene, or endorsing anything.
 - No brand logos.
