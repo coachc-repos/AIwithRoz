@@ -32,5 +32,15 @@ cd scriptcraft-app-v3-container
 ```
 
 API keys come from the shell, then the repo-root `.env`, then the running
-Container App. Roll back with
+Container App (with stray spaces, CRs, and quotes trimmed).
+
+Keys saved in the 🔑 API Keys dialog persist in the private blob
+`app-settings/web_gui_settings.json` in the `linedrivestorage` account:
+`container_app.py` restores it at startup, before `web_gui` reads it, and
+uploads it after every save, through the managed identity (Storage Blob Data
+Contributor). Saved keys override the deploy-time env vars. The dialog's key
+endpoints answer remote browsers only when `APP_AUTH_TOKEN` is set, so the
+cloud dialog needs that token (sign in at `/login`).
+
+Roll back with
 `az containerapp update -n scriptcraft-app -g scriptcraft-rg --image <previous image>`.

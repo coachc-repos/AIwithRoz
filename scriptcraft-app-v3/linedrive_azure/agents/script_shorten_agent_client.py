@@ -70,9 +70,13 @@ def _strip_fences(text: str) -> str:
 
 
 def _app_host_words(masked_script: str) -> int:
-    """Host: words as the GUI counts them, on a masked script (placeholders ignored)."""
-    text = _PLACEHOLDER_RE.sub(" ", masked_script or "")
-    return sum(len(b.split()) for b in _APP_HOST_BLOCK.findall(text))
+    """Spoken words as the GUI counts them, on a masked script (placeholders ignored)."""
+    try:
+        from console_ui.text_processing import spoken_word_count
+        return spoken_word_count(masked_script or "")
+    except ImportError:  # outside the app; old Host-block count
+        text = _PLACEHOLDER_RE.sub(" ", masked_script or "")
+        return sum(len(b.split()) for b in _APP_HOST_BLOCK.findall(text))
 
 
 def _placeholders(masked_script: str) -> set:

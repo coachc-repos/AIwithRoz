@@ -393,7 +393,7 @@ def extract_tool_links_and_info(script_content: str) -> str:
         return "\n🛠️ No specific tools or resources were mentioned in this content."
 
 
-def extract_heygen_host_script(script_content: str) -> str:
+def extract_heygen_host_script(script_content: str, verbose: bool = True) -> str:
     """
     Extract ONLY Host dialogue from script for HeyGen text-to-video.
     Removes all visual cues, tool demos, production notes, and non-host content.
@@ -403,11 +403,13 @@ def extract_heygen_host_script(script_content: str) -> str:
 
     Args:
         script_content: Full script content with host dialogue and production notes
+        verbose: print progress lines (spoken_word_count passes False)
 
     Returns:
         Clean host-only script ready for HeyGen, with paragraphs separated by double newlines
     """
-    print("🎬 Extracting HeyGen-ready host script...")
+    if verbose:
+        print("🎬 Extracting HeyGen-ready host script...")
 
     # First, extract the hook text if present
     hook_text = ""
@@ -415,7 +417,8 @@ def extract_heygen_host_script(script_content: str) -> str:
     hook_match = re.search(hook_pattern, script_content, re.IGNORECASE)
     if hook_match:
         hook_text = hook_match.group(1).strip()
-        print(f"✅ Found hook: {hook_text[:50]}...")
+        if verbose:
+            print(f"✅ Found hook: {hook_text[:50]}...")
 
     lines = script_content.split("\n")
     host_paragraphs = []
@@ -529,13 +532,26 @@ def extract_heygen_host_script(script_content: str) -> str:
         # Host:, **Host:**, **Host**:, **Host**, *Host* (bold markers anywhere,
         # colon optional).
         if re.match(r"^\s*\*{0,2}\s*Host\s*\*{0,2}\s*:?\s*\*{0,2}\s*$", stripped, re.IGNORECASE):
-            # "Host" label on its own line - start collecting from next line
+            # "Host" label on its own line - start collecting from next line.
+            # A speaker label also starts a new paragraph, so a heading line
+            # right above it ("Chapter 1 - ...") can't glue onto the dialogue
+            # and get the dialogue scrubbed out with it.
+            if current_paragraph:
+                paragraph_text = " ".join(current_paragraph)
+                if paragraph_text:
+                    host_paragraphs.append(paragraph_text)
+                current_paragraph = []
             in_host_section = True
             if debug:
                 print(f"[DEBUG] Found Host: marker (standalone)")
             continue
         elif re.match(r"^\s*\*{0,2}\s*Host\s*\*{0,2}\s*:?\s*\*{0,2}", stripped, re.IGNORECASE):
-            # "Host" label with text on same line
+            # "Host" label with text on same line (also starts a new paragraph)
+            if current_paragraph:
+                paragraph_text = " ".join(current_paragraph)
+                if paragraph_text:
+                    host_paragraphs.append(paragraph_text)
+                current_paragraph = []
             in_host_section = True
             if debug:
                 print(f"[DEBUG] Found Host: marker (with text)")
@@ -570,6 +586,18 @@ def extract_heygen_host_script(script_content: str) -> str:
                     print(f"[DEBUG] Exiting Host section (found chapter marker)")
                 continue
 
+            # A plain chapter heading ("Chapter 3 - Title", "Chapter 3: Title")
+            # inside dialogue ends the paragraph and is not spoken. Without
+            # this it glued onto the next line of dialogue, and the scrub below
+            # dropped the whole paragraph, dialogue included.
+            if re.match(r"^\*{0,2}\s*Chapter\s+\d+\s*[-:–]", stripped, re.IGNORECASE):
+                if current_paragraph:
+                    paragraph_text = " ".join(current_paragraph)
+                    if paragraph_text:
+                        host_paragraphs.append(paragraph_text)
+                    current_paragraph = []
+                continue
+
             # Skip lines matching skip patterns
             should_skip = any(
                 re.match(pattern, line, re.IGNORECASE)
@@ -596,6 +624,20 @@ def extract_heygen_host_script(script_content: str) -> str:
                 # If no paragraph content yet, skip the blank line (spacing after Host:)
                 continue
 
+            # A "Summary:" line starts its own paragraph, without the label, so
+            # the avatar never reads the word "Summary" (the label used to be
+            # glued onto the previous paragraph, where the scrub can't see it).
+            summary_match = re.match(r"^\*{0,2}\s*Summary\s*\*{0,2}\s*:\s*\*{0,2}\s*", stripped, re.IGNORECASE)
+            if summary_match:
+                if current_paragraph:
+                    paragraph_text = " ".join(current_paragraph)
+                    if paragraph_text:
+                        host_paragraphs.append(paragraph_text)
+                    current_paragraph = []
+                stripped = stripped[summary_match.end():]
+                if not stripped:
+                    continue
+
             # Add line to current paragraph
             current_paragraph.append(stripped)
             if debug:
@@ -610,7 +652,8 @@ def extract_heygen_host_script(script_content: str) -> str:
     # Prepend hook text if found
     if hook_text:
         host_paragraphs.insert(0, hook_text)
-        print(f"✅ Added hook to beginning of HeyGen script")
+        if verbose:
+            print(f"✅ Added hook to beginning of HeyGen script")
 
     # Join all paragraphs with double newlines for readability
     heygen_script = "\n\n".join(host_paragraphs)
@@ -620,7 +663,8 @@ def extract_heygen_host_script(script_content: str) -> str:
     # stage directions, metadata) so the HeyGen text is dialogue ONLY.
     heygen_script = scrub_heygen_text(heygen_script)
 
-    print(f"✅ Extracted {len(host_paragraphs)} host paragraphs for HeyGen")
+    if verbose:
+        print(f"✅ Extracted {len(host_paragraphs)} host paragraphs for HeyGen")
     return heygen_script
 
 
@@ -643,8 +687,8 @@ def scrub_heygen_text(text: str) -> str:
         r'^\s*_{3,}\s*$',
         r'^\s*\*{3,}\s*$',
         # Script metadata (accept both ":" and " -" separators)
-        r'^\s*(?:Title|Script\s*Type|Duration|Audience|Tone|Generated|'
-        r'Template\s*ID|Voice\s*ID)\s*[:\-]',
+        r'^\s*(?:Title|Script[-\s]*ID|Script[-\s]*Version|Script\s*Type|Duration|'
+        r'Audience|Tone|Generated|Template\s*ID|Voice\s*ID)\s*[:\-]',
         # "Direct Video - <title>" header line
         r'^\s*Direct\s+Video\s*[-:–]',
         # Chapter headings (Heading:, Chapter N - …, **Chapter N…**)
@@ -695,6 +739,41 @@ def scrub_heygen_text(text: str) -> str:
             out_lines.append(ln)
             blank = False
     return '\n'.join(out_lines).strip()
+
+
+# ---------------------------------------------------------------------------
+# Spoken word count: the one definition every word count in the app uses.
+#
+# "Spoken" means exactly what the HeyGen avatar will say: the HeyGen extraction
+# of the script, after the same production-block removal the HeyGen step does
+# (web_gui._strip_production_blocks). That leaves out headings, the metadata
+# block (Title:, Script-ID:, Audience:, Tone: ...), production notes, VERIFY
+# notes, and the trailing === SUPPORTING RESEARCH / FINAL PACKAGING / STRATEGY
+# NOTES / YOUTUBE VIDEO DESCRIPTION === sections. The page's duration badge
+# (estimateHeyGenDuration in templates/index.html) follows the same rules.
+# ---------------------------------------------------------------------------
+_SPOKEN_PRODUCTION_BLOCK_RE = re.compile(
+    r"\[PRODUCTION\s+BEGIN\].*?\[PRODUCTION\s+END\]", re.IGNORECASE | re.DOTALL)
+# An unfinished block at the end (a script that is still streaming).
+_SPOKEN_OPEN_PRODUCTION_BLOCK_RE = re.compile(
+    r"\[PRODUCTION\s+BEGIN\](?:(?!\[PRODUCTION\s+END\]).)*\Z", re.IGNORECASE | re.DOTALL)
+# Placeholders that stand in for production blocks while an agent rewrites the script.
+_SPOKEN_PLACEHOLDER_RE = re.compile(r"\[\[PRODUCTION_BLOCK_\d+\]\]")
+
+
+def spoken_text(script_text: str) -> str:
+    """The words the avatar will speak, as the HeyGen step extracts them."""
+    text = _SPOKEN_PRODUCTION_BLOCK_RE.sub("", script_text or "")
+    text = _SPOKEN_OPEN_PRODUCTION_BLOCK_RE.sub("", text)
+    text = _SPOKEN_PLACEHOLDER_RE.sub("", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    # Same fallback as the HeyGen step when a script has no Host content.
+    return extract_heygen_host_script(text, verbose=False) or scrub_heygen_text(text)
+
+
+def spoken_word_count(script_text: str) -> int:
+    """Number of words the avatar will speak (see spoken_text)."""
+    return len(spoken_text(script_text).split())
 
 
 def generate_heygen_curl_commands(

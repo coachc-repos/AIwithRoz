@@ -735,10 +735,28 @@ def upload_video(
             f"🖼️  Setting thumbnail for video {video_id}: {thumb_path} "
             f"({thumb_path.stat().st_size} bytes, mime={thumb_mime})")
         try:
-            thumb_media = MediaFileUpload(
-                str(thumb_path), mimetype=thumb_mime, resumable=False)
-            resp = service.thumbnails().set(
-                videoId=video_id, media_body=thumb_media).execute()
+            try:
+                thumb_media = MediaFileUpload(
+                    str(thumb_path), mimetype=thumb_mime, resumable=False)
+                resp = service.thumbnails().set(
+                    videoId=video_id, media_body=thumb_media).execute()
+            except HttpError as big:
+                # If YouTube refuses the file for its size, retry once with a
+                # JPEG copy under the old 2 MB limit.
+                small = None
+                if (thumb_path.stat().st_size > LEGACY_THUMBNAIL_BYTES
+                        and _is_size_rejection(big)):
+                    small = _compressed_thumbnail_copy(thumb_path)
+                if not small:
+                    raise
+                logger.warning(
+                    f"⚠️ YouTube refused the {thumb_path.stat().st_size} byte "
+                    f"thumbnail for its size; retrying with {small.name} "
+                    f"({small.stat().st_size} bytes)")
+                resp = service.thumbnails().set(
+                    videoId=video_id,
+                    media_body=MediaFileUpload(str(small), mimetype="image/jpeg",
+                                               resumable=False)).execute()
             thumbnail_set = True
             logger.info(f"✅ Thumbnail set OK for {video_id}: {resp}")
         except HttpError as te:
@@ -962,8 +980,45 @@ def list_published_videos(max_results: int = 100) -> List[Dict[str, Any]]:
 DEFAULT_VIDEO_DIR = Path.home() / "Dev" / "Videos" / "Edited" / "Final"
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"}
 THUMBNAIL_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
-# YouTube custom thumbnail size limit: 2 MB.
-MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024
+# YouTube custom thumbnail size limit for thumbnails.set: 50 MB ("Maximum file
+# size: 50MB" in the API reference, checked 2026-10-26; it used to be 2 MB).
+MAX_THUMBNAIL_BYTES = 50 * 1024 * 1024
+# Fallback when YouTube still refuses a large file: a JPEG copy under the old
+# 2 MB limit, at full resolution when possible.
+LEGACY_THUMBNAIL_BYTES = 2 * 1024 * 1024
+
+
+def _is_size_rejection(err) -> bool:
+    """True when a thumbnails.set HttpError says the file is too big."""
+    status = getattr(getattr(err, "resp", None), "status", None)
+    try:
+        body = err.content.decode("utf-8", errors="replace") if err.content else ""
+    except Exception:
+        body = str(err)
+    return status == 413 or any(w in body.lower() for w in (
+        "too large", "toolarge", "file size", "mediabodytoolarge", "exceeds"))
+
+
+def _compressed_thumbnail_copy(path: Path) -> Optional[Path]:
+    """A JPEG copy of the thumbnail under LEGACY_THUMBNAIL_BYTES, next to it as
+    <name>_youtube.jpg: full resolution at falling quality, then scaled down.
+    None when Pillow is missing or nothing fits."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    img = Image.open(path).convert("RGB")
+    out = path.with_name(path.stem + "_youtube.jpg")
+    for width in (img.width, 2560, 1920, 1280):
+        if width > img.width:
+            continue
+        frame = img if width == img.width else img.resize(
+            (width, round(img.height * width / img.width)), Image.Resampling.LANCZOS)
+        for quality in (92, 85, 78, 70):
+            frame.save(out, "JPEG", quality=quality, optimize=True)
+            if out.stat().st_size <= LEGACY_THUMBNAIL_BYTES:
+                return out
+    return None
 
 
 def list_thumbnails_for_video(video_path: str) -> List[Dict[str, Any]]:

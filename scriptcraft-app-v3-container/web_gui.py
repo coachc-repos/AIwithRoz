@@ -9,6 +9,7 @@ import queue as _queue
 import threading as _threading
 import re
 import os
+import hmac
 import json
 import time
 import queue
@@ -756,19 +757,22 @@ def _enforce_app_auth_token():
     return None
 
 
-@app.route("/login", methods=["GET"])
+@app.route("/login", methods=["GET", "POST"])
 def app_login_page():
-    """Set the app_token cookie via ?token=... and redirect to /."""
+    """Set the app_token cookie from the sign-in form (or ?token=...) and redirect to /."""
     from flask import redirect as _redirect
-    token = (request.args.get("token") or "").strip()
-    if APP_AUTH_TOKEN and token == APP_AUTH_TOKEN:
-        resp = make_response(_redirect("/"))
+    # The form POSTs so the token stays out of the access log's request line.
+    token = (request.values.get("token") or "").strip()
+    if APP_AUTH_TOKEN and token and hmac.compare_digest(token, APP_AUTH_TOKEN):
+        resp = make_response(_redirect("/", code=303))
         resp.set_cookie(
             "app_token", token,
             max_age=30 * 24 * 3600,
             httponly=True,
             samesite="Lax",
-            secure=request.is_secure,
+            # Container Apps ingress ends TLS, so the app itself sees http.
+            secure=(request.is_secure
+                    or request.headers.get("X-Forwarded-Proto", "") == "https"),
         )
         return resp
     html = """<!doctype html><html><head><meta charset="utf-8"><title>Sign in</title>
@@ -780,7 +784,7 @@ button{cursor:pointer;background:#1d4ed8;border-color:#1d4ed8}
 h1{margin:0 0 6px;font-size:16px}
 .hint{color:#94a3b8;font-size:12px;margin-top:4px}
 </style></head><body>
-<form method="get" action="/login">
+<form method="post" action="/login">
 <h1>🔒 Sign in</h1>
 <input type="password" name="token" placeholder="Access token" autofocus />
 <button type="submit">Continue</button>
@@ -2086,16 +2090,8 @@ async def process_script_creation(session_id, topic, audience, tone,
                     _target_words = int(round(_target_minutes * _wpm))
 
                     def _host_word_count_create(text: str) -> int:
-                        # Ignore production-only [PRODUCTION …] notes entirely.
-                        text = _PRODUCTION_BLOCK_RE.sub(" ", text)
-                        blocks = _re_short.findall(
-                            r"(?:^|\n)\s*(?:#{1,6}\s*)?\**\s*host\s*\**\s*:\s*\**\s*([\s\S]*?)(?="
-                            r"\n\s*(?:#{1,6}\s+\S|(?:#{1,6}\s*)?(?:\*\*[^*\n]{1,40}\*\*\s*:|host\s*:|heading\s*:|chapter\s+\d|visual\s+cue\s*:|b-?roll\s*:)|---+|===+)"
-                            r"|\Z)",
-                            text,
-                            flags=_re_short.IGNORECASE,
-                        )
-                        return sum(len(b.split()) for b in blocks)
+                        # Spoken words only (see _spoken_word_count).
+                        return _spoken_word_count(text)
 
                     _before_host = _host_word_count_create(final_script_content)
                     # If user picked a percent reduction, compute target from current host words.
@@ -2853,8 +2849,9 @@ async def process_script_creation(session_id, topic, audience, tone,
                 "grok_videos": grok_videos,
                 "broll_table": broll_table,
                 "broll_rows": broll_rows,
-                "word_count": len(final_script_with_tools.split()),
-                "reading_time": f"{len(final_script_with_tools.split()) // 150} min",
+                # Spoken words only (what the avatar says), as everywhere else.
+                "word_count": _spoken_word_count(final_script_with_tools),
+                "reading_time": f"{round(_spoken_word_count(final_script_with_tools) / HEYGEN_WPM)} min",
                 "audience": audience,
                 "production_type": production_type,
                 "comparison_file": result.get("comparison_file") if isinstance(result, dict) else None,
@@ -3193,16 +3190,8 @@ async def process_existing_script(
                 _target_words = int(round(_target_minutes * _wpm))
 
                 def _host_word_count(text: str) -> int:
-                    # Ignore production-only [PRODUCTION …] notes entirely.
-                    text = _PRODUCTION_BLOCK_RE.sub(" ", text)
-                    blocks = re.findall(
-                        r"(?:^|\n)\s*(?:#{1,6}\s*)?\**\s*host\s*\**\s*:\s*\**\s*([\s\S]*?)(?="
-                        r"\n\s*(?:#{1,6}\s+\S|(?:#{1,6}\s*)?(?:\*\*[^*\n]{1,40}\*\*\s*:|host\s*:|heading\s*:|chapter\s+\d|visual\s+cue\s*:|b-?roll\s*:)|---+|===+)"
-                        r"|\Z)",
-                        text,
-                        flags=re.IGNORECASE,
-                    )
-                    return sum(len(b.split()) for b in blocks)
+                    # Spoken words only (see _spoken_word_count).
+                    return _spoken_word_count(text)
 
                 _before_host_words = _host_word_count(cleaned_script)
                 # Resolve a target word count: percent (of current) takes precedence
@@ -3340,18 +3329,40 @@ async def process_existing_script(
         # OPTIONAL: Add 3-4 Grok Imagine still-image prompts per chapter, inline,
         # so they can be copy-pasted into Grok Imagine. Runs after Shorten so the
         # prompts match the final wording; tops up chapters that already have some.
+        # With "Replace existing prompts", the current prompts are removed first
+        # and the whole script is rescanned.
         if checkboxes.get("grok_imagine", False):
             try:
-                streamer.send_update(
-                    "🖼️ Adding Grok Imagine prompts per chapter…", 13)
+                _gi_replace = bool(checkboxes.get("grok_imagine_replace", False))
+                _gi_before = cleaned_script
+                _gi_removed = 0
+                if _gi_replace:
+                    cleaned_script, _gi_removed = _remove_grok_imagine_prompts(
+                        cleaned_script)
+                    streamer.send_update(
+                        f"🖼️ Removed {_gi_removed} existing Grok Imagine "
+                        "prompt(s); rescanning the script for new ones…", 13)
+                else:
+                    streamer.send_update(
+                        "🖼️ Adding Grok Imagine prompts per chapter…", 13)
                 cleaned_script, _gi_added = _inject_grok_imagine_prompts(
                     cleaned_script, video_title=script_title)
-                _stages_run.add("grok")
-                streamer.send_update(
-                    f"✅ Added {_gi_added} Grok Imagine prompt(s) across chapters"
-                    if _gi_added else
-                    "ℹ️ Grok Imagine: no chapters needed prompts (already at target)",
-                    14)
+                if _gi_removed and not _gi_added:
+                    # The rescan produced nothing (e.g. the model call failed):
+                    # keep the old prompts rather than leave the script bare.
+                    cleaned_script = _gi_before
+                    streamer.send_update(
+                        "⚠️ Grok Imagine: no new prompts were generated, so the "
+                        "existing prompts were kept", 14)
+                else:
+                    _stages_run.add("grok")
+                    streamer.send_update(
+                        f"✅ Replaced {_gi_removed} Grok Imagine prompt(s) with "
+                        f"{_gi_added} new one(s)" if _gi_removed else
+                        f"✅ Added {_gi_added} Grok Imagine prompt(s) across chapters"
+                        if _gi_added else
+                        "ℹ️ Grok Imagine: no chapters needed prompts (already at target)",
+                        14)
             except Exception as _gi_err:
                 logger.warning(f"⚠️ Grok Imagine step error: {_gi_err}")
                 streamer.send_update(
@@ -4553,8 +4564,8 @@ TOOLS
         streamer.result = {
             "success": True,
             "enhanced_script": test_script,
-            "word_count": len(test_script.split()),
-            "reading_time": f"{len(test_script.split()) // 150} min",
+            "word_count": _spoken_word_count(test_script),
+            "reading_time": f"{round(_spoken_word_count(test_script) / HEYGEN_WPM)} min",
             "audience": "test audience",
             "production_type": "test",
         }
@@ -6160,6 +6171,21 @@ _PRODUCTION_BLOCK_SPLIT_RE = re.compile(
     "(" + _PRODUCTION_BLOCK_PATTERN + ")", re.IGNORECASE | re.DOTALL)
 
 
+# HeyGen's real speaking pace: hook videos from 4 episodes ran 170-177 words
+# per minute (measured 2026-10-22). Used for the reading times shown; the same
+# constant is HEYGEN_WPM in templates/index.html.
+HEYGEN_WPM = 175
+
+
+def _spoken_word_count(text: str) -> int:
+    """Words the avatar will speak: the HeyGen extraction of the script, without
+    headings, the metadata block, production notes, or the trailing research and
+    packaging sections. Every word count the app shows uses this
+    (console_ui/text_processing.spoken_word_count)."""
+    from console_ui.text_processing import spoken_word_count
+    return spoken_word_count(text or "")
+
+
 def _strip_production_blocks(text: str) -> str:
     """Remove every [PRODUCTION BEGIN]…[PRODUCTION END] block outright (the
     user's editing-only notes) so downstream spoken output — the HeyGen narration
@@ -6612,6 +6638,53 @@ def _new_grok_imagine_block(image_prompt: str, quote_card: str = None) -> str:
     return "\n".join(out)
 
 
+# Lines this stage writes inside a production block: the prompt itself and the
+# QUOTE CARD line that can go with it. Both are always one line.
+_GI_STAGE_LINE_RE = re.compile(
+    r"^\s*\**\s*\[\s*(GROK\s+IMAGINE|QUOTE\s+CARD)\b[^\]]*\]", re.IGNORECASE)
+_PRODUCTION_PARTS_RE = re.compile(
+    r"(\[PRODUCTION\s+BEGIN\])(.*)(\[PRODUCTION\s+END\])\Z",
+    re.IGNORECASE | re.DOTALL)
+
+
+def _remove_grok_imagine_prompts(script: str) -> tuple:
+    """Remove the Grok Imagine prompts, and their QUOTE CARD lines, from every
+    [PRODUCTION …] block in the spoken body, so the stage can rescan the script
+    and add fresh ones (the "Replace existing prompts" option). Everything else
+    in a block (VERIFY notes, cold open, overlays, stamps) stays; a block left
+    empty is dropped. Trailing metadata sections are untouched, as in
+    _inject_grok_imagine_prompts. Returns (script, removed_prompt_count)."""
+    if not script or not script.strip():
+        return script, 0
+    m = _GI_META_BOUNDARY_RE.search(script)
+    main, tail = (script[:m.start()], script[m.start():]) if m else (script, "")
+
+    removed = 0
+    out = []
+    for kind, text in _split_by_production(main):
+        parts = _PRODUCTION_PARTS_RE.match(text) if kind == "production" else None
+        if not parts:
+            out.append(text)
+            continue
+        begin, inner, end = parts.groups()
+        kept = []
+        for ln in inner.split("\n"):
+            hit = _GI_STAGE_LINE_RE.match(ln)
+            if hit:
+                if hit.group(1).upper().startswith("GROK"):
+                    removed += 1
+                continue
+            kept.append(ln)
+        body = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip("\n")
+        if body.strip():
+            out.append(f"{begin}\n{body}\n{end}")
+        # else: nothing left in the block, so drop it with its markers
+    if not removed:
+        return script, 0
+    main = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", "".join(out))
+    return main + tail, removed
+
+
 def _gi_inject_hook(preamble_lines: list, video_title: str) -> tuple:
     """Add ONE Grok Imagine block for the hook at the top of the script, before
     the first chapter — unless the preamble already has a GROK IMAGINE block.
@@ -6667,7 +6740,10 @@ def _gi_process_chapter(body: str, chap_title: str, video_title: str,
             break
         if k != "para" or not _gi_is_spoken(t):
             continue
-        if i > 0 and items[i - 1][0] == "prod":
+        # Skip a paragraph that already follows a Grok Imagine block. One that
+        # follows only a VERIFY note, cold open, or overlay can still get one.
+        if (i > 0 and items[i - 1][0] == "prod"
+                and _GROK_IMAGINE_TAG.lower() in items[i - 1][1].lower()):
             continue
         beat_idxs.append(i)
     if not beat_idxs:
@@ -7142,6 +7218,115 @@ def api_x_generate():
         logger.error(f"❌ X post generation failed: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
     return jsonify({"success": True, "text": text})
+
+
+# ---- Reply to related posts (X composer) ----
+# For a selected episode, Grok's server-side X search finds recent posts on the
+# same subject and drafts a reply for each, to copy and post by hand. A post is
+# kept only when its link is among the search's citations, so every post shown
+# was really found (never invented).
+
+X_REPLY_SEARCH_DAYS = 14
+_X_STATUS_URL_RE = re.compile(r"https?://(?:www\.)?(?:x|twitter)\.com/([A-Za-z0-9_]{1,15})/status/(\d+)")
+
+_X_REPLY_SYSTEM = (
+    "You find recent X posts that are worth replying to for the @AIwithRoz "
+    "account (plain-English AI news and how-to videos for a general audience), "
+    "and you draft the replies.\n\n"
+    "Use X search to find posts from the last {days} days about the subject of "
+    "the episode below. Choose up to 5 posts that are on topic, from real people "
+    "or credible accounts, and that a thoughtful reply can add to: a question, an "
+    "opinion, a worry, a news post people are discussing. Skip ads, bots, "
+    "giveaways, crypto promotion, adult content, political flame wars, and "
+    "@AIwithRoz itself.\n\n"
+    "For each post, write a reply from @AIwithRoz:\n"
+    "- 1 or 2 sentences, under 240 characters.\n"
+    "- Add one specific insight, fact, or practical takeaway from the episode "
+    "that answers or builds on the post. Friendly and plain English.\n"
+    "- No hashtags, no links, no emojis beyond one, and never the word \"my\".\n"
+    "- Do not pitch the video; at most a light 'we covered this' is fine.\n"
+    "- Never invent facts, numbers, or quotes; use only the episode details and "
+    "the post itself.\n\n"
+    "Reply with JSON only, no prose and no code fences: "
+    "{{\"posts\": [{{\"url\": \"https://x.com/<handle>/status/<id>\", \"handle\": "
+    "\"@handle\", \"date\": \"YYYY-MM-DD\", \"text\": \"the post's text, verbatim "
+    "(shorten with ... if long)\", \"why\": \"one line on why it is worth a reply\", "
+    "\"reply\": \"the drafted reply\"}}]}}"
+)
+
+
+def _find_x_reply_targets(title: str, description: str = "", youtube_url: str = "",
+                          days: int = X_REPLY_SEARCH_DAYS) -> list:
+    """Recent X posts related to an episode, each with a drafted reply.
+    Returns [{url, handle, date, text, why, reply}]; raises on failure."""
+    api_key = _resolve_xai_api_key()
+    if not api_key:
+        raise RuntimeError("xAI/Grok is not configured. Set the Grok key in 🔑 API Keys.")
+    import datetime as _dt
+    import xai_sdk
+    from xai_sdk.chat import system as _xai_system, user as _xai_user
+    from xai_sdk.tools import x_search as _xai_x_search
+    since = _dt.datetime.now() - _dt.timedelta(days=days)
+    client = xai_sdk.Client(api_key=api_key)
+    chat = client.chat.create(
+        model=IDEA_GROK_MODEL, temperature=0.4, max_turns=6,
+        tools=[_xai_x_search(from_date=since, excluded_x_handles=[X_ACCOUNT_HANDLE])])
+    chat.append(_xai_system(_X_REPLY_SYSTEM.format(days=days)))
+    episode = f"Episode title: {title}"
+    if youtube_url:
+        episode += f"\nVideo: {youtube_url}"
+    if description:
+        episode += f"\nEpisode description:\n{description[:3000]}"
+    chat.append(_xai_user(episode + "\n\nFind the posts and draft the replies."))
+    resp = chat.sample()
+    logger.info("💬 X reply search: %s", getattr(resp, "server_side_tool_usage", None))
+    cited_ids = {m.group(2) for c in (getattr(resp, "citations", None) or [])
+                 for m in [_X_STATUS_URL_RE.search(str(c))] if m}
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", (resp.content or "").strip())
+    try:
+        items = json.loads(raw[raw.index("{"):raw.rindex("}") + 1]).get("posts") or []
+    except ValueError:
+        raise RuntimeError("Grok did not return a list of posts. Try again.")
+    posts, seen = [], set()
+    for p in items:
+        m = _X_STATUS_URL_RE.search(str((p or {}).get("url") or ""))
+        if not m or m.group(2) in seen or m.group(1).lower() == X_ACCOUNT_HANDLE.lower():
+            continue
+        if m.group(2) not in cited_ids:          # not returned by the search
+            continue
+        seen.add(m.group(2))
+        reply = " ".join(str(p.get("reply") or "").split())
+        reply = re.sub(r"\bmy\b", "the", reply, flags=re.IGNORECASE) if reply else reply
+        posts.append({
+            "url": f"https://x.com/{m.group(1)}/status/{m.group(2)}",
+            "id": m.group(2), "handle": "@" + m.group(1),
+            "date": str(p.get("date") or "")[:10],
+            "text": str(p.get("text") or "")[:600],
+            "why": str(p.get("why") or "")[:200], "reply": reply[:280],
+        })
+    logger.info("💬 X reply targets: %d of %d proposed were in the search citations (%d cited)",
+                len(posts), len(items), len(cited_ids))
+    return posts[:5]
+
+
+@app.route("/api/x/related", methods=["POST"])
+def api_x_related():
+    """{"title", "description", "youtube_url"} -> {"posts": [...with drafted replies]}."""
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    if not title:
+        return jsonify({"success": False, "error": "Pick an episode first."}), 400
+    try:
+        posts = _find_x_reply_targets(title, (data.get("description") or "").strip(),
+                                      (data.get("youtube_url") or "").strip())
+    except Exception as e:
+        logger.error(f"❌ X related-post search failed: {e}")
+        return jsonify({"success": False, "error": str(e)[:400]}), 500
+    if not posts:
+        return jsonify({"success": True, "posts": [], "message":
+                        f"No recent posts about this episode were found in the last "
+                        f"{X_REPLY_SEARCH_DAYS} days. Try again later or pick another episode."})
+    return jsonify({"success": True, "posts": posts})
 
 
 @app.route("/api/x/post", methods=["POST"])
@@ -8148,6 +8333,123 @@ def process_script():
         error_msg = f"Script processing request failed: {str(e)}"
         logger.error(f"❌ {error_msg}")
         return jsonify({"success": False, "error": error_msg})
+
+
+# ---- Title Picker (last Process Script stage) ----
+# Claude reads the loaded script and suggests 5 titles; the chosen one replaces
+# the script's title. Only the spoken body's title is changed: the metadata
+# "Title:" line and a top "# ..." heading. The trailing sections (YouTube
+# details with their own A/B title lines, research) are left as they are.
+
+_TITLE_LINE_RE = re.compile(
+    r'^([ \t]*\**[ \t]*Title[ \t]*\**[ \t]*:[ \t]*\**[ \t]*)(.+?)([ \t]*\**[ \t]*)$',
+    re.MULTILINE | re.IGNORECASE)
+_TOP_H1_RE = re.compile(r'^(#[ \t]+(?:Direct[ \t]+Video[ \t]*-[ \t]*)?)(.+?)[ \t]*$')
+
+_TITLE_SYSTEM = (
+    "You write YouTube titles for the @AIwithRoz channel: plain-English AI news "
+    "and how-to videos for a general audience. The channel's titles look like: "
+    "\"Elon's Last 10 AI Posts Ranked for YOU\", \"The 7 Wildest 'AI 2027' "
+    "Predictions, Fact-Checked\", \"You Will Not Spot the Scam That Gets You. "
+    "Your AI Will.\", \"Who Actually Wins When AI Doom Goes Viral\".\n\n"
+    "Rules:\n"
+    "- 5 titles, each under 70 characters, so nothing is cut off in search.\n"
+    "- Front-load the most interesting word. Be specific: name the person, "
+    "product, or number the video is built on.\n"
+    "- Honest: promise only what the script delivers; never invent a number, "
+    "quote, or claim that is not in the script. Keep the list count when the "
+    "script is a numbered list.\n"
+    "- Five different angles: for example a number or ranking, a question, a "
+    "bold claim, a 'what this means for you', and a contrast or versus.\n"
+    "- Title Case. At most one word in ALL CAPS for emphasis. No emojis, no "
+    "hashtags, no clickbait phrases like 'You won't believe'.\n\n"
+    "Reply with JSON only, no prose and no code fences: "
+    "{\"titles\": [{\"title\": \"...\", \"why\": \"one short line on the angle\"}]}"
+)
+
+
+def _apply_script_title(script: str, new_title: str) -> tuple:
+    """Put new_title into the script. Returns (script, changes) where changes
+    lists what was updated ('Title: line', 'top heading', 'added Title: line')."""
+    new_title = " ".join((new_title or "").split())
+    m = _GI_META_BOUNDARY_RE.search(script)
+    main, tail = (script[:m.start()], script[m.start():]) if m else (script, "")
+    changes = []
+    main, n = _TITLE_LINE_RE.subn(
+        lambda mm: mm.group(1) + new_title + mm.group(3), main, count=1)
+    if n:
+        changes.append("Title: line")
+    lines = main.split("\n")
+    first = next((i for i, ln in enumerate(lines) if ln.strip()), None)
+    if first is not None:
+        h1 = _TOP_H1_RE.match(lines[first])
+        if h1 and not re.search(r'HEYGEN|OPENING HOOK|FINAL HOOK', h1.group(2), re.I):
+            lines[first] = h1.group(1) + new_title
+            changes.append("top heading")
+    main = "\n".join(lines)
+    if not changes:
+        main = f"Title: {new_title}\n\n" + main.lstrip("\n")
+        changes.append("added Title: line")
+    return main + tail, changes
+
+
+@app.route("/api/titles/suggest", methods=["POST"])
+def api_titles_suggest():
+    """5 title suggestions for the loaded script: {"script"} -> {"titles": [{title, why}]}."""
+    data = request.get_json(silent=True) or {}
+    script = (data.get("script") or "").strip()
+    if not script:
+        return jsonify({"success": False, "error": "Load a script first."}), 400
+    current = _extract_script_title_for_output(script, fallback="")
+    from console_ui.text_processing import spoken_text
+    spoken = spoken_text(script) or script
+    headings = "\n".join(re.findall(r'^\s*\**\s*Heading\s*:\s*(.+)$', script, re.M | re.I)[:12])
+    user = (f"Current title: {current or '(none)'}\n\nChapter headings:\n{headings or '(none)'}\n\n"
+            f"What the host says (may be cut short):\n{spoken[:14000]}\n\n"
+            "Suggest 5 titles for this video.")
+    import anthropic
+    last_err = None
+    for model in (IDEA_MODEL, ANTHROPIC_MODEL):
+        try:
+            raw = _anthropic_complete(_TITLE_SYSTEM, user, max_tokens=1500,
+                                      use_web_search=False, model=model, timeout=90.0)
+            raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', _strip_reminder_tags(raw).strip())
+            items = json.loads(raw[raw.index("{"):raw.rindex("}") + 1]).get("titles") or []
+            titles = []
+            for t in items:
+                title = " ".join(str((t or {}).get("title") or "").split()).strip('"')
+                if title and title.lower() not in {x["title"].lower() for x in titles}:
+                    titles.append({"title": title[:100], "why": str(t.get("why") or "")[:200]})
+            if titles:
+                return jsonify({"success": True, "current_title": current,
+                                "titles": titles[:5], "model": model})
+            last_err = "the model returned no titles"
+        except anthropic.NotFoundError as e:
+            last_err = e
+            continue
+        except Exception as e:
+            last_err = e
+            break
+    logger.error(f"❌ Title suggestions failed: {last_err}")
+    return jsonify({"success": False, "error": f"Title suggestions failed: {last_err}"}), 500
+
+
+@app.route("/api/titles/apply", methods=["POST"])
+def api_titles_apply():
+    """Replace the script's title: {"script", "title"} -> {"script", "changes"}."""
+    data = request.get_json(silent=True) or {}
+    script = data.get("script") or ""
+    title = " ".join((data.get("title") or "").split())
+    if not script.strip():
+        return jsonify({"success": False, "error": "Load a script first."}), 400
+    if not title:
+        return jsonify({"success": False, "error": "Pick or type a title."}), 400
+    if len(title) > 100:
+        return jsonify({"success": False, "error": "YouTube titles can be at most 100 characters."}), 400
+    old = _extract_script_title_for_output(script, fallback="")
+    updated, changes = _apply_script_title(script, title)
+    return jsonify({"success": True, "script": updated, "title": title,
+                    "old_title": old, "changes": changes})
 
 
 @app.route("/api/finalize-hook", methods=["POST"])
@@ -9252,9 +9554,33 @@ def api_resolve_save_comp_preset():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+_LOOPBACK_ADDRS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
+def _key_access_denied():
+    """403 unless this request may read or write full API key values.
+
+    Keys reach the browser only as masked hints, but saving or clearing a key
+    changes what the app runs with. Without APP_AUTH_TOKEN the app is open to
+    anyone who can reach it (the GUI binds 0.0.0.0, so that includes the local
+    network), so only a browser on this machine may read or change keys. With
+    the token set, _enforce_app_auth_token has already checked it.
+    """
+    if APP_AUTH_TOKEN or (request.remote_addr or "") in _LOOPBACK_ADDRS:
+        return None
+    return jsonify({
+        "success": False,
+        "error": ("API keys can only be viewed or changed from this computer, "
+                  "or after signing in. Set APP_AUTH_TOKEN to manage keys remotely."),
+    }), 403
+
+
 @app.route("/api/keys", methods=["GET"])
 def api_keys_get():
-    """Return all saved API keys (Google, HeyGen, Grok). Falls back to env vars."""
+    """Return all saved API keys (Claude, Google, HeyGen, Grok, X). Falls back to env vars."""
+    denied = _key_access_denied()
+    if denied:
+        return denied
     try:
         settings = _load_scriptcraft_settings()
 
@@ -9318,7 +9644,10 @@ def _reload_x_env_fallback(env_var: str) -> None:
 
 @app.route("/api/keys", methods=["POST"])
 def api_keys_save():
-    """Persist Google / HeyGen / Grok keys and update process env so backend modules see them."""
+    """Persist the dialog's keys and update process env so backend modules see them."""
+    denied = _key_access_denied()
+    if denied:
+        return denied
     try:
         data = request.get_json(silent=True) or {}
         settings = _load_scriptcraft_settings()
@@ -9772,6 +10101,9 @@ def api_save_outputs():
 @app.route("/api/grok/key", methods=["GET"])
 def grok_get_saved_key():
     """Return saved Grok API key from server settings (if any)."""
+    denied = _key_access_denied()
+    if denied:
+        return denied
     try:
         settings = _load_scriptcraft_settings()
         key = (settings.get("grok_api_key") or "").strip()
@@ -10205,6 +10537,9 @@ def _grok_build_video_prompt(
 @app.route("/api/grok/key", methods=["POST"])
 def grok_save_key():
     """Persist Grok API key in server settings so it survives browser/session changes."""
+    denied = _key_access_denied()
+    if denied:
+        return denied
     try:
         data = request.get_json() or {}
         api_key = (data.get("api_key") or "").strip()
@@ -11128,9 +11463,10 @@ def youtube_pick_video_path():
 @app.route("/api/youtube/pick-thumbnail-path", methods=["GET"])
 def youtube_pick_thumbnail_path():
     """Open a native OS file dialog and return the selected thumbnail
-    path. We validate extension and 2 MB YouTube limit here."""
+    path. We validate extension and YouTube's 50 MB limit here."""
+    import youtube_publisher as yp
     res = _osascript_pick_file(
-        "Choose a thumbnail image (PNG or JPG, under 2 MB)",
+        "Choose a thumbnail image (PNG or JPG, up to 50 MB)",
         'of type {"png","jpg","jpeg"}'
     )
     if not res.get("success"):
@@ -11143,9 +11479,9 @@ def youtube_pick_thumbnail_path():
         return jsonify({"success": False,
                         "error": f"Unsupported extension {p.suffix}"}), 400
     size = p.stat().st_size
-    if size > 2 * 1024 * 1024:
+    if size > yp.MAX_THUMBNAIL_BYTES:
         return jsonify({"success": False,
-                        "error": "Thumbnail exceeds YouTube's 2 MB limit."
+                        "error": "Thumbnail exceeds YouTube's 50 MB limit."
                         }), 400
     return jsonify({
         "success": True,
@@ -11221,10 +11557,11 @@ def youtube_upload_thumbnail():
                             "error": f"unsupported extension {ext}"}), 400
         target = _yt_uploads_dir() / safe_name
         f.save(str(target))
-        if target.stat().st_size > 2 * 1024 * 1024:
+        import youtube_publisher as yp
+        if target.stat().st_size > yp.MAX_THUMBNAIL_BYTES:
             target.unlink(missing_ok=True)
             return jsonify({"success": False,
-                            "error": "Thumbnail exceeds YouTube's 2 MB limit."
+                            "error": "Thumbnail exceeds YouTube's 50 MB limit."
                             }), 400
         return jsonify({
             "success": True,
@@ -11625,7 +11962,7 @@ def youtube_publish():
             if tp.stat().st_size > yp.MAX_THUMBNAIL_BYTES:
                 return jsonify({
                     "success": False,
-                    "error": f"Thumbnail is larger than YouTube's 2 MB limit: {tp}"
+                    "error": f"Thumbnail is larger than YouTube's 50 MB limit: {tp}"
                 }), 400
             thumbnail_path = str(tp)
 
@@ -12059,23 +12396,25 @@ def public_videos():
     return Response(html, mimetype="text/html")
 
 
+def _find_thumbnail_file(filename: str):
+    """A generated thumbnail by file name, searched under the output folder and
+    ~/Dev/Thumbnails, or None. The name is matched literally: glob characters
+    and path separators are refused, so a request can't match other files."""
+    name = (filename or "").strip()
+    if not name or name.startswith(".") or any(c in name for c in "*?[]/\\"):
+        return None
+    for root in (_get_output_parent_dir(), Path.home() / "Dev" / "Thumbnails"):
+        if root.exists():
+            for match in root.rglob(name):
+                return match
+    return None
+
+
 @app.route("/thumbnails/<filename>")
 def serve_thumbnail(filename):
     """Serve generated thumbnail images"""
     try:
-        search_roots = [
-            _get_output_parent_dir(),
-            Path.home() / "Dev" / "Thumbnails",
-        ]
-
-        file_path = None
-        for root in search_roots:
-            if not root.exists():
-                continue
-            matches = list(root.rglob(filename))
-            if matches:
-                file_path = matches[0]
-                break
+        file_path = _find_thumbnail_file(filename)
 
         if file_path and file_path.exists() and file_path.suffix.lower() in ['.png', '.jpg', '.jpeg']:
             mimetype = 'image/png'
@@ -12086,6 +12425,110 @@ def serve_thumbnail(filename):
     except Exception as e:
         logger.error(f"Error serving thumbnail: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+# ---- Thumbnail themes and prompt edits (Grok Imagine) ----
+# The themes are the channel's reference thumbnails in tools/media/thumbnail_refs/
+# (local only: the images are gitignored, so the cloud build has none). Any theme,
+# generated thumbnail, or uploaded image can be edited with a plain-language
+# prompt; each edit is saved as a new file next to its source.
+
+def _thumbnail_themes() -> list:
+    from tools.media.grok_thumbnail_generator import REFS_DIR, load_references
+    return [dict(r, path=REFS_DIR / r["file"]) for r in load_references(REFS_DIR)]
+
+
+@app.route("/api/thumbnails/themes", methods=["GET"])
+def api_thumbnail_themes():
+    try:
+        themes = [{"file": t["file"], "description": t["description"],
+                   "layouts": t["layouts"], "host": t["host"],
+                   "url": f"/api/thumbnails/theme-image/{urllib.parse.quote(t['file'])}"}
+                  for t in _thumbnail_themes()]
+        return jsonify({"success": True, "themes": themes})
+    except Exception as e:
+        logger.error(f"❌ /api/thumbnails/themes failed: {e}")
+        return jsonify({"success": False, "error": str(e), "themes": []}), 500
+
+
+@app.route("/api/thumbnails/theme-image/<filename>", methods=["GET"])
+def api_thumbnail_theme_image(filename):
+    theme = next((t for t in _thumbnail_themes() if t["file"] == filename), None)
+    if not theme:
+        return jsonify({"error": "Theme not found"}), 404
+    return send_file(theme["path"])
+
+
+@app.route("/api/thumbnails/edit", methods=["POST"])
+def api_thumbnail_edit():
+    """Apply one prompt edit to a thumbnail with Grok Imagine (XAI_API_KEY).
+
+    Body: {"source_kind": "generated" | "theme" | "upload", "source": <file
+    name, theme file, or image data URL>, "instruction": "change the 3 to a 9",
+    "include_images": [<image data URL>, ...]} (optional: up to 3 images to
+    add, e.g. a logo). Returns {"success", "thumbnail"} where thumbnail has
+    the gallery's fields.
+    """
+    import base64 as _b64
+    data = request.get_json(silent=True) or {}
+    kind = (data.get("source_kind") or "generated").strip().lower()
+    source = (data.get("source") or "").strip()
+    instruction = (data.get("instruction") or "").strip()
+    if not instruction:
+        return jsonify({"success": False, "error": "Describe the change to make."}), 400
+    data_url_re = re.compile(r"^data:image/(png|jpe?g|webp);base64,(.+)$", re.S)
+    includes = []
+    for item in (data.get("include_images") or [])[:4]:
+        m = data_url_re.match(str(item or ""))
+        if not m:
+            return jsonify({"success": False,
+                            "error": "Included images must be PNG, JPEG or WebP."}), 400
+        includes.append(_b64.b64decode(m.group(2)))
+    if len(includes) > 3:
+        return jsonify({"success": False, "error": "Include at most 3 images per edit."}), 400
+    if any(len(b) > 15 * 1024 * 1024 for b in includes):
+        return jsonify({"success": False, "error": "An included image is over 15 MB."}), 400
+    edits_dir = Path.home() / "Dev" / "Thumbnails" / "edits"
+    try:
+        if kind == "theme":
+            theme = next((t for t in _thumbnail_themes() if t["file"] == source), None)
+            if not theme:
+                return jsonify({"success": False, "error": "Theme not found."}), 404
+            src, out_dir = theme["path"], edits_dir
+        elif kind == "upload":
+            m = data_url_re.match(source)
+            if not m:
+                return jsonify({"success": False,
+                                "error": "Upload a PNG, JPEG or WebP image."}), 400
+            raw = _b64.b64decode(m.group(2))
+            if len(raw) > 25 * 1024 * 1024:
+                return jsonify({"success": False, "error": "Image is over 25 MB."}), 400
+            edits_dir.mkdir(parents=True, exist_ok=True)
+            ext = "jpg" if m.group(1).startswith("jp") else m.group(1)
+            src = edits_dir / f"upload_{datetime.now():%Y%m%d_%H%M%S}.{ext}"
+            src.write_bytes(raw)
+            out_dir = edits_dir
+        else:
+            found = _find_thumbnail_file(source)
+            if not found or found.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+                return jsonify({"success": False, "error": f"Thumbnail not found: {source}"}), 404
+            # Edit the full-resolution original when there is one; save next to the source.
+            full = found.parent / "full" / f"{found.stem}_full.png"
+            src = full if full.is_file() else found
+            out_dir = found.parent
+        from tools.media.grok_thumbnail_generator import GrokThumbnailGenerator
+        gen = GrokThumbnailGenerator()
+        logger.info(f"✏️ Thumbnail edit ({kind}: {src.name}"
+                    f"{f', +{len(includes)} included image(s)' if includes else ''}): "
+                    f"{instruction[:120]}")
+        thumb = gen.edit_thumbnail(src, instruction, out_dir=out_dir, include_images=includes)
+        return jsonify({"success": True, "thumbnail": thumb})
+    except Exception as e:
+        msg = str(e)
+        if "moderation" in msg.lower():
+            msg = "Grok Imagine's moderation blocked this edit. Try wording it differently."
+        logger.error(f"❌ Thumbnail edit failed: {e}")
+        return jsonify({"success": False, "error": msg[:400]}), 500
 
 
 @app.route("/broll-images/<filename>")
@@ -14426,7 +14869,7 @@ def _list_cloud_scripts(limit: int = _CLOUD_SCRIPTS_MAX) -> list:
                 "created": b.last_modified.isoformat(),
                 "has_script": bool(script_text),
                 "has_brief": bool((m.get("brief") or "").strip()),
-                "word_count": len(script_text.split()) if script_text else 0,
+                "word_count": _spoken_word_count(script_text) if script_text else 0,
             })
         if truncated:
             logger.info(

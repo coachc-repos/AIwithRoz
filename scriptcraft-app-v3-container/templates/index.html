@@ -982,7 +982,38 @@
             border-color: #38bdf8;
             box-shadow: 0 0 10px rgba(56, 189, 248, 0.5);
         }
-        
+
+        /* Thumbnail edit row: the box and its buttons share one height, and the
+           buttons press down when clicked. */
+        .tg-edit { padding: 10px 15px 12px; background: #0f172a; border-top: 1px solid #1e293b; }
+        .tg-edit-row, .tg-save-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: stretch; }
+        .tg-save-row { margin-bottom: 10px; }
+        .tg-edit-input {
+            flex: 1; min-width: 220px; height: 40px; box-sizing: border-box; padding: 0 12px;
+            border-radius: 6px; border: 1px solid #374151; background: #111827; color: #f9fafb; font-size: 14px;
+        }
+        .tg-btn {
+            height: 40px; box-sizing: border-box; padding: 0 16px; border: none; border-radius: 6px;
+            font-size: 14px; font-weight: 600; line-height: 1; cursor: pointer; white-space: nowrap;
+            display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+            box-shadow: 0 3px 0 rgba(0, 0, 0, 0.45);
+            transition: transform 0.06s ease, box-shadow 0.06s ease, filter 0.12s ease;
+        }
+        .tg-btn:hover:not(:disabled) { filter: brightness(1.12); }
+        .tg-btn:active:not(:disabled) { transform: translateY(3px); box-shadow: 0 0 0 rgba(0, 0, 0, 0.45); filter: brightness(0.9); }
+        .tg-btn:disabled { opacity: 0.6; cursor: progress; }
+        .tg-btn-primary { background: #7c3aed; color: #fff; }
+        .tg-btn-secondary { background: #334155; color: #e2e8f0; }
+        .tg-include-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+        .tg-include-chips:not(:empty) { margin-top: 8px; }
+        .tg-chip {
+            display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 3px;
+            background: #1e293b; border: 1px solid #334155; border-radius: 6px; color: #cbd5e1; font-size: 12px;
+        }
+        .tg-chip img { height: 26px; width: 26px; object-fit: contain; background: #fff; border-radius: 4px; }
+        .tg-chip button { background: transparent; border: none; color: #94a3b8; cursor: pointer; font-size: 12px; padding: 0 4px; }
+        .tg-edit-status { margin-top: 6px; font-size: 12px; color: #94a3b8; min-height: 1.1em; }
+
         /* B-roll Table Styling */
         .broll-table {
             width: 100%;
@@ -2084,6 +2115,18 @@
                     <div id="xSelectedVideo" style="display:none; margin-top:8px; color:#93c5fd; font-size:0.85em;"></div>
                 </div>
 
+                <!-- Reply to related posts: Grok's X search finds recent posts on the
+                     episode's subject and drafts a reply for each, to copy and post. -->
+                <div id="xReplySection" style="display:none; border:1px solid #334155; border-radius:8px; padding:10px 12px; margin-bottom:12px; background:#0b1220;">
+                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <span style="color:#cbd5e1; font-size:0.88em; font-weight:600;">💬 Reply to related posts</span>
+                        <label title="Add the episode link at the end of each copied reply" style="margin-left:auto; display:flex; align-items:center; gap:5px; color:#94a3b8; font-size:0.8em; cursor:pointer;"><input type="checkbox" id="xReplyAddLink" onchange="_xReplyPosts.forEach((_, i) => updateXReplyCount(i))"> add video link</label>
+                        <button id="xReplyFindBtn" type="button" class="tg-btn tg-btn-secondary" onclick="findXReplyTargets()" style="height:32px; padding:0 12px; font-size:0.85em;">🔎 Find related posts</button>
+                    </div>
+                    <div id="xReplyStatus" style="color:#94a3b8; font-size:0.8em; margin-top:6px;">Grok searches X for posts from the last 2 weeks about this episode and drafts a reply for each. Copy one, then post it on X.</div>
+                    <div id="xReplyList"></div>
+                </div>
+
                 <div id="xPostTopicRow" style="display:none; margin-bottom:12px;">
                     <label style="color:#cbd5e1; font-size:0.88em; display:block; margin-bottom:4px;">What should this post be about?</label>
                     <textarea id="xPostTopic" rows="2" placeholder="e.g. our video on AI meeting notes; a tip about prompt writing" style="width:100%; box-sizing:border-box; padding:10px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-size:0.95em; resize:vertical;"></textarea>
@@ -2178,7 +2221,8 @@
             function selectXVideo(idx) {
                 const v = (_xPublishedVideos || [])[idx];
                 if (!v) return;
-                _xPostCtx = { mode: 'episode', title: v.title || '', youtube_url: v.url || '' };
+                _xPostCtx = { mode: 'episode', title: v.title || '', youtube_url: v.url || '', description: v.description || '' };
+                resetXReplies(true);
                 document.getElementById('xPostTopicRow').style.display = 'none';
                 document.getElementById('xVideoBrowser').style.display = 'none';
                 const sel = document.getElementById('xSelectedVideo');
@@ -2189,6 +2233,104 @@
                 document.getElementById('xPostSubtitle').innerHTML =
                     'Promoting a published video. The YouTube link is appended automatically.';
                 regenerateXPost();
+            }
+
+            // ---- Reply to related posts ----
+            let _xReplyPosts = [];
+
+            function resetXReplies(show) {
+                _xReplyPosts = [];
+                document.getElementById('xReplySection').style.display = show ? 'block' : 'none';
+                document.getElementById('xReplyList').innerHTML = '';
+                const st = document.getElementById('xReplyStatus');
+                st.style.color = '#94a3b8';
+                st.textContent = 'Grok searches X for posts from the last 2 weeks about this episode and drafts a reply for each. Copy one, then post it on X.';
+            }
+
+            async function findXReplyTargets() {
+                const btn = document.getElementById('xReplyFindBtn');
+                const st = document.getElementById('xReplyStatus');
+                const list = document.getElementById('xReplyList');
+                if (!_xPostCtx.title) { st.textContent = 'Pick an episode first.'; return; }
+                const timer = _startBtnTimer(btn, 'Searching');
+                st.style.color = '#94a3b8';
+                st.textContent = '🔎 Grok is searching X and drafting replies (about a minute)…';
+                list.innerHTML = '';
+                try {
+                    const r = await fetch('/api/x/related', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ title: _xPostCtx.title, description: _xPostCtx.description || '',
+                                               youtube_url: _xPostCtx.youtube_url || '' }),
+                    });
+                    const data = await r.json();
+                    if (!r.ok || !data.success) throw new Error(data.error || ('HTTP ' + r.status));
+                    _xReplyPosts = data.posts || [];
+                    if (!_xReplyPosts.length) { st.textContent = data.message || 'No related posts found.'; return; }
+                    st.style.color = '#34d399';
+                    st.textContent = `✅ ${_xReplyPosts.length} recent post(s). Edit a reply if you like, then copy it, or open the reply on X with it filled in.`;
+                    list.innerHTML = _xReplyPosts.map((p, i) => `
+                        <div style="margin-top:10px; padding:10px; background:#111827; border:1px solid #1f2937; border-radius:8px;">
+                            <div style="display:flex; align-items:center; gap:8px; font-size:0.82em; color:#94a3b8;">
+                                <strong style="color:#e2e8f0;">${escapeHtml(p.handle)}</strong>${p.date ? ' · ' + escapeHtml(p.date) : ''}
+                                <a href="${p.url}" target="_blank" rel="noopener" style="margin-left:auto; color:#60a5fa;">Open on X ↗</a>
+                            </div>
+                            <div style="margin:6px 0; color:#cbd5e1; font-size:0.88em; line-height:1.4; white-space:pre-wrap;">${escapeHtml(p.text)}</div>
+                            ${p.why ? `<div style="margin-bottom:6px; color:#64748b; font-size:0.78em;">${escapeHtml(p.why)}</div>` : ''}
+                            <textarea class="x-reply-text" data-i="${i}" rows="3" oninput="updateXReplyCount(${i})" style="width:100%; box-sizing:border-box; padding:8px 10px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-size:0.9em; resize:vertical;">${escapeHtml(p.reply)}</textarea>
+                            <div style="display:flex; align-items:center; gap:8px; margin-top:6px; flex-wrap:wrap;">
+                                <span class="x-reply-count" data-i="${i}" style="color:#94a3b8; font-size:0.78em;"></span>
+                                <button type="button" class="tg-btn tg-btn-secondary" onclick="openXReplyIntent(${i})" style="margin-left:auto; height:32px; padding:0 12px; font-size:0.85em;" title="Opens X's reply box for this post with the reply filled in">↩ Reply on X</button>
+                                <button type="button" class="tg-btn tg-btn-primary" onclick="copyXReply(${i}, this)" style="height:32px; padding:0 12px; font-size:0.85em;">📋 Copy reply</button>
+                            </div>
+                        </div>`).join('');
+                    _xReplyPosts.forEach((_, i) => updateXReplyCount(i));
+                } catch (e) {
+                    st.style.color = '#f87171';
+                    st.textContent = '❌ ' + (e.message || e);
+                } finally {
+                    _stopBtnTimer(btn, timer);
+                }
+            }
+
+            // The reply as it will be posted: the edited text, plus the link if asked.
+            function _xReplyText(i) {
+                const ta = document.querySelector(`#xReplyList .x-reply-text[data-i="${i}"]`);
+                let text = ((ta && ta.value) || '').trim();
+                const url = (_xPostCtx.youtube_url || '').trim();
+                if (url && document.getElementById('xReplyAddLink').checked && text.indexOf(url) === -1) text += ' ' + url;
+                return text;
+            }
+
+            function updateXReplyCount(i) {
+                const el = document.querySelector(`#xReplyList .x-reply-count[data-i="${i}"]`);
+                if (!el) return;
+                const n = _xReplyText(i).replace(/https?:\/\/\S+/g, 'x'.repeat(23)).length;
+                el.textContent = n + ' / 280';
+                el.style.color = n > 280 ? '#fca5a5' : '#94a3b8';
+            }
+
+            async function copyXReply(i, btn) {
+                const text = _xReplyText(i);
+                try {
+                    await navigator.clipboard.writeText(text);
+                } catch (_) {                       // older browsers / no permission
+                    const ta = document.createElement('textarea');
+                    ta.value = text; document.body.appendChild(ta); ta.select();
+                    document.execCommand('copy'); ta.remove();
+                }
+                const label = btn.textContent;
+                btn.textContent = '✅ Copied';
+                setTimeout(() => { btn.textContent = label; }, 1500);
+            }
+
+            // X's reply composer for the post, with the reply filled in. You still
+            // review it and press Reply on X.
+            function openXReplyIntent(i) {
+                const p = _xReplyPosts[i];
+                if (!p) return;
+                const url = 'https://x.com/intent/post?in_reply_to=' + encodeURIComponent(p.id)
+                          + '&text=' + encodeURIComponent(_xReplyText(i));
+                window.open(url, '_blank', 'noopener');
             }
 
             // Reset the video-browser UI to its collapsed, unselected state.
@@ -2205,7 +2347,9 @@
             // 'random' shows a free-text topic box for standalone posts.
             async function openXPostModal(mode, ctx, seedText) {
                 ctx = ctx || {};
-                _xPostCtx = { mode: mode || 'random', title: ctx.title || '', youtube_url: ctx.youtube_url || '' };
+                _xPostCtx = { mode: mode || 'random', title: ctx.title || '', youtube_url: ctx.youtube_url || '',
+                              description: ctx.description || '' };
+                resetXReplies(_xPostCtx.mode === 'episode' && !!_xPostCtx.title);
                 document.getElementById('xPostModal').style.display = 'flex';
                 const sub = document.getElementById('xPostSubtitle');
                 const textEl = document.getElementById('xPostText');
@@ -3063,13 +3207,17 @@
 
         <!-- API Keys Modal -->
         <div id="apiKeysModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:10050; align-items:center; justify-content:center;">
-            <div style="background:#0f172a; border:1px solid #334155; border-radius:10px; width:min(560px, 92vw); padding:22px 24px; box-shadow:0 20px 50px rgba(0,0,0,0.6);">
+            <div style="background:#0f172a; border:1px solid #334155; border-radius:10px; width:min(560px, 92vw); max-height:92vh; overflow-y:auto; padding:22px 24px; box-sizing:border-box; box-shadow:0 20px 50px rgba(0,0,0,0.6);">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
                     <h2 style="margin:0; color:#e2e8f0; font-size:1.15em;">🔑 API Keys</h2>
                     <button onclick="closeApiKeysModal()" style="background:transparent; color:#94a3b8; border:none; font-size:1.4em; cursor:pointer;">×</button>
                 </div>
                 <p style="margin:0 0 16px 0; color:#94a3b8; font-size:0.85em;">
+                    {% if container_mode %}
+                    Stored in this app's private settings blob (<code style="color:#60a5fa;">app-settings/web_gui_settings.json</code>), so they survive restarts and deploys. Saved keys override the keys set at deploy.
+                    {% else %}
                     Stored in <code style="color:#60a5fa;">~/.scriptcraft/web_gui_settings.json</code>. Saved keys override matching environment variables.
+                    {% endif %}
                 </p>
 
                 <div style="margin-bottom:14px;">
@@ -3252,6 +3400,7 @@
                 <input type="checkbox" id="checkThumbnails"><!-- legacy; always unchecked -->
                 <input type="checkbox" id="checkDemoScript">
                 <input type="checkbox" id="checkGrokImagine"><!-- Grok Imagine prompts stage -->
+                <input type="checkbox" id="checkGrokImagineReplace"><!-- ...replacing the existing prompts -->
 
 
                 <!-- HeyGen config (moves into modal in Phase 2) -->
@@ -3261,7 +3410,7 @@
 
                 <!-- Script Input (moves into modal Load Script stage in Phase 2) -->
                 <div id="scriptInputSection">
-                    <div id="scriptInputDurationBadge">⏱ ~0:00 (0 words @ 150 wpm)</div>
+                    <div id="scriptInputDurationBadge">⏱ ~0:00 (0 words @ 175 wpm)</div>
                     <button id="scriptTabEdit" type="button">Edit</button>
                     <button id="scriptTabPreview" type="button">Preview</button>
                     <textarea id="scriptInput" oninput="if(typeof updateScriptInputDurationBadge==='function')updateScriptInputDurationBadge()"></textarea>
@@ -3761,11 +3910,17 @@ Time management content here...`;
             debugLogContent.scrollTop = debugLogContent.scrollHeight;
         }
         
-        // Global variable to track current thumbnail
-        let currentThumbnailIndex = 0;
+        // Thumbnail galleries. Several can be on the page at once (script results,
+        // the Thumbnails tool, the editor), so each keeps its own list and every
+        // lookup stays inside the gallery that was clicked. (They used to share
+        // element IDs, so a click could act on another, hidden gallery: Apply
+        // edit read that gallery's empty box and seemed to do nothing.)
+        let currentThumbnailIndex = 0;   // legacy mirrors of the active gallery
         let thumbnailData = [];
-        
-        // Function to render thumbnail gallery
+        window._thumbGalleries = window._thumbGalleries || {};
+        let _thumbGallerySeq = 0;
+        const THUMB_MAX_INCLUDES = 3;    // images to add (logos etc.) per edit
+
         // Image src for a media entry: prefer a restored blob URL (Azure SAS),
         // else the local-disk serving route by filename.
         function _mediaSrc(entry, routePrefix) {
@@ -3774,35 +3929,63 @@ Time management content here...`;
             return routePrefix + fn;
         }
 
+        // The gallery an element belongs to (or the most recent one), with its root.
+        function _thumbGallery(el) {
+            let root = el && el.closest ? el.closest('.thumbnail-gallery[data-gallery]') : null;
+            if (!root) {
+                const all = document.querySelectorAll('.thumbnail-gallery[data-gallery]');
+                root = all[all.length - 1] || null;
+            }
+            const g = root && window._thumbGalleries[root.dataset.gallery];
+            if (!g) return null;
+            g.root = root;
+            return g;
+        }
+
         function renderThumbnailGallery(thumbnails) {
             if (!thumbnails || thumbnails.length === 0) {
                 return '';
             }
-            
-            thumbnailData = thumbnails;
+            const gid = 'g' + (++_thumbGallerySeq);
+            window._thumbGalleries[gid] = { items: thumbnails.slice(), index: 0, includes: [] };
+            thumbnailData = window._thumbGalleries[gid].items;
             currentThumbnailIndex = 0;
-            
+            const first = thumbnails[0];
+
             return `
-                <div class="thumbnail-gallery">
-                    <h3>🖼️ Generated Thumbnails (${thumbnails.length} variations)</h3>
+                <div class="thumbnail-gallery" data-gallery="${gid}">
                     <div class="thumbnail-viewer">
                         <div class="thumbnail-main">
-                            <img id="mainThumbnail" src="${_mediaSrc(thumbnails[0], '/thumbnails/')}" alt="${thumbnails[0].emotion}">
+                            <img class="tg-main-img" src="${_mediaSrc(first, '/thumbnails/')}" alt="${first.emotion}">
                             <div class="thumbnail-info">
-                                <strong>Emotion:</strong> <span id="thumbnailEmotion">${thumbnails[0].emotion}</span><br>
-                                <strong>Text:</strong> <span id="thumbnailText">${thumbnails[0].text}</span>
+                                <strong>Emotion:</strong> <span class="tg-emotion">${first.emotion}</span><br>
+                                <strong>Text:</strong> <span class="tg-text">${first.text}</span>
+                            </div>
+                            <div class="tg-edit">
+                                <div class="tg-save-row">
+                                    <button type="button" class="tg-btn tg-btn-secondary" onclick="saveCurrentThumbnail(this, false)" title="Save the 1280×720 YouTube copy to a folder you choose">💾 Save as…</button>
+                                    <button type="button" class="tg-btn tg-btn-secondary tg-save-full" onclick="saveCurrentThumbnail(this, true)" title="Save the full-resolution 2K original to a folder you choose" ${first.full_path ? '' : 'style="display:none"'}>💾 Save 2K as…</button>
+                                </div>
+                                <div class="tg-edit-row">
+                                    <input class="tg-edit-input" type="text" placeholder="Edit this thumbnail, e.g. change the 3 to a 9 · use Elon Musk instead of Roz · add the logo top-right" onkeydown="if (event.key === 'Enter') editCurrentThumbnail(this)">
+                                    <button type="button" class="tg-btn tg-btn-secondary" title="Add an image to the thumbnail, e.g. a logo or product shot. Say where in your edit." onclick="this.parentElement.querySelector('.tg-include-file').click()">📎 Include image</button>
+                                    <input class="tg-include-file" type="file" accept="image/png,image/jpeg,image/webp" multiple style="display:none" onchange="addThumbnailIncludes(this)">
+                                    <button type="button" class="tg-btn tg-btn-primary tg-edit-btn" onclick="editCurrentThumbnail(this)">✏️ Apply edit</button>
+                                </div>
+                                <div class="tg-include-chips"></div>
+                                <div class="tg-edit-status"></div>
                             </div>
                         </div>
                         <div class="thumbnail-controls">
-                            <button class="thumbnail-nav-btn" onclick="previousThumbnail()" id="prevBtn">← Previous</button>
+                            <button class="thumbnail-nav-btn tg-prev" onclick="previousThumbnail(this)" disabled>← Previous</button>
                             <div class="thumbnail-counter">
-                                <span id="thumbnailCounter">1 of ${thumbnails.length}</span>
+                                <span class="tg-counter">1 of ${thumbnails.length}</span>
                             </div>
-                            <button class="thumbnail-nav-btn" onclick="nextThumbnail()" id="nextBtn">Next →</button>
+                            <button class="thumbnail-nav-btn tg-next" onclick="nextThumbnail(this)" ${thumbnails.length < 2 ? 'disabled' : ''}>Next →</button>
                         </div>
-                        <div class="thumbnail-thumbnails">
+                        <div class="thumbnail-thumbnails tg-strip">
                             ${thumbnails.map((thumb, index) => `
-                                <div class="thumbnail-thumb ${index === 0 ? 'active' : ''}" onclick="showThumbnail(${index})" data-index="${index}">
+                                <div class="thumbnail-thumb ${index === 0 ? 'active' : ''}" onclick="showThumbnail(${index}, this)" data-index="${index}">
                                     <img src="${_mediaSrc(thumb, '/thumbnails/')}" alt="${thumb.emotion}">
                                 </div>
                             `).join('')}
@@ -3811,48 +3994,289 @@ Time management content here...`;
                 </div>
             `;
         }
-        
+
         // Function to show specific thumbnail
-        function showThumbnail(index) {
-            if (index < 0 || index >= thumbnailData.length) return;
-            
+        function showThumbnail(index, el) {
+            const g = _thumbGallery(el);
+            if (!g || index < 0 || index >= g.items.length) return;
+            g.index = index;
+            thumbnailData = g.items;
             currentThumbnailIndex = index;
-            const thumb = thumbnailData[index];
-            
-            // Update main image
-            document.getElementById('mainThumbnail').src = _mediaSrc(thumb, '/thumbnails/');
-            document.getElementById('thumbnailEmotion').textContent = thumb.emotion;
-            document.getElementById('thumbnailText').textContent = thumb.text;
-            document.getElementById('thumbnailCounter').textContent = `${index + 1} of ${thumbnailData.length}`;
-            
-            // Update thumbnail borders
-            document.querySelectorAll('.thumbnail-thumb').forEach((el, i) => {
-                if (i === index) {
-                    el.classList.add('active');
-                } else {
-                    el.classList.remove('active');
+            const thumb = g.items[index];
+            const r = g.root;
+            r.querySelector('.tg-main-img').src = _mediaSrc(thumb, '/thumbnails/');
+            r.querySelector('.tg-emotion').textContent = thumb.emotion || '';
+            r.querySelector('.tg-text').textContent = thumb.text || '';
+            r.querySelector('.tg-counter').textContent = `${index + 1} of ${g.items.length}`;
+            r.querySelectorAll('.tg-strip .thumbnail-thumb').forEach((c, i) => c.classList.toggle('active', i === index));
+            r.querySelector('.tg-prev').disabled = (index === 0);
+            r.querySelector('.tg-next').disabled = (index === g.items.length - 1);
+            r.querySelector('.tg-save-full').style.display = thumb.full_path ? '' : 'none';
+        }
+
+        // Save the thumbnail on screen to a location the user browses to (the
+        // browser's Save dialog). full=true saves the 2K original from full/.
+        // Browsers without showSaveFilePicker (Safari, Firefox) download it.
+        async function saveCurrentThumbnail(el, full) {
+            const g = _thumbGallery(el);
+            if (!g) return;
+            const thumb = g.items[g.index];
+            const status = g.root.querySelector('.tg-edit-status');
+            const say = (color, text) => { status.style.color = color; status.textContent = text; };
+            const base = (p) => String(p || '').split('/').pop();
+            let url, name;
+            if (full && thumb.full_path) {
+                name = base(thumb.full_path);
+                url = '/thumbnails/' + encodeURIComponent(name);
+            } else {
+                url = _mediaSrc(thumb, '/thumbnails/');
+                name = base(thumb.filename) || 'thumbnail.png';
+            }
+            if (!/\.(png|jpe?g|webp)$/i.test(name)) name += '.png';
+            const ext = name.split('.').pop().toLowerCase();
+            const mime = ext === 'png' ? 'image/png' : (ext === 'webp' ? 'image/webp' : 'image/jpeg');
+            // Ask for the location first: the picker must open right after the click.
+            let handle = null;
+            if (window.showSaveFilePicker) {
+                try {
+                    handle = await window.showSaveFilePicker({
+                        id: 'scriptcraft-thumbnails', startIn: 'pictures', suggestedName: name,
+                        types: [{ description: 'Thumbnail image', accept: { [mime]: ['.' + ext] } }],
+                    });
+                } catch (err) {
+                    if (err && err.name === 'AbortError') return;   // the user cancelled
+                    handle = null;                                   // picker unavailable: download instead
                 }
+            }
+            try {
+                say('#94a3b8', '💾 Saving…');
+                const resp = await fetch(url);
+                if (!resp.ok) throw new Error(full ? 'The 2K original was not found on this computer.' : 'Thumbnail not found (HTTP ' + resp.status + ').');
+                const blob = await resp.blob();
+                if (handle) {
+                    const writable = await handle.createWritable();
+                    await writable.write(blob);
+                    await writable.close();
+                    say('#34d399', `✅ Saved ${handle.name} (${(blob.size / 1048576).toFixed(1)} MB)` + (full ? ', the 2K original.' : '.'));
+                } else {
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = name;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+                    say('#34d399', `✅ Downloaded ${name}. This browser has no save-location picker; use Chrome or Edge to choose the folder.`);
+                }
+            } catch (err) {
+                say('#f87171', '❌ ' + err.message);
+            }
+        }
+
+        function nextThumbnail(el) {
+            const g = _thumbGallery(el);
+            if (g) showThumbnail(g.index + 1, g.root);
+        }
+
+        function previousThumbnail(el) {
+            const g = _thumbGallery(el);
+            if (g) showThumbnail(g.index - 1, g.root);
+        }
+
+        // Images to add in the next edit (a logo, a product shot): read as data
+        // URLs, shown as removable chips, sent with the edit, cleared after it.
+        function _readImageFiles(files) {
+            return Promise.all(Array.from(files || []).map(f => new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve({ name: f.name, dataUrl: reader.result });
+                reader.onerror = () => reject(reader.error);
+                reader.readAsDataURL(f);
+            })));
+        }
+
+        async function addThumbnailIncludes(fileInput) {
+            const g = _thumbGallery(fileInput);
+            if (!g) return;
+            const added = await _readImageFiles(fileInput.files);
+            fileInput.value = '';
+            g.includes = g.includes.concat(added).slice(0, THUMB_MAX_INCLUDES);
+            _renderThumbnailIncludes(g);
+            if (g.includes.length === THUMB_MAX_INCLUDES && added.length) {
+                const st = g.root.querySelector('.tg-edit-status');
+                st.style.color = '#94a3b8';
+                st.textContent = `Up to ${THUMB_MAX_INCLUDES} images per edit.`;
+            }
+        }
+
+        function _renderThumbnailIncludes(g) {
+            const box = g.root.querySelector('.tg-include-chips');
+            box.innerHTML = '';
+            g.includes.forEach((inc, i) => {
+                const chip = document.createElement('span');
+                chip.className = 'tg-chip';
+                chip.title = inc.name;
+                const img = document.createElement('img');
+                img.src = inc.dataUrl;
+                const label = document.createElement('span');
+                label.textContent = `Image ${i + 2}: ${inc.name}`;
+                const x = document.createElement('button');
+                x.type = 'button';
+                x.textContent = '✕';
+                x.title = 'Remove';
+                x.onclick = () => { g.includes.splice(i, 1); _renderThumbnailIncludes(g); };
+                chip.append(img, label, x);
+                box.appendChild(chip);
             });
-            
-            // Update button states
-            document.getElementById('prevBtn').disabled = (index === 0);
-            document.getElementById('nextBtn').disabled = (index === thumbnailData.length - 1);
         }
-        
-        // Function to go to next thumbnail
-        function nextThumbnail() {
-            if (currentThumbnailIndex < thumbnailData.length - 1) {
-                showThumbnail(currentThumbnailIndex + 1);
+
+        // Prompt edits (Grok Imagine): edit the thumbnail on screen and add the
+        // result to the gallery as a new version; earlier versions stay.
+        async function editCurrentThumbnail(el) {
+            const g = _thumbGallery(el);
+            if (!g) return;
+            const r = g.root;
+            const input = r.querySelector('.tg-edit-input');
+            const btn = r.querySelector('.tg-edit-btn');
+            const status = r.querySelector('.tg-edit-status');
+            const instruction = (input.value || '').trim();
+            if (!instruction) {
+                status.style.color = '#fbbf24';
+                status.textContent = g.includes.length
+                    ? 'Say what to do with the included image, e.g. "put the logo in the top-right corner".'
+                    : 'Type the change first, e.g. "change the 3 to a 9".';
+                input.focus();
+                return;
+            }
+            const thumb = g.items[g.index];
+            if (!thumb || btn.disabled) return;
+            const src = thumb.edit_source || { kind: 'generated', value: ((thumb.filename || '').split('/').pop()) };
+            const includes = g.includes.slice();
+            btn.disabled = true;
+            btn.textContent = '⏳ Editing…';
+            status.style.color = '#94a3b8';
+            status.textContent = `⏳ Grok Imagine is editing version ${g.index + 1}`
+                + (includes.length ? ` with ${includes.length} included image(s)` : '') + '… (about 20 to 60 seconds)';
+            try {
+                const resp = await fetch('/api/thumbnails/edit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ source_kind: src.kind, source: src.value, instruction,
+                                           include_images: includes.map(i => i.dataUrl) }),
+                });
+                const data = await resp.json();
+                if (!resp.ok || !data.success) throw new Error(data.error || ('HTTP ' + resp.status));
+                _addThumbnailToGallery(g, data.thumbnail);
+                input.value = '';
+                g.includes = [];
+                _renderThumbnailIncludes(g);
+                status.style.color = '#34d399';
+                status.textContent = `✅ Added as version ${g.items.length}. Saved to ${data.thumbnail.filepath || data.thumbnail.filename} `
+                    + `(2K original in its full/ folder). Edit it again, or pick any earlier version.`;
+            } catch (err) {
+                status.style.color = '#f87171';
+                status.textContent = '❌ ' + err.message;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '✏️ Apply edit';
             }
         }
-        
-        // Function to go to previous thumbnail
-        function previousThumbnail() {
-            if (currentThumbnailIndex > 0) {
-                showThumbnail(currentThumbnailIndex - 1);
-            }
+
+        function _addThumbnailToGallery(g, thumb) {
+            g.items.push(thumb);
+            const index = g.items.length - 1;
+            const cell = document.createElement('div');
+            cell.className = 'thumbnail-thumb';
+            cell.dataset.index = String(index);
+            cell.onclick = () => showThumbnail(index, cell);
+            const img = document.createElement('img');
+            img.src = _mediaSrc(thumb, '/thumbnails/');
+            img.alt = thumb.emotion || 'Edit';
+            cell.appendChild(img);
+            g.root.querySelector('.tg-strip').appendChild(cell);
+            showThumbnail(index, g.root);
         }
-        
+
+        // Start from one of the channel's theme thumbnails (or any image) and
+        // edit it with a prompt. Opens the editor in the main result panel.
+        async function openThumbnailThemeEditor() {
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;';
+            const modal = document.createElement('div');
+            modal.style.cssText = 'background:#1f2937;color:#f9fafb;border-radius:12px;padding:22px;max-width:860px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 20px 50px rgba(0,0,0,0.5);font-family:inherit;box-sizing:border-box;';
+            modal.innerHTML = `
+                <h3 style="margin:0 0 6px 0;font-size:18px;">🎨 Start from a theme</h3>
+                <p style="margin:0 0 12px 0;font-size:13px;color:#9ca3af;">Pick one of the channel's thumbnails (or upload any image), then describe the change. Grok Imagine keeps the background, lighting, and style and makes only that change. You can keep editing the result.</p>
+                <div id="thumbThemeGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:12px;"><div style="color:#9ca3af;font-size:13px;">Loading themes…</div></div>
+                <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#cbd5e1;margin-bottom:10px;cursor:pointer;">⬆ Or start from your own image: <input id="thumbThemeUpload" type="file" accept="image/png,image/jpeg,image/webp" style="color:#cbd5e1;font-size:12px;"></label>
+                <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#cbd5e1;margin-bottom:12px;cursor:pointer;">📎 Include image(s) in the thumbnail, e.g. a logo (up to ${THUMB_MAX_INCLUDES}): <input id="thumbThemeIncludes" type="file" accept="image/png,image/jpeg,image/webp" multiple style="color:#cbd5e1;font-size:12px;"></label>
+                <label style="display:block;font-size:12px;color:#9ca3af;margin-bottom:4px;">Change to make</label>
+                <input id="thumbThemeInstruction" type="text" placeholder="e.g. change the 3! to a 9, use Elon Musk instead of Roz, and have him hold the included logo" style="width:100%;box-sizing:border-box;height:40px;padding:0 12px;border-radius:6px;border:1px solid #374151;background:#111827;color:#f9fafb;margin-bottom:14px;font-size:14px;" />
+                <div id="thumbThemeMsg" style="font-size:12px;color:#f87171;min-height:1.1em;margin-bottom:8px;"></div>
+                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                    <button id="thumbThemeCancel" type="button" class="tg-btn tg-btn-secondary">Cancel</button>
+                    <button id="thumbThemeGo" type="button" class="tg-btn tg-btn-primary">✏️ Apply edit</button>
+                </div>`;
+            overlay.appendChild(modal);
+            document.body.appendChild(overlay);
+            const close = () => { try { document.body.removeChild(overlay); } catch (_) {} };
+            modal.querySelector('#thumbThemeCancel').onclick = close;
+            const grid = modal.querySelector('#thumbThemeGrid');
+            const msg = modal.querySelector('#thumbThemeMsg');
+            let chosen = null;   // a gallery entry for the starting image
+            const highlight = (el) => grid.querySelectorAll('[data-theme]').forEach(c => {
+                c.style.outline = (c === el) ? '3px solid #a78bfa' : 'none';
+            });
+            try {
+                const data = await (await fetch('/api/thumbnails/themes')).json();
+                const themes = (data && data.themes) || [];
+                grid.innerHTML = themes.length ? '' : '<div style="color:#9ca3af;font-size:13px;">No theme thumbnails here (they live in tools/media/thumbnail_refs/ on the local app). Upload an image instead.</div>';
+                themes.forEach(t => {
+                    const card = document.createElement('div');
+                    card.dataset.theme = t.file;
+                    card.title = t.description || t.file;
+                    card.style.cssText = 'cursor:pointer;border-radius:8px;overflow:hidden;background:#111827;border:1px solid #374151;';
+                    card.innerHTML = '<img src="' + t.url + '" style="width:100%;display:block;aspect-ratio:16/9;object-fit:cover;"><div style="padding:6px 8px;font-size:11px;color:#9ca3af;line-height:1.35;max-height:3.9em;overflow:hidden;"></div>';
+                    card.querySelector('div').textContent = t.description || t.file;
+                    card.onclick = () => {
+                        chosen = { url: t.url, filename: t.file, emotion: '🎨 Theme', text: t.description || t.file,
+                                   edit_source: { kind: 'theme', value: t.file } };
+                        modal.querySelector('#thumbThemeUpload').value = '';
+                        highlight(card);
+                    };
+                    grid.appendChild(card);
+                });
+            } catch (err) {
+                grid.innerHTML = '<div style="color:#f87171;font-size:13px;">Could not load themes: ' + err.message + '</div>';
+            }
+            modal.querySelector('#thumbThemeUpload').onchange = async (ev) => {
+                const [file] = await _readImageFiles(ev.target.files);
+                if (!file) return;
+                chosen = { url: file.dataUrl, filename: file.name, emotion: '⬆ Uploaded', text: file.name,
+                           edit_source: { kind: 'upload', value: file.dataUrl } };
+                highlight(null);
+            };
+            modal.querySelector('#thumbThemeGo').onclick = async () => {
+                const instruction = modal.querySelector('#thumbThemeInstruction').value.trim();
+                if (!chosen) { msg.textContent = 'Pick a theme or upload an image.'; return; }
+                if (!instruction) { msg.textContent = 'Describe the change to make.'; return; }
+                const includes = (await _readImageFiles(modal.querySelector('#thumbThemeIncludes').files))
+                    .slice(0, THUMB_MAX_INCLUDES);
+                close();
+                const resultDiv = document.getElementById('result');
+                resultDiv.className = 'result';
+                resultDiv.style.display = 'block';
+                resultDiv.innerHTML = '<h3>✏️ Thumbnail editor</h3><div id="thumbResultArea" style="margin-top:8px;"></div>';
+                const area = document.getElementById('thumbResultArea');
+                area.innerHTML = renderThumbnailGallery([chosen]);
+                const g = _thumbGallery(area.querySelector('.thumbnail-gallery'));
+                g.includes = includes;
+                _renderThumbnailIncludes(g);
+                g.root.querySelector('.tg-edit-input').value = instruction;
+                resultDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                editCurrentThumbnail(g.root);
+            };
+        }
+
         // B-roll gallery variables and functions
         let brollData = [];
         let currentBrollIndex = 0;
@@ -5199,147 +5623,130 @@ Time management content here...`;
             new MutationObserver(sync).observe(panel, { attributes: true, attributeFilter: ['style'], childList: true });
         });
 
-        // Estimate HeyGen video duration from script text.
-        // HeyGen avatars speak ~150 wpm by default. Only **Host:** sections are
-        // narrated by the avatar, so we extract just those blocks and ignore
-        // headings, visual cues, stage directions, and any other speaker labels.
+        // Spoken text, exactly as the HeyGen step extracts it: a line-for-line
+        // port of console_ui/text_processing.py (spoken_text,
+        // extract_heygen_host_script, scrub_heygen_text). Keep the two in step;
+        // tests/offline_checks_v3.py runs both on the same samples.
+        const _HG_SKIP_PATTERNS = [
+            /^\s*\[Visual Cue:/i, /^\s*Visual Cue:/i, /^\s*\*\*Visual Cue:\*\*/i,
+            /^\s*\*\*Tool Demo:\*\*/i, /^\s*Tool Demo:/i,
+            /^\s*\[Production Note:/i, /^\s*\[Technical:/i, /^\s*\[Camera:/i,
+            /^\s*\[\d+:\d+\s*-\s*\d+:\d+\]/i, /^\s*\[.*STINGER.*\]/i, /^\s*\[.*LOGO.*STING.*\]/i,
+            /^\s*\[.*TRANSITION.*\]/i, /^\s*NOTES FOR PRODUCER:/i, /^\s*AUDIO:/i, /^\s*VISUAL:/i,
+            /^\s*TRANSITION:/i, /^\s*MUSIC:/i, /^\s*SFX:/i, /^\s*GRAPHICS:/i, /^\s*CUT TO:/i,
+            /^\s*FADE IN:/i, /^\s*FADE OUT:/i,
+            /^\s*---+\s*$/i, /^\s*===+\s*$/i, /^\s*\*\*\*+\s*$/i,
+            /^\s*\*\*Chapter\s+\d+.*\*\*\s*$/i,
+            /^\s*Generated by LineDrive/i,
+            /^\s*\*\*.*OPENING HOOK.*\*\*\s*$/i, /^\s*\*\*.*CONCLUSION.*\*\*\s*$/i, /^\s*\*\*.*SUMMARY.*\*\*\s*$/i,
+        ];
+        const _HG_EXCLUDE_SECTIONS = ['POLISHING ANALYSIS', 'CHAPTER BREAKDOWN', 'REVISION SUGGESTIONS',
+            'TOOLS TO DEMO', 'VISUAL CUES TO ADD', 'PRODUCTION NOTES', 'TOOL SPOTLIGHT',
+            'YOUTUBE UPLOAD DETAILS', 'EMOTIONAL THUMBNAIL VARIATIONS'];
+        const _HG_SCRUB_PATTERNS = [
+            /^\s*#{1,6}\s/i, /^\s*={3,}\s*$/i, /^\s*-{3,}\s*$/i, /^\s*_{3,}\s*$/i, /^\s*\*{3,}\s*$/i,
+            /^\s*(?:Title|Script[-\s]*ID|Script[-\s]*Version|Script\s*Type|Duration|Audience|Tone|Generated|Template\s*ID|Voice\s*ID)\s*[:\-]/i,
+            /^\s*Direct\s+Video\s*[-:–]/i,
+            /^\s*(?:\*{0,2}\s*)?Heading\s*:/i,
+            /^\s*(?:#{1,6}\s*)?(?:\*{0,2}\s*)?Chapter\s+\d+\s*[-:–]/i,
+            /^\s*\*{2}\s*Chapter\s+\d+.*\*{2}\s*$/i,
+            /^\s*\*{0,2}\s*(?:🎯\s*)?(?:FINAL\s+)?HOOK\s*[:\(]/i,
+            /^\s*\*{0,2}\s*OPENING\s+HOOK/i, /^\s*\*{0,2}\s*HOOK\s+OPTION/i, /^\s*\*{0,2}\s*OPTION\s+\d+/i,
+            /^\s*\*{0,2}\s*(?:📝\s*)?(?:CONCLUSION|SUMMARY)\s*[:\*]/i,
+            /^\s*\*{0,2}\s*Host\s*:\s*\*{0,2}\s*$/i,
+            /^\s*(?:🎬\s*)?(?:\*{0,2}\s*)?(?:Visual\s*Cue|B-?Roll|On[- ]Screen|Graphic|SFX|Music|Caption|Cut\s+to|Transition|Narrator|Voiceover|VO|Camera|Production\s*Note|Tool\s*Demo|Notes\s+for\s+Producer|Audio|Visual|Graphics|Fade\s+in|Fade\s+out)\s*[:\(]/i,
+            /^\s*Generated\s+by\s+LineDrive/i,
+        ];
+
+        function _hgScrub(text) {
+            const kept = [];
+            for (const raw of (text || '').split('\n')) {
+                let line = raw.trim();
+                if (!line || _HG_SCRUB_PATTERNS.some(rx => rx.test(line))) continue;
+                line = line.replace(/^\s*(?:Summary|Host)\s*:\s*/i, '');
+                if (line) kept.push(line);
+            }
+            return kept.join('\n');
+        }
+
+        function _hgExtractHost(script) {
+            let hook = '';
+            const hm = script.match(/HOOK\s*\([\d\-]+\s*seconds?\)\s*["']([^"']+)["']/i);
+            if (hm) hook = hm[1].trim();
+            const paragraphs = [];
+            let current = [];
+            let inHost = false, skipSection = false;
+            const flush = () => { if (current.length) { const t = current.join(' '); if (t) paragraphs.push(t); current = []; } };
+            for (const line of script.split('\n')) {
+                const stripped = line.trim();
+                if (_HG_EXCLUDE_SECTIONS.some(x => stripped.toUpperCase().includes(x))) { skipSection = true; inHost = false; continue; }
+                if (stripped.startsWith('#') || stripped.startsWith('==')) { skipSection = false; inHost = false; continue; }
+                if (skipSection) continue;
+                if (/^\s*\*{0,2}\s*Heading\s*:/i.test(stripped)) { flush(); inHost = true; continue; }
+                if (/^\s*\*{0,2}\s*Host\s*\*{0,2}\s*:?\s*\*{0,2}\s*$/i.test(stripped)) { flush(); inHost = true; continue; }
+                if (/^\s*\*{0,2}\s*Host\s*\*{0,2}\s*:?\s*\*{0,2}/i.test(stripped)) {
+                    flush();
+                    inHost = true;
+                    const t = stripped.replace(/^\s*\*{0,2}\s*Host\s*\*{0,2}\s*:?\s*\*{0,2}\s*/i, '');
+                    if (t) current.push(t);
+                    continue;
+                }
+                if (inHost) {
+                    if (/^#+\s+/.test(stripped)) { flush(); inHost = false; continue; }
+                    if (/^\*{0,2}\s*Chapter\s+\d+\s*[-:–]/i.test(stripped)) { flush(); continue; }
+                    if (_HG_SKIP_PATTERNS.some(rx => rx.test(line))) continue;
+                    if (!stripped) { flush(); continue; }
+                    // A "Summary:" line starts its own paragraph, without the label.
+                    const sm = stripped.match(/^\*{0,2}\s*Summary\s*\*{0,2}\s*:\s*\*{0,2}\s*/i);
+                    if (sm) {
+                        flush();
+                        const rest = stripped.slice(sm[0].length);
+                        if (rest) current.push(rest);
+                        continue;
+                    }
+                    current.push(stripped);
+                }
+            }
+            flush();
+            if (hook) paragraphs.unshift(hook);
+            return _hgScrub(paragraphs.join('\n\n'));
+        }
+
+        // Returns { text, usedFallback } — the words the avatar will speak.
+        function spokenTextForHeyGen(text) {
+            let t = String(text || '')
+                .replace(/\[PRODUCTION\s+BEGIN\][\s\S]*?\[PRODUCTION\s+END\]/gi, '')
+                .replace(/\[PRODUCTION\s+BEGIN\](?:(?!\[PRODUCTION\s+END\])[\s\S])*$/i, '')
+                .replace(/\[\[PRODUCTION_BLOCK_\d+\]\]/g, '')
+                .replace(/\n{3,}/g, '\n\n');
+            const spoken = _hgExtractHost(t);
+            return spoken ? { text: spoken, usedFallback: false } : { text: _hgScrub(t), usedFallback: true };
+        }
+
+        // HeyGen's real speaking pace: hook videos from 4 episodes ran 170-177
+        // words per minute (measured 2026-10-22). 150 made every estimate ~17% long.
+        const HEYGEN_WPM = 175;
+
+        // Estimate HeyGen video duration from script text: the spoken words (the
+        // HeyGen extraction above) at HEYGEN_WPM. Every word count in the app uses
+        // the same definition.
         function estimateHeyGenDuration(text, wpm) {
-            const rate = (typeof wpm === 'number' && wpm > 0) ? wpm : 150;
+            const rate = (typeof wpm === 'number' && wpm > 0) ? wpm : HEYGEN_WPM;
             if (!text || typeof text !== 'string') {
                 return { words: 0, minutes: 0, label: '⏱ ~0:00 @ ' + rate + ' wpm' };
             }
-
-            // Never count production-only notes: strip every
-            // [PRODUCTION BEGIN]…[PRODUCTION END] block (the user's editing-only
-            // markers) BEFORE any Host/chapter extraction, so nothing inside them
-            // contributes to the spoken word count.
-            text = text.replace(
-                /\[PRODUCTION\s+BEGIN\][\s\S]*?\[PRODUCTION\s+END\]/gi, ' ');
-
-            // Pull out every Host block. Accepts:
-            //   **Host:**      (markdown-bold, original/processed scripts)
-            //   ### Host:      (heading-style)
-            //   Host:          (plain line, e.g. after .docx extraction)
-            // A block runs from the Host marker until the next speaker/section
-            // label (**Xxx:**, ### Xxx:, or a known cue label like Heading:,
-            // Visual Cue:, B-roll:, etc. — or another Host: line).
-            const hostBlocks = [];
-            const hostRe = /(^|\n)\s*(?:#{1,6}\s*)?\**\s*host\s*\**\s*:\s*\**\s*/gi;
-            // Stop a Host: block when we hit:
-            //   * any speaker/cue label (**Foo:** / ### Foo: / Foo:)
-            //   * a markdown heading line (# / ## / ### …) — important for
-            //     .docx-extracted text where the extractor emits `# Chapter N`
-            //     ahead of each chapter; without this the previous Host block
-            //     would swallow chapter dividers and double-count words.
-            //   * a horizontal rule (--- or ===).
-            const stopRe = /(^|\n)\s*(?:#{1,6}\s+\S|(?:#{1,6}\s*)?(?:\*\*[^*\n]{1,40}\*\*\s*:|host\s*:|heading\s*:|chapter\s+\d|visual\s+cue\s*:|b-?roll\s*:|on[- ]screen\s*:|graphic\s*:|sfx\s*:|music\s*:|caption\s*:|cut\s+to\s*:|transition\s*:|narrator\s*:|guest\s*:|voiceover\s*:|vo\s*:)|---+|===+)/i;
-            let m;
-            while ((m = hostRe.exec(text)) !== null) {
-                const start = m.index + m[0].length;
-                const rest = text.slice(start);
-                const stop = rest.search(stopRe);
-                hostBlocks.push(stop === -1 ? rest : rest.slice(0, stop));
-            }
-
-            // If no explicit Host markers were found, fall back to the entire
-            // text minus obvious non-spoken cues (so the user still sees a
-            // ballpark estimate). Log so we can tune the matcher.
-            let joined;
-            let usedFallback = false;
-            if (hostBlocks.length === 0) {
-                usedFallback = true;
-                joined = text;
-                try { console.warn('[heygenDuration] no Host markers found, using whole-text fallback. Sample:', text.slice(0, 200)); } catch (_) {}
-            } else {
-                joined = hostBlocks.join('\n');
-            }
-
-            // CHAPTER-AWARE AUGMENT: many scripts (esp. the SCRIPT_TEMPLATE-style
-            // ones and freshly-pasted drafts) only have a `Host:` label inside
-            // the FINAL HOOK — the chapter dialogue itself is plain prose under
-            // `Chapter N - ...` headings preceded by a single `🎬 VISUAL CUE:`
-            // line. In that case `hostBlocks` only captures the hook (~40 words)
-            // and the rest of the script is silently dropped. Detect that and
-            // splice in the chapter bodies.
-            try {
-                // Accept: `Chapter N`, `## Chapter N`, `**Chapter N**`, AND
-                // `Heading: Chapter N - ...` (the format produced by the
-                // process-existing-script pipeline). Without the `Heading:`
-                // allowance, processed scripts only count the hook's Host:
-                // block and silently drop ~3000+ words of chapter prose.
-                const chapterRe = /(^|\n)\s*(?:#{1,6}\s*)?(?:\*\*)?\s*(?:Heading\s*:\s*)?Chapter\s+\d+\b[^\n]*\n/gi;
-                const chapterStarts = [];
-                let cm;
-                while ((cm = chapterRe.exec(text)) !== null) {
-                    chapterStarts.push(cm.index + cm[0].length);
-                }
-                if (chapterStarts.length > 0) {
-                    // End-of-chapter-prose terminator: next Chapter heading,
-                    // Summary:, SUPPORTING RESEARCH, ===, YOUTUBE/HEYGEN section,
-                    // or end-of-text.
-                    const endRe = /\n\s*(?:(?:#{1,6}\s*)?(?:\*\*)?\s*(?:Heading\s*:\s*)?Chapter\s+\d+\b|Summary\s*:|SUPPORTING\s+RESEARCH|===|🎬\s*HEYGEN|YOUTUBE\s+VIDEO\s+DESCRIPTION|Generated\s+by\s+LineDrive)/i;
-                    const chapterBodies = [];
-                    for (let k = 0; k < chapterStarts.length; k++) {
-                        const start = chapterStarts[k];
-                        const rest = text.slice(start);
-                        const stop = rest.search(endRe);
-                        let body = stop === -1 ? rest : rest.slice(0, stop);
-                        // Drop leading 🎬 VISUAL CUE: / Visual Cue: / B-Roll:
-                        // lines — those are direction, not spoken dialogue.
-                        body = body.replace(
-                            /^\s*(?:🎬\s*)?(?:\*{0,2}\s*)?(?:Visual\s*Cue|B-?Roll|On[- ]Screen|Graphic|SFX|Music|Caption|Cut\s+to|Transition)\s*:[^\n]*\n?/gim,
-                            ''
-                        );
-                        chapterBodies.push(body);
-                    }
-                    const chapterJoined = chapterBodies.join('\n');
-                    if (chapterJoined.trim()) {
-                        // Only append if our Host-block extractor missed the
-                        // chapter prose — i.e. the hostBlocks total is dwarfed
-                        // by the chapter prose total.
-                        const hostWords = joined.split(/\s+/).filter(Boolean).length;
-                        const chapterWords = chapterJoined.split(/\s+/).filter(Boolean).length;
-                        if (chapterWords > hostWords * 1.5) {
-                            joined = (joined ? joined + '\n' : '') + chapterJoined;
-                            usedFallback = false; // chapter prose IS spoken content
-                        }
-                    }
-                }
-                // Also fold in a trailing `Summary:` block (last chapter recap).
-                const summaryMatch = text.match(
-                    /(^|\n)\s*Summary\s*:\s*([\s\S]*?)(?=\n\s*(?:SUPPORTING\s+RESEARCH|===|🎬\s*HEYGEN|YOUTUBE\s+VIDEO\s+DESCRIPTION|Generated\s+by\s+LineDrive)|\Z)/i
-                );
-                if (summaryMatch && summaryMatch[2] && summaryMatch[2].trim()) {
-                    joined += '\n' + summaryMatch[2];
-                }
-            } catch (e) {
-                try { console.warn('[heygenDuration] chapter-aware augment failed:', e); } catch (_) {}
-            }
-
-            // Strip residual markdown, code, links, timecodes, and stage directions
-            // so only spoken words remain.
-            let clean = joined
-                .replace(/```[\s\S]*?```/g, ' ')
-                .replace(/`[^`]*`/g, ' ')
-                .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
-                .replace(/\[[^\]]*\]\([^)]*\)/g, ' ')
-                .replace(/\[\d{1,2}:\d{2}(?::\d{2})?\]/g, ' ')
-                .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, ' ')
-                .replace(/\[[^\]]*\]/g, ' ')
-                .replace(/^#+\s.*$/gm, ' ')
-                .replace(/^\s*[-*•]\s+/gm, ' ')
-                .replace(/[|*_>#]/g, ' ');
-            const words = clean.split(/\s+/).filter(Boolean).length;
+            const spoken = spokenTextForHeyGen(text);
+            const words = spoken.text.split(/\s+/).filter(Boolean).length;
             const minutes = words / rate;
             const totalSec = Math.round(minutes * 60);
             const mm = Math.floor(totalSec / 60);
             const ss = totalSec % 60;
             const mmss = mm + ':' + (ss < 10 ? '0' + ss : ss);
-            const suffix = usedFallback ? ' (whole text — no Host: markers)' : '';
+            const suffix = spoken.usedFallback ? ' (whole text — no Host: markers)' : '';
             return {
                 words: words,
                 minutes: minutes,
-                label: '⏱ ~' + mmss + ' (' + words + ' words @ ' + rate + ' wpm)' + suffix
+                label: '⏱ ~' + mmss + ' (' + words + ' spoken words @ ' + rate + ' wpm)' + suffix
             };
         }
 
@@ -5350,7 +5757,7 @@ Time management content here...`;
             return '<div style="display:inline-block; margin:0; vertical-align:middle; padding:3px 8px; '
                 + 'background:#0f172a; border:1px solid #334155; border-radius:12px; '
                 + 'font-size:11px; color:' + c + '; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;" '
-                + 'title="Estimated HeyGen avatar render time at 150 words per minute">'
+                + 'title="Estimated HeyGen avatar render time at ' + HEYGEN_WPM + ' words per minute, the measured HeyGen pace">'
                 + est.label + '</div>';
         }
 
@@ -5947,13 +6354,6 @@ Time management content here...`;
             return html;
         }
         
-        // Function to go to previous thumbnail
-        function previousThumbnail() {
-            if (currentThumbnailIndex > 0) {
-                showThumbnail(currentThumbnailIndex - 1);
-            }
-        }
-        
         function toggleScriptInput() {
             // Legacy helper. The visible main GUI no longer has the script-input
             // pills or topic form (both moved into modals), so this function is
@@ -6083,7 +6483,8 @@ Time management content here...`;
                 demo: document.getElementById('checkDemoScript')?.checked || false,
                 shorten_script: document.getElementById('checkShortenScript')?.checked || false,
                 shorten_percent: document.getElementById('shortenPercent')?.value || '25',
-                grok_imagine: document.getElementById('checkGrokImagine')?.checked || false
+                grok_imagine: document.getElementById('checkGrokImagine')?.checked || false,
+                grok_imagine_replace: document.getElementById('checkGrokImagineReplace')?.checked || false
             };
             
             // Get metadata
@@ -6378,6 +6779,11 @@ Time management content here...`;
                                 }
                                 renderMarkdownContent(processedScript, null);
                                 console.log('Rendered markdown for script length:', processedScript ? processedScript.length : 0);
+                                // Title Picker stage: offer titles for the processed script.
+                                if (window._spsTitlePending) {
+                                    window._spsTitlePending = false;
+                                    openTitlePicker(processedScript);
+                                }
                                 
                                 // Auto-switch to thumbnails tab if thumbnails were generated
                                 if (thumbnails && thumbnails.length > 0) {
@@ -8166,11 +8572,12 @@ Time management content here...`;
                     <label style="display:block;font-size:12px;color:#9ca3af;margin-bottom:4px;">Hook 3</label>
                     <input id="thumbHook3" type="text" placeholder="(optional)" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #374151;background:#111827;color:#f9fafb;margin-bottom:10px;font-size:14px;" />
                     <label style="display:block;font-size:12px;color:#9ca3af;margin-bottom:4px;">Engine</label>
-                    <select id="thumbEngine" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #374151;background:#111827;color:#f9fafb;margin-bottom:18px;font-size:14px;">
+                    <select id="thumbEngine" style="width:100%;height:40px;box-sizing:border-box;padding:0 10px;line-height:normal;border-radius:6px;border:1px solid #374151;background:#111827;color:#f9fafb;margin-bottom:18px;font-size:14px;">
                         <option value="grok">🎨 Grok Imagine — your channel's thumbnail style</option>
                         <option value="gemini">✨ Gemini — classic emotion variations</option>
                     </select>
-                    <div style="display:flex;gap:8px;justify-content:flex-end;">
+                    <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+                        <button id="thumbHookTheme" title="Pick one of the channel's thumbnails (or upload one) and change it with a prompt" style="margin-right:auto;padding:8px 14px;border-radius:6px;border:1px solid #7c3aed;background:transparent;color:#c4b5fd;cursor:pointer;">🎨 Start from a theme…</button>
                         <button id="thumbHookCancel" style="padding:8px 16px;border-radius:6px;border:1px solid #374151;background:transparent;color:#f9fafb;cursor:pointer;">Cancel</button>
                         <button id="thumbHookGo" style="padding:8px 16px;border-radius:6px;border:none;background:#2563eb;color:white;cursor:pointer;font-weight:600;">Generate</button>
                     </div>
@@ -8179,6 +8586,7 @@ Time management content here...`;
                 document.body.appendChild(overlay);
                 const cleanup = () => { try { document.body.removeChild(overlay); } catch (_) {} };
                 modal.querySelector('#thumbHookCancel').onclick = () => { cleanup(); resolve(null); };
+                modal.querySelector('#thumbHookTheme').onclick = () => { cleanup(); resolve({ mode: 'theme' }); };
                 const engineSel = modal.querySelector('#thumbEngine');
                 try { engineSel.value = localStorage.getItem('scriptcraft_thumbnail_engine') || 'grok'; } catch (_) {}
                 modal.querySelector('#thumbHookGo').onclick = () => {
@@ -8206,6 +8614,10 @@ Time management content here...`;
             const choice = await _promptThumbnailHooks(defaultTopic);
             if (!choice) {
                 console.log('Thumbnail generation cancelled by user');
+                return;
+            }
+            if (choice.mode === 'theme') {
+                openThumbnailThemeEditor();
                 return;
             }
             const { topic, hooks, engine } = choice;
@@ -10424,6 +10836,135 @@ Thank you for watching!`;
         // Opened when the user runs hook generation by itself. Lets them pick
         // one of the three generated hooks and POSTs to /api/finalize-hook to
         // produce a final script with a single **🎯 FINAL HOOK:** section.
+        // ---- Title Picker (last Process Script stage) ----
+        // Claude suggests 5 titles for the script; the chosen (or typed) one
+        // replaces its title. The script is updated in place: the script box,
+        // window.currentScript, and the results' Script tab. Other result tabs
+        // (thumbnails, B-roll) are left as they are.
+        function _applyUpdatedScript(updated, title) {
+            window.currentScript = updated;
+            if (title) window.currentScriptTitle = title;
+            if (typeof _syncScriptIdsFromText === 'function') { try { _syncScriptIdsFromText(updated); } catch (_) {} }
+            const ta = document.getElementById('scriptInput');
+            if (ta) {
+                ta.value = updated;
+                if (typeof updateScriptInputDurationBadge === 'function') { try { updateScriptInputDurationBadge(); } catch (_) {} }
+                if (typeof renderScriptInputPreview === 'function') { try { renderScriptInputPreview(); } catch (_) {} }
+            }
+            const contentDiv = document.getElementById('mainScriptContent');
+            if (contentDiv) {
+                contentDiv.setAttribute('data-original-markdown', updated);
+                if (typeof renderMarkdownContent === 'function') { try { renderMarkdownContent(updated, null); } catch (_) {} }
+            }
+        }
+
+        function openTitlePicker(script) {
+            const prev = document.getElementById('titlePickerModal');
+            if (prev) prev.remove();
+            const done = (status, text) => {
+                spsSetStageStatus('title', status);
+                const res = document.querySelector('[data-sps-result="title"]');
+                if (res && text) { res.style.display = 'block'; res.textContent = text; }
+            };
+            if (!(script || '').trim()) {
+                alert('Load a script first.');
+                done('pending');
+                return;
+            }
+            const modal = document.createElement('div');
+            modal.id = 'titlePickerModal';
+            modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:10000; display:flex; align-items:center; justify-content:center; padding:20px;';
+            modal.innerHTML = `
+                <div style="background:#0f172a; border:1px solid #334155; border-radius:10px; max-width:760px; width:100%; max-height:90vh; overflow:auto; padding:20px 22px; color:#e2e8f0; box-sizing:border-box;">
+                    <h2 style="margin:0 0 4px 0; color:#38bdf8; font-size:1.2em;">🏷️ Pick a Title</h2>
+                    <p style="margin:0 0 14px 0; color:#94a3b8; font-size:0.88em;">Current title: <strong class="tp-current" style="color:#e2e8f0;">…</strong></p>
+                    <div class="tp-list"><div style="color:#94a3b8; padding:18px 4px;">⏳ Claude is reading the script and writing 5 titles…</div></div>
+                    <label style="display:flex; align-items:center; gap:10px; margin-top:6px; padding:10px 12px; background:#1e293b; border:1px solid #334155; border-radius:6px; cursor:pointer;">
+                        <input type="radio" name="titlePickerChoice" value="custom" style="margin:0;">
+                        <input class="tp-custom" type="text" maxlength="100" placeholder="Or type your own title" style="flex:1; height:36px; box-sizing:border-box; padding:0 10px; border-radius:6px; border:1px solid #374151; background:#111827; color:#f9fafb; font-size:14px;">
+                        <span class="tp-custom-len" style="color:#64748b; font-size:0.8em; min-width:48px; text-align:right;"></span>
+                    </label>
+                    <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:16px; flex-wrap:wrap;">
+                        <button type="button" class="tg-btn tg-btn-secondary tp-more" style="margin-right:auto;">↻ 5 more</button>
+                        <button type="button" class="tg-btn tg-btn-secondary tp-cancel">Cancel</button>
+                        <button type="button" class="tg-btn tg-btn-primary tp-apply">✅ Use This Title</button>
+                    </div>
+                    <div class="tp-status" style="margin-top:10px; font-size:0.85em; color:#94a3b8; min-height:1.1em;"></div>
+                </div>`;
+            document.body.appendChild(modal);
+            const $ = (sel) => modal.querySelector(sel);
+            const status = (color, text) => { $('.tp-status').style.color = color; $('.tp-status').textContent = text; };
+            const lenTag = (t) => {
+                const n = (t || '').length;
+                return `<span style="color:${n > 70 ? '#f87171' : '#64748b'}; font-size:0.8em;">${n} chars</span>`;
+            };
+            const custom = $('.tp-custom');
+            custom.addEventListener('input', () => {
+                modal.querySelector('input[value="custom"]').checked = true;
+                const n = custom.value.trim().length;
+                $('.tp-custom-len').textContent = n ? n + ' chars' : '';
+                $('.tp-custom-len').style.color = n > 70 ? '#f87171' : '#64748b';
+            });
+            let suggested = [];
+            const load = async () => {
+                $('.tp-more').disabled = true;
+                $('.tp-list').innerHTML = '<div style="color:#94a3b8; padding:18px 4px;">⏳ Claude is reading the script and writing 5 titles…</div>';
+                status('#94a3b8', '');
+                try {
+                    const resp = await fetch('/api/titles/suggest', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ script }),
+                    });
+                    const data = await resp.json();
+                    if (!resp.ok || !data.success) throw new Error(data.error || ('HTTP ' + resp.status));
+                    $('.tp-current').textContent = data.current_title || '(none)';
+                    suggested = data.titles || [];
+                    $('.tp-list').innerHTML = suggested.map((t, i) => `
+                        <label style="display:block; margin-bottom:8px; padding:10px 12px; background:#1e293b; border:1px solid #334155; border-radius:6px; cursor:pointer;">
+                            <div style="display:flex; align-items:center; gap:10px;">
+                                <input type="radio" name="titlePickerChoice" value="${i}" ${i === 0 ? 'checked' : ''} style="margin:0;">
+                                <strong style="flex:1; font-size:1.02em;">${escapeHtml(t.title)}</strong>
+                                ${lenTag(t.title)}
+                            </div>
+                            ${t.why ? `<div style="margin:4px 0 0 24px; color:#94a3b8; font-size:0.82em;">${escapeHtml(t.why)}</div>` : ''}
+                        </label>`).join('');
+                } catch (err) {
+                    $('.tp-list').innerHTML = '';
+                    status('#f87171', '❌ ' + err.message + ' You can still type your own title.');
+                } finally {
+                    $('.tp-more').disabled = false;
+                }
+            };
+            $('.tp-more').onclick = load;
+            $('.tp-cancel').onclick = () => { modal.remove(); done('skipped', '⏭ Title unchanged.'); };
+            $('.tp-apply').onclick = async () => {
+                const choice = modal.querySelector('input[name="titlePickerChoice"]:checked');
+                const title = !choice ? '' : (choice.value === 'custom' ? custom.value.trim()
+                                                                          : ((suggested[+choice.value] || {}).title || ''));
+                if (!title) { status('#fbbf24', 'Pick a title or type your own.'); return; }
+                $('.tp-apply').disabled = true;
+                status('#94a3b8', '⏳ Updating the script…');
+                try {
+                    const resp = await fetch('/api/titles/apply', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ script, title }),
+                    });
+                    const data = await resp.json();
+                    if (!resp.ok || !data.success) throw new Error(data.error || ('HTTP ' + resp.status));
+                    _applyUpdatedScript(data.script, data.title);
+                    const msg = `✅ Title set to "${data.title}" (${(data.changes || []).join(', ')}). Save or export the script to keep it.`;
+                    status('#34d399', msg);
+                    done('done', msg);
+                    if (typeof addProgressMessage === 'function') addProgressMessage(msg, 'success');
+                    setTimeout(() => modal.remove(), 1200);
+                } catch (err) {
+                    status('#f87171', '❌ ' + err.message);
+                    $('.tp-apply').disabled = false;
+                }
+            };
+            load();
+        }
+
         function openHookPickerModal(hooks, scriptTitle, originalScript, hookLabels) {
             // Tear down any previous instance
             const prev = document.getElementById('hookPickerModal');
@@ -10444,7 +10985,7 @@ Thank you for watching!`;
             const labels = Array.isArray(hookLabels) ? hookLabels : [];
             (hooks || []).forEach((hookText, i) => {
                 const words = (hookText || '').trim().split(/\s+/).filter(Boolean).length;
-                const seconds = Math.round((words / 150) * 60);
+                const seconds = Math.round((words / HEYGEN_WPM) * 60);
                 const mmss = Math.floor(seconds / 60) + ':' + (seconds % 60 < 10 ? '0' : '') + (seconds % 60);
                 const labelRaw = (labels[i] || ('OPTION ' + (i + 1)));
                 const isCurrent = /current/i.test(labelRaw);
@@ -10551,6 +11092,10 @@ Thank you for watching!`;
                                     renderMarkdownContent(data.script || '', null);
                                 }
                                 resultDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                if (window._spsTitlePending) {   // Hook + Title Picker selected
+                                    window._spsTitlePending = false;
+                                    openTitlePicker(data.script || '');
+                                }
                             }, 150);
                             // Reveal common toolbar buttons.
                             ['wordBtn', 'markdownBtn', 'saveBtn'].forEach(id => {
@@ -10604,7 +11149,8 @@ Thank you for watching!`;
         // Minimal HTML escaper for safe text injection in hook picker.
         // (Reuses the project-wide escapeHtml defined earlier in this file.)
 
-        // ---- API Keys modal (Google / HeyGen / Grok) ----
+        // ---- API Keys modal (Claude / Google / HeyGen / Grok / X) ----
+
         function openApiKeysModal() {
             const modal = document.getElementById('apiKeysModal');
             if (!modal) return;
@@ -10642,7 +11188,7 @@ Thank you for watching!`;
                             const el = document.getElementById(id);
                             if (!el) return;
                             if (src === 'saved') { el.textContent = 'saved'; el.style.background = '#052e2b'; el.style.color = '#34d399'; }
-                            else if (src === 'env') { el.textContent = 'from .env'; el.style.background = '#0b1b33'; el.style.color = '#60a5fa'; }
+                            else if (src === 'env') { el.textContent = window.IS_CONTAINER ? 'from deploy' : 'from .env'; el.style.background = '#0b1b33'; el.style.color = '#60a5fa'; }
                             else { el.textContent = 'not set'; el.style.background = '#1e293b'; el.style.color = '#64748b'; }
                         };
                         setSrc('src_anthropic', srcMap.anthropic_api_key);
@@ -10659,6 +11205,7 @@ Thank you for watching!`;
                         });
                         status.textContent = 'Loaded current values.';
                     } else {
+                        status.style.color = '#f87171';
                         status.textContent = (data && data.error) || 'Loaded local values only.';
                     }
                 })
@@ -12169,6 +12716,10 @@ Thank you for watching!`;
             </div>
             <div class="sps-stage-body" data-sps-body="grok_imagine" style="display:none; padding:12px 14px; border-top:1px solid #0f172a;">
               <p style="margin:0 0 10px 0; color:#94a3b8; font-size:0.85em;">Insert <strong>3–4 Grok Imagine prompts per chapter</strong> directly into the script as <code>[PRODUCTION BEGIN] / [GROK IMAGINE / RESOLVE] … [PRODUCTION END]</code> blocks — symbolic editorial illustrations in the channel's dark-navy house style (no people, faces, or hands) that you can copy-paste straight into Grok Imagine. Chapters that already have prompts are topped up to the target, not duplicated. The updated script appears in the <strong>Script</strong> tab of the results (and in exports / cloud save), ready to copy into Grok Imagine.</p>
+              <label style="display:flex; align-items:flex-start; gap:8px; color:#cbd5e1; font-size:0.85em; cursor:pointer;">
+                <input type="checkbox" id="spsGrokImagineReplace" onchange="spsGrokImagineReplaceChanged(this)" style="margin-top:2px;">
+                <span><strong>Replace existing prompts</strong> — remove every current <code>[GROK IMAGINE / RESOLVE]</code> prompt (and its <code>[QUOTE CARD / RESOLVE]</code> line), then rescan the script and add new ones. VERIFY notes, cold open, overlays, and other production cues are kept. If no new prompts come back, the old ones stay.</span>
+              </label>
               <div data-sps-result="grok_imagine" style="margin-top:10px; font-size:0.85em; color:#10b981; display:none;"></div>
             </div>
           </div>
@@ -12202,6 +12753,19 @@ Thank you for watching!`;
               <div style="display:flex; gap:8px; flex-wrap:wrap;">
               </div>
               <div data-sps-result="demo" style="margin-top:10px; font-size:0.85em; color:#10b981; display:none;"></div>
+            </div>
+          </div>
+
+          <!-- Stage 11: Title Picker (runs last, after the other selected stages) -->
+          <div class="sps-stage" data-sps-stage="title" style="background:#1e293b; border:1px solid #334155; border-radius:8px; overflow:hidden;">
+            <div class="sps-stage-header" onclick="spsToggleStage('title')" style="display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; user-select:none;">
+              <strong style="flex:1;">Title Picker</strong>
+              <span class="sps-stage-status" data-sps-status="title" style="font-size:0.8em; color:#64748b;">Pending</span>
+              <span class="sps-stage-caret" style="color:#64748b;">▸</span>
+            </div>
+            <div class="sps-stage-body" data-sps-body="title" style="display:none; padding:12px 14px; border-top:1px solid #0f172a;">
+              <p style="margin:0 0 10px 0; color:#94a3b8; font-size:0.85em;">Claude reads the script and suggests <strong>5 titles</strong> (under 70 characters, each from a different angle). Pick one, or type your own, and it replaces the script's title: the <code>Title:</code> line and a top <code># …</code> heading. Runs last, on the processed script, when other stages are selected.</p>
+              <div data-sps-result="title" style="margin-top:10px; font-size:0.85em; color:#10b981; display:none;"></div>
             </div>
           </div>
 
@@ -12240,8 +12804,9 @@ Thank you for watching!`;
       grok:         { label: 'Grok Videos',                       icon: '🤖', status: 'pending' },
       heygen:       { label: 'HeyGen Script & Curl Commands',     icon: '<img src="/static/heygen_icon.png" alt="HeyGen" onerror="this.replaceWith(document.createTextNode(\'🎬\'))" style="height:1em; width:auto; vertical-align:middle;">', status: 'pending' },
       demo:         { label: 'Demo Scripts',                      icon: '🧪', status: 'pending' },
+      title:        { label: 'Title Picker',                      icon: '🏷️', status: 'pending' },
     };
-    const _SPS_ORDER = ['load','flow','shorten','hook','broll_table','broll_images','grok','grok_imagine','heygen','demo'];
+    const _SPS_ORDER = ['load','flow','shorten','hook','broll_table','broll_images','grok','grok_imagine','heygen','demo','title'];
 
     function _spsStatusColor(status) {
       switch (status) {
@@ -12336,6 +12901,13 @@ Thank you for watching!`;
         badge.style.color = c.text;
       });
       spsUpdateRunFooter();
+    }
+
+    // Ticking "Replace existing prompts" also selects the Grok Imagine stage.
+    function spsGrokImagineReplaceChanged(el) {
+      if (!el.checked || window._spsChecked.has('grok_imagine')) return;
+      const cb = document.querySelector('input[data-sps-check="grok_imagine"]');
+      if (cb) { cb.checked = true; spsToggleStageChecked('grok_imagine'); }
     }
 
     function spsToggleStage(key) {
@@ -12483,12 +13055,31 @@ Thank you for watching!`;
         if (src && dst) dst.value = src.value;
       }
 
+      // Propagate the Grok Imagine stage's "Replace existing prompts" choice.
+      const giReplace = document.getElementById('checkGrokImagineReplace');
+      if (giReplace) {
+        giReplace.checked = window._spsChecked.has('grok_imagine')
+          && !!document.getElementById('spsGrokImagineReplace')?.checked;
+      }
+
+      // Title Picker runs last and in the page: alone, it opens on the loaded
+      // script now; with other stages, it opens when their run finishes.
+      const wantsTitle = checkedList.includes('title');
+      checkedList = checkedList.filter(k => k !== 'title');
+      window._spsTitlePending = wantsTitle && checkedList.length > 0;
+      if (wantsTitle) spsSetStageStatus('title', 'active');
+      if (wantsTitle && checkedList.length === 0) {
+        closeScriptProcessingModal();
+        openTitlePicker((ta && ta.value) || window.currentScript || '');
+        return;
+      }
+
       // Mark all selected stages active in the stepper.
       checkedList.forEach(key => spsSetStageStatus(key, 'active'));
 
       closeScriptProcessingModal();
       if (typeof addProgressMessage === 'function') {
-        addProgressMessage('▶ Running ' + checkedList.length + ' stage(s): ' + checkedList.map(k => (window._spsStages[k] && window._spsStages[k].label) || k).join(', '), 'info');
+        addProgressMessage('▶ Running ' + checkedList.length + ' stage(s): ' + checkedList.map(k => (window._spsStages[k] && window._spsStages[k].label) || k).join(', ') + (wantsTitle ? ', then the Title Picker' : ''), 'info');
       }
 
       // Delegate to the existing pipeline (handles fetch /process-script + SSE
@@ -12499,11 +13090,13 @@ Thank you for watching!`;
           p.catch(e => {
             if (typeof addProgressMessage === 'function') addProgressMessage('❌ Processing failed: ' + (e && e.message ? e.message : e), 'error');
             checkedList.forEach(key => spsSetStageStatus(key, 'error'));
+            if (wantsTitle) { window._spsTitlePending = false; spsSetStageStatus('title', 'error'); }
           });
         }
       } catch (e) {
         if (typeof addProgressMessage === 'function') addProgressMessage('❌ Processing failed to start: ' + (e && e.message ? e.message : e), 'error');
         checkedList.forEach(key => spsSetStageStatus(key, 'error'));
+            if (wantsTitle) { window._spsTitlePending = false; spsSetStageStatus('title', 'error'); }
       }
     }
 
@@ -12620,43 +13213,22 @@ Thank you for watching!`;
           res.style.color = '#10b981';
           const ta = document.getElementById('scriptInput');
           const rawTxt = (ta && ta.value) || (window.currentScript || '');
-          // Ignore production-only [PRODUCTION …] notes (the user's editing-only
-          // markers) in EVERY count — total words, Host words, and runtime.
-          const txt = rawTxt.replace(
-            /\[PRODUCTION\s+BEGIN\][\s\S]*?\[PRODUCTION\s+END\]/gi, ' ');
-          const words = (txt.match(/\S+/g) || []).length;
-          // Host-only word count drives the runtime estimate, matching the
-          // shorten agent's target (150 wpm against Host: dialogue only).
-          const hostBlocks = txt.match(/(?:^|\n)\s*(?:#{1,6}\s*)?\**\s*host\s*\**\s*:\s*([\s\S]*?)(?=\n\s*(?:#{1,6}\s+\S|(?:#{1,6}\s*)?(?:\*\*[^*\n]{1,40}\*\*\s*:|host\s*:|heading\s*:|chapter\s+\d|visual\s+cue\s*:|b-?roll\s*:)|---+|===+)|$)/gi) || [];
-          let hostWords = 0;
-          hostBlocks.forEach(b => { hostWords += (b.replace(/^[^:]*:/, '').match(/\S+/g) || []).length; });
-          // Chapter-aware augment: many scripts (esp. docx-loaded) only have
-          // a single `Host:` marker in the FINAL HOOK. Chapter bodies are
-          // plain prose under `(Heading:\s+)?Chapter N - ...` markers but
-          // are ALSO spoken content. Count their words too so the runtime
-          // estimate isn't ~hook-only.
-          const chapterRe = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*{0,2})\s*(?:Heading\s*:\s*)?Chapter\s+\d+\b[^\n]*\n([\s\S]*?)(?=\n\s*(?:#{1,6}\s*)?(?:\*{0,2})\s*(?:Heading\s*:\s*)?Chapter\s+\d+\b|\n\s*(?:#{1,6}\s+)?(?:SUPPORTING\s+RESEARCH|YOUTUBE\s+UPLOAD|VISUAL\s+CUES?|B-?ROLL)\b|\n\s*={3,}\s*\n|$)/gi;
-          let chapterWords = 0;
-          let cm;
-          while ((cm = chapterRe.exec(txt)) !== null) {
-            const body = (cm[1] || '')
-              .replace(/^\s*(?:Heading\s*:|Visual\s+Cue\s*:|B-?Roll\s*:)[^\n]*$/gim, '')
-              .replace(/^\s*(?:\*{0,2})\s*Host\s*:(?:\*{0,2})\s*$/gim, '');
-            chapterWords += (body.match(/\S+/g) || []).length;
-          }
-          if (chapterWords > hostWords * 1.5) {
-            hostWords += chapterWords;
-          }
-          const wpm = 150;
-          const mins = hostWords / wpm;
+          // Spoken words only (what the HeyGen avatar will say), the same count
+          // as the duration badge and the server: no headings, metadata,
+          // production notes, trailing research/packaging sections, or the
+          // appended HEYGEN READY SCRIPT copy. It drives the runtime estimate
+          // and matches the Shorten step's target.
+          const wpm = HEYGEN_WPM;
+          const est = estimateHeyGenDuration(rawTxt, wpm);
+          const spokenWords = est.words;
+          const mins = spokenWords / wpm;
           const m = Math.floor(mins);
           const s = Math.round((mins - m) * 60);
-          const dur = hostWords > 0
+          const dur = spokenWords > 0
             ? (m + 'm ' + (s < 10 ? '0' : '') + s + 's')
             : '—';
           res.innerHTML = '✅ Script loaded — '
-            + '<strong>' + words.toLocaleString() + '</strong> total words · '
-            + '<strong>' + hostWords.toLocaleString() + '</strong> Host words · '
+            + '<strong>' + spokenWords.toLocaleString() + '</strong> spoken words · '
             + 'est. runtime <strong>' + dur + '</strong> @ ' + wpm + ' wpm';
         }
       } else {
@@ -13522,7 +14094,7 @@ Thank you for watching!`;
               From <code>&lt;project&gt;/thumbnails/</code> next to the selected video, or browse to upload.
             </div>
             <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">
-              <button onclick="browseForYouTubeThumbnail()" style="background:#1e293b; color:#e2e8f0; border:1px solid #334155; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:12px;" title="Upload a thumbnail image (PNG/JPG, &lt; 2 MB)">📂 Browse for Thumbnail…</button>
+              <button onclick="browseForYouTubeThumbnail()" style="background:#1e293b; color:#e2e8f0; border:1px solid #334155; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:12px;" title="Upload a thumbnail image (PNG/JPG, up to 50 MB)">📂 Browse for Thumbnail…</button>
               <span id="ytThumbBrowseStatus" style="font-size:12px; color:#94a3b8;"></span>
             </div>
             <input id="ytThumbFileInput" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" style="display:none;">
@@ -14084,7 +14656,7 @@ Thank you for watching!`;
             card.style.cssText = 'cursor:pointer; border:2px solid #334155; border-radius:6px; '
               + 'overflow:hidden; background:#1e293b; padding:4px;';
             if (t.too_large) card.style.opacity = '0.5';
-            card.title = t.name + (t.too_large ? '  (over 2 MB — YouTube will reject)' : '');
+            card.title = t.name + (t.too_large ? '  (over 50 MB — YouTube will reject)' : '');
             card.dataset.path = t.path;
             card.innerHTML =
               '<img src="' + t.url + '" style="width:100%; height:90px; object-fit:cover; '
@@ -14094,7 +14666,7 @@ Thank you for watching!`;
               + t.name + '</div>';
             card.onclick = () => {
               if (t.too_large) {
-                alert('This thumbnail is over YouTube\'s 2 MB limit and will be rejected.');
+                alert('This thumbnail is over YouTube\'s 50 MB limit and will be rejected.');
                 return;
               }
               gallery.querySelectorAll('div[data-path]').forEach(el => {

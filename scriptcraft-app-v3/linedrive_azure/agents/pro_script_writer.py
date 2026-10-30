@@ -217,7 +217,7 @@ def write_pro_script(title: str, brief: str = "",
                     reported = total
                     # flush so the tick streams to the progress log in real time
                     # (otherwise it buffers and the user just sees a spinner).
-                    print(f"   📝 writing… ~{len(''.join(acc).split())} words",
+                    print(f"   📝 writing… ~{_spoken_words(''.join(acc))} spoken words",
                           flush=True)
             msg = s.get_final_message()
         txt = "".join(
@@ -246,6 +246,15 @@ def write_pro_script(title: str, brief: str = "",
 
 
 _CHAPTER_LINE = re.compile(r"(?im)^\s*\**\s*heading\s*:\s*\**\s*chapter\s+\d+")
+
+
+def _spoken_words(text: str) -> int:
+    """Spoken words so far (what the avatar will say), like every count in the app."""
+    try:
+        from console_ui.text_processing import spoken_word_count
+        return spoken_word_count(text)
+    except ImportError:
+        return len((text or "").split())
 
 
 def pro_chapter_count(text: str) -> int:
@@ -322,7 +331,7 @@ def write_pro_script_agent(title: str, brief: str = "",
                 total += len(event.delta)
                 if total - reported >= 3500:  # same cadence as the classic writer
                     reported = total
-                    print(f"   📝 writing… ~{len(''.join(chunks).split())} words",
+                    print(f"   📝 writing… ~{_spoken_words(''.join(chunks))} spoken words",
                           flush=True)
             elif etype == "response.completed":
                 final = event.response

@@ -1269,7 +1269,12 @@ class EnhancedAutoGenSystem:
                     _n_verify = len(re.findall(r'\[VERIFY', pro_text))
                     print("-" * 50)
                     print(f"✅ Pro script complete [{get_timestamp()}]")
-                    print(f"   📄 {len(pro_text.split())} words, {_n_ch} chapters")
+                    try:
+                        from console_ui.text_processing import spoken_word_count
+                        _spoken = spoken_word_count(pro_text)
+                    except ImportError:
+                        _spoken = len(pro_text.split())
+                    print(f"   📄 {_spoken} spoken words, {_n_ch} chapters")
                     print(f"   🎬 {_n_prod} production blocks, {_n_img} Grok "
                           f"Imagine prompts, {_n_verify} verify notes")
                     print("   ⏭️  Skipped: topic planner, per-chapter writers, "

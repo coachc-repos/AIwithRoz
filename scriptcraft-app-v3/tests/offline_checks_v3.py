@@ -558,6 +558,446 @@ def _():
     return "saved key wins over the environment; without one, the environment value stays"
 
 
+_WORD_COUNT_SAMPLE = """**My Title**
+
+FINAL HOOK:
+**Host:**
+
+One two three four five.
+[PRODUCTION BEGIN]
+[GROK IMAGINE / RESOLVE] a garage at night with many words that are not spoken
+[PRODUCTION END]
+
+Title: My Title
+Script-ID: ld-123
+Script-Version: v-456
+Script Type: Video
+Audience: creators and solo business owners
+Tone: energizing and confident
+
+Heading: Chapter 1 - The Setup
+**Host:**
+
+Six seven eight.
+[PRODUCTION BEGIN]
+[VERIFY BEFORE RENDER] Confirm the price before render.
+[PRODUCTION END]
+Nine ten.
+
+Heading: Chapter 2 - The Payoff
+**Host:**
+
+Eleven twelve.
+Chapter 3 - A Heading Glued to the Dialogue (4:00-5:00)
+Host:
+Thirteen fourteen.
+Summary: Fifteen sixteen.
+
+=== SUPPORTING RESEARCH AND EXPERT PERSPECTIVES ===
+Claims to check on render day: many words here that are not spoken.
+
+=== FINAL PACKAGING (LOCKED PENDING REVIEW) ===
+Title: A/B challenger title words
+
+=== YOUTUBE VIDEO DESCRIPTION ===
+A description with many more words that the avatar does not speak.
+
+# 🎬 HEYGEN READY SCRIPT
+
+One two three four five. Six seven eight. Nine ten. Eleven twelve. A second copy, not counted.
+"""
+
+
+@check("Word counts: spoken words only (Host content), the same on the server and the page's duration badge")
+def _():
+    import shutil
+    import subprocess
+    import tempfile
+    from console_ui.text_processing import spoken_text, spoken_word_count
+
+    # Hook 5 + chapter 1 5 + chapter 2 2 + 2 + summary 2 (its label dropped). Not counted: the
+    # metadata block, production notes, the glued chapter heading, the trailing sections,
+    # and the appended HEYGEN READY SCRIPT copy.
+    assert spoken_word_count(_WORD_COUNT_SAMPLE) == 16, (spoken_word_count(_WORD_COUNT_SAMPLE), spoken_text(_WORD_COUNT_SAMPLE))
+    assert "Chapter 3" not in spoken_text(_WORD_COUNT_SAMPLE) and "Summary" not in spoken_text(_WORD_COUNT_SAMPLE)
+    # A production block still streaming in (no END yet) is not counted either.
+    assert spoken_word_count("**Host:**\nOne two.\n[PRODUCTION BEGIN]\nnot spoken yet") == 2
+    assert spoken_word_count("**Host:**\nOne [[PRODUCTION_BLOCK_0]] two.") == 2
+    web = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    assert '"word_count": _spoken_word_count(final_script_with_tools),' in web
+    assert '"word_count": _spoken_word_count(script_text) if script_text else 0,' in web
+    assert web.count("return _spoken_word_count(text)") == 2, "both Shorten-step counters"
+    sc = open(os.path.join(APP, "linedrive_azure", "agents", "script_shorten_agent_client.py"), encoding="utf-8").read()
+    assert "return spoken_word_count(masked_script" in sc
+    pw = open(os.path.join(APP, "linedrive_azure", "agents", "pro_script_writer.py"), encoding="utf-8").read()
+    assert pw.count("spoken words\",") == 2
+    # The page's badge runs a port of the same extraction: same count on the sample.
+    node = shutil.which("node")
+    if not node:
+        return "server count checked; node not installed, so the badge port was not run"
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    js = html[html.index("        const _HG_SKIP_PATTERNS"):html.index("        // Build a small inline badge element from estimateHeyGenDuration().")]
+    with tempfile.TemporaryDirectory() as d:
+        sample = os.path.join(d, "sample.md")
+        open(sample, "w", encoding="utf-8").write(_WORD_COUNT_SAMPLE)
+        prog = os.path.join(d, "badge.js")
+        open(prog, "w", encoding="utf-8").write(js + "\nconst fs = require('fs');\n"
+            "console.log(estimateHeyGenDuration(fs.readFileSync(process.argv[2], 'utf8')).words);\n")
+        out = subprocess.run([node, prog, sample], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr[:300]
+    assert out.stdout.strip() == "16", out.stdout
+    assert "const est = estimateHeyGenDuration(rawTxt, wpm);" in html, "Load Script panel uses the same count"
+    return "16 spoken words on the sample from the server and the badge port; metadata, headings, trailing sections and the HeyGen copy excluded"
+
+
+@check("API Keys dialog: keys are masked, X keys save, and only this machine or a signed-in browser can read or change them")
+def _():
+    import json
+    import tempfile
+    from pathlib import Path
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+
+    env_names = ["X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET", "X_BEARER_TOKEN",
+                 "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "HEYGEN_API_KEY", "XAI_API_KEY"]
+    saved_env = {e: os.environ.get(e) for e in env_names}
+    saved_path, saved_token = web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui.APP_AUTH_TOKEN
+    remote = {"REMOTE_ADDR": "192.168.1.50"}
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            web_gui.SCRIPTCRAFT_SETTINGS_PATH = Path(d) / "settings.json"
+            web_gui.APP_AUTH_TOKEN = ""
+            c = web_gui.app.test_client()
+            # Open app (no token): another device on the network can neither read nor change keys.
+            for method, path in (("get", "/api/keys"), ("post", "/api/keys"), ("get", "/api/grok/key"), ("post", "/api/grok/key")):
+                r = getattr(c, method)(path, json={"x_api_key": "attacker", "api_key": "attacker"}, environ_base=remote)
+                assert r.status_code == 403, (path, r.status_code)
+            assert not web_gui.SCRIPTCRAFT_SETTINGS_PATH.exists()
+            # This machine: save X keys and a Claude key; values never come back, only masked hints.
+            r = c.post("/api/keys", json={"x_api_key": " test-x-key-1234 ", "x_access_secret": "secret-9876",
+                                          "anthropic_api_key": "sk-ant-test-abcd"})
+            assert r.status_code == 200 and r.get_json()["success"], r.get_json()
+            assert os.environ["X_API_KEY"] == "test-x-key-1234"
+            assert json.loads(web_gui.SCRIPTCRAFT_SETTINGS_PATH.read_text())["x_access_secret"] == "secret-9876"
+            got = c.get("/api/keys").get_json()
+            body = json.dumps(got)
+            assert "test-x-key-1234" not in body and "sk-ant-test-abcd" not in body, "a full key reached the browser"
+            assert got["x_keys"]["x_api_key"]["present"] and got["x_keys"]["x_api_key"]["masked"].endswith("1234")
+            assert got["keys"]["anthropic_api_key"].endswith("abcd") and got["sources"]["anthropic_api_key"] == "saved"
+            # A masked hint posted back is ignored (keeps the current key).
+            c.post("/api/keys", json={"anthropic_api_key": got["keys"]["anthropic_api_key"]})
+            assert json.loads(web_gui.SCRIPTCRAFT_SETTINGS_PATH.read_text())["anthropic_api_key"] == "sk-ant-test-abcd"
+            # Startup hydration sets the X env vars from saved settings.
+            os.environ.pop("X_ACCESS_SECRET", None)
+            web_gui._hydrate_env_from_settings()
+            assert os.environ["X_ACCESS_SECRET"] == "secret-9876"
+            # Token set: remote requests need it, and the sign-in form posts it (not in the URL).
+            web_gui.APP_AUTH_TOKEN = "offline-check-token"
+            assert c.get("/api/keys", environ_base=remote).status_code == 401
+            ok = c.get("/api/keys", environ_base=remote, headers={"X-App-Token": "offline-check-token"})
+            assert ok.status_code == 200 and "test-x-key-1234" not in json.dumps(ok.get_json())
+            assert c.post("/login", data={"token": "wrong"}).status_code == 200
+            r = c.post("/login", data={"token": "offline-check-token"}, headers={"X-Forwarded-Proto": "https"})
+            cookie = r.headers.get("Set-Cookie", "")
+            assert r.status_code == 303 and "app_token=" in cookie and "HttpOnly" in cookie and "Secure" in cookie, cookie
+            assert '<form method="post" action="/login">' in c.get("/login").get_data(as_text=True)
+    finally:
+        web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui.APP_AUTH_TOKEN = saved_path, saved_token
+        for e, v in saved_env.items():
+            if v is None:
+                os.environ.pop(e, None)
+            else:
+                os.environ[e] = v
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    for input_id in ("modalXApiKey", "modalXApiSecret", "modalXAccessToken", "modalXAccessSecret", "modalXBearerToken"):
+        assert html.count(f'id="{input_id}"') == 1, input_id
+    return "keys masked (last 4 only), masked hints ignored on save, X keys saved and loaded; remote 403 without a token, 401 with it set"
+
+
+_GI_REPLACE_SAMPLE = """Title: Sample
+
+**Host:**
+Opening line about the news that everyone is talking about this week.
+[PRODUCTION BEGIN]
+[GROK IMAGINE / RESOLVE] old hook prompt.
+[PRODUCTION END]
+
+Heading: Chapter 1 - First
+[PRODUCTION BEGIN]
+[VERIFY BEFORE RENDER] Check the $40B figure.
+[GROK IMAGINE / RESOLVE] old prompt one.
+[QUOTE CARD / RESOLVE] "A quote" - Someone
+[PRODUCTION END]
+**Host:**
+First paragraph of chapter one with enough words to count as a spoken beat here.
+[PRODUCTION BEGIN]
+[GROK IMAGINE / RESOLVE] old prompt two.
+[PRODUCTION END]
+Second paragraph of chapter one, also spoken by the host on camera today.
+[PRODUCTION BEGIN]
+[COLD OPEN / RESOLVE] Cut to the montage.
+[PRODUCTION END]
+Third paragraph of chapter one closes the section with a clear takeaway.
+
+=== SUPPORTING RESEARCH ===
+[PRODUCTION BEGIN]
+[GROK IMAGINE / RESOLVE] tail prompt stays.
+[PRODUCTION END]
+"""
+
+
+@check("Grok Imagine 'Replace existing prompts': old prompts and quote cards out, other cues kept, then a fresh rescan")
+def _():
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+    from console_ui.text_processing import spoken_text
+
+    s = _GI_REPLACE_SAMPLE
+    out, removed = web_gui._remove_grok_imagine_prompts(s)
+    assert removed == 3, removed                       # body prompts only; the tail's stays
+    body, tail = out.split("=== SUPPORTING RESEARCH ===")
+    assert "old " not in body and "QUOTE CARD" not in body
+    assert "[VERIFY BEFORE RENDER] Check the $40B figure." in body and "[COLD OPEN / RESOLVE] Cut to the montage." in body
+    assert body.count("[PRODUCTION BEGIN]") == body.count("[PRODUCTION END]") == 2   # emptied blocks dropped
+    assert "tail prompt stays." in tail and spoken_text(out) == spoken_text(s)
+    assert web_gui._remove_grok_imagine_prompts(out) == (out, 0)
+
+    calls = []
+    real = web_gui._grok_imagine_assets_for_beat
+    web_gui._grok_imagine_assets_for_beat = lambda beat, sec="", title="": (calls.append(beat) or "NEW prompt. style", None)
+    try:
+        new, added = web_gui._inject_grok_imagine_prompts(out, video_title="Sample")
+    finally:
+        web_gui._grok_imagine_assets_for_beat = real
+    # Hook + 3 paragraphs: the one after the VERIFY-only block and the one after the cold open count too.
+    assert added == 4 and new.count("NEW prompt.") == 4, (added, new)
+    assert new.count("[VERIFY BEFORE RENDER]") == 1 and spoken_text(new).split() == spoken_text(s).split()
+    src = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    stage = src[src.index('if checkboxes.get("grok_imagine", False):'):src.index("# HOOK-ONLY MODE")]
+    assert 'checkboxes.get("grok_imagine_replace", False)' in stage and "cleaned_script = _gi_before" in stage
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert 'id="spsGrokImagineReplace"' in html and 'id="checkGrokImagineReplace"' in html
+    assert "grok_imagine_replace: document.getElementById('checkGrokImagineReplace')?.checked || false" in html
+    return "3 old prompts + quote card removed, VERIFY/cold open kept, tail untouched; rescan adds hook + 3; falls back if none come back"
+
+
+@check("Thumbnail edits: a theme, a generated thumbnail, or an upload is edited by prompt (with optional logos) as a new version")
+def _():
+    import base64
+    import io as _io
+    import pathlib
+    import tempfile
+    from PIL import Image
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+    from tools.media import grok_thumbnail_generator as g
+
+    def png(color, size=(1600, 900)):
+        buf = _io.BytesIO()
+        Image.new("RGB", size, color).save(buf, "PNG")
+        return buf.getvalue()
+
+    sent = []
+
+    def fake_sample(self, prompt, uris):
+        sent.append((prompt, len(uris)))
+        return png((10, 200, 10)), "fake-model"
+
+    real = (g.GrokThumbnailGenerator._sample, pathlib.Path.home, web_gui._get_output_parent_dir,
+            os.environ.get("XAI_API_KEY"))
+    with tempfile.TemporaryDirectory() as d:
+        home = pathlib.Path(d)
+        try:
+            g.GrokThumbnailGenerator._sample = fake_sample
+            pathlib.Path.home = classmethod(lambda cls: home)
+            web_gui._get_output_parent_dir = lambda: home / "Final"
+            os.environ["XAI_API_KEY"] = os.environ.get("XAI_API_KEY") or "offline-check"
+            c = web_gui.app.test_client()
+            themes = c.get("/api/thumbnails/themes").get_json()["themes"]
+            files = {t["file"] for t in themes}
+            assert {"3_gold_neon.jpg", "9_gold_neon_public_figure.jpg", "broken_cracked_tablet.jpg"} <= files, files
+            assert c.get(themes[0]["url"]).status_code == 200
+            assert c.get("/api/thumbnails/theme-image/..%2Fgrok_thumbnail_generator.py").status_code == 404
+            # Theme -> edit (mentions Roz, so her 2 reference photos go along)
+            r = c.post("/api/thumbnails/edit", json={"source_kind": "theme", "source": "3_gold_neon.jpg",
+                                                     "instruction": "change the 3! to a 9 and keep Roz pointing"})
+            t1 = r.get_json()
+            assert r.status_code == 200 and t1["success"], t1
+            assert sent[-1][1] == 3 and "Make only this change: change the 3! to a 9" in sent[-1][0]
+            p1 = pathlib.Path(t1["thumbnail"]["filepath"])
+            assert p1.parent == home / "Dev" / "Thumbnails" / "edits" and p1.is_file()
+            assert Image.open(p1).size == (1280, 720) and pathlib.Path(t1["thumbnail"]["full_path"]).is_file()
+            # Generated -> edit again (no host mention: only the image itself), saved next to it
+            r = c.post("/api/thumbnails/edit", json={"source_kind": "generated", "source": p1.name,
+                                                     "instruction": "use Elon Musk instead of her"})
+            t2 = r.get_json()["thumbnail"]
+            assert sent[-1][1] == 1 and pathlib.Path(t2["filepath"]).parent == p1.parent
+            assert re.match(r"^3_gold_neon_edit_\d{8}_\d{6}\.png$", t2["filename"]), t2["filename"]
+            assert c.get(f"/thumbnails/{t2['filename']}").status_code == 200
+            # Upload -> edit
+            up = "data:image/png;base64," + base64.b64encode(png((200, 0, 0), (640, 360))).decode()
+            r = c.post("/api/thumbnails/edit", json={"source_kind": "upload", "source": up, "instruction": "add a 9"})
+            assert r.status_code == 200 and r.get_json()["success"]
+            # Refusals
+            assert c.post("/api/thumbnails/edit", json={"source_kind": "theme", "source": "3_gold_neon.jpg"}).status_code == 400
+            assert c.post("/api/thumbnails/edit", json={"source_kind": "generated", "source": "*.png", "instruction": "x"}).status_code == 404
+            assert c.get("/thumbnails/*.png").status_code == 404
+            # Included images (a logo): sent after the thumbnail, transparency kept
+            buf = _io.BytesIO()
+            Image.new("RGBA", (300, 300), (255, 0, 0, 0)).save(buf, "PNG")
+            logo = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+            r = c.post("/api/thumbnails/edit", json={"source_kind": "generated", "source": p1.name,
+                                                     "instruction": "add the logo top-right", "include_images": [logo]})
+            assert r.status_code == 200 and r.get_json()["thumbnail"]["included_images"] == 1, r.get_json()
+            assert sent[-1][1] == 2 and "The 2nd image is supplied to be added" in sent[-1][0]
+            assert g._include_data_uri(buf.getvalue()).startswith("data:image/png")
+            # 3 logos + Roz named: 1 thumbnail + 3 includes + 1 Roz reference = the 5-image limit
+            r = c.post("/api/thumbnails/edit", json={"source_kind": "generated", "source": p1.name,
+                                                     "instruction": "have Roz hold the logos", "include_images": [logo] * 3})
+            assert r.status_code == 200 and sent[-1][1] == 5 and "The last image shows Roz" in sent[-1][0]
+            assert c.post("/api/thumbnails/edit", json={"source_kind": "generated", "source": p1.name,
+                                                        "instruction": "x", "include_images": [logo] * 4}).status_code == 400
+            assert c.post("/api/thumbnails/edit", json={"source_kind": "generated", "source": p1.name,
+                                                        "instruction": "x", "include_images": ["not an image"]}).status_code == 400
+        finally:
+            (g.GrokThumbnailGenerator._sample, pathlib.Path.home, web_gui._get_output_parent_dir) = real[:3]
+            if real[3] is None:
+                os.environ.pop("XAI_API_KEY", None)
+            else:
+                os.environ["XAI_API_KEY"] = real[3]
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert "async function editCurrentThumbnail(el)" in html and "function openThumbnailThemeEditor()" in html
+    assert "if (choice.mode === 'theme') {" in html and 'class="thumbnail-gallery" data-gallery="${gid}"' in html
+    # Gallery controls are found inside the clicked gallery, never by a page-wide ID.
+    gallery = html[html.index("function renderThumbnailGallery("):html.index("async function openThumbnailThemeEditor()")]
+    assert "getElementById" not in gallery and 'onclick="editCurrentThumbnail(this)"' in gallery
+    assert "include_images: includes.map(i => i.dataUrl)" in gallery
+    # Save as… / Save 2K as…: the browser's save-location picker opens before the fetch.
+    save = gallery[gallery.index("async function saveCurrentThumbnail(el, full)"):gallery.index("function nextThumbnail(el)")]
+    assert save.index("window.showSaveFilePicker({") < save.index("await fetch(url)")
+    assert "name = base(thumb.full_path);" in save and "a.download = name;" in save
+    css = html[html.index(".tg-edit-input {"):html.index(".tg-include-chips {")]
+    assert css.count("height: 40px") == 2 and ".tg-btn:active:not(:disabled) { transform: translateY(3px)" in css
+    return ("themes listed and served; theme, generated and uploaded sources edit into new 1280x720 + full files; "
+            "included images (logos) sent after the thumbnail, Roz refs fit the 5-image limit; globs refused")
+
+
+
+@check("Title Picker: the chosen title replaces the Title: line and top heading; the YouTube section is untouched")
+def _():
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+
+    f = web_gui._apply_script_title
+    out, ch = f("# Old Heading\n\nTitle: Old\nScript-ID: ld-1\n\nHeading: Chapter 1 - A\n"
+                "=== YOUTUBE VIDEO DESCRIPTION ===\nTitle: A/B title stays", "New Title")
+    assert ch == ["Title: line", "top heading"], ch
+    assert out.startswith("# New Title\n") and "\nTitle: New Title\n" in out and "Title: A/B title stays" in out
+    assert f("**Title:** Old\nHeading: Chapter 1 - A", "N")[0].startswith("**Title:** N")
+    out, ch = f("Heading: Chapter 1 - A\n**Host:**\nHi.", "Fresh")
+    assert ch == ["added Title: line"] and out.startswith("Title: Fresh\n\nHeading: Chapter 1")
+    assert web_gui._extract_script_title_for_output(out, "") == "Fresh"
+    c = web_gui.app.test_client()
+    assert c.post("/api/titles/apply", json={"script": "Title: a", "title": ""}).status_code == 400
+    assert c.post("/api/titles/apply", json={"script": "Title: a", "title": "x" * 101}).status_code == 400
+    assert c.post("/api/titles/suggest", json={"script": " "}).status_code == 400
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert "'demo','title'];" in html and 'data-sps-stage="title"' in html
+    assert "window._spsTitlePending = wantsTitle && checkedList.length > 0;" in html
+    assert html.count("openTitlePicker(processedScript);") == 1 and "function openTitlePicker(script)" in html
+    return "Title: line + top heading replaced, a Title: line added when missing, YouTube A/B titles kept; last stage in the dialog"
+
+
+
+@check("X replies: only posts Grok's X search really returned are kept; replies never say 'my'")
+def _():
+    import json
+    import types as _types
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+    import xai_sdk
+
+    posts = [
+        {"url": "https://x.com/real/status/111", "handle": "@real", "text": "Is it safe?", "reply": "Start with my one task."},
+        {"url": "https://x.com/madeup/status/999", "handle": "@madeup", "text": "?", "reply": "x"},
+        {"url": "https://twitter.com/AIwithRoz/status/222", "handle": "@AIwithRoz", "text": "ours", "reply": "x"},
+        {"url": "https://x.com/real/status/111", "handle": "@real", "text": "dup", "reply": "x"},
+        {"url": "not a link", "reply": "x"},
+    ]
+    created = {}
+
+    class FakeChat:
+        def append(self, m): pass
+        def sample(self):
+            return _types.SimpleNamespace(
+                content="```json\n" + json.dumps({"posts": posts}) + "\n```",
+                citations=["https://x.com/real/status/111", "https://x.com/AIwithRoz/status/222"],
+                server_side_tool_usage={"X_SEARCH": 3})
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.chat = _types.SimpleNamespace(create=lambda **kw: created.update(kw) or FakeChat())
+
+    real_client, real_key = xai_sdk.Client, web_gui._resolve_xai_api_key
+    try:
+        xai_sdk.Client = FakeClient
+        web_gui._resolve_xai_api_key = lambda: "offline-check"
+        out = web_gui._find_x_reply_targets("Episode", "desc", "https://youtu.be/x")
+        c = web_gui.app.test_client()
+        assert c.post("/api/x/related", json={}).status_code == 400
+        r = c.post("/api/x/related", json={"title": "Episode"}).get_json()
+    finally:
+        xai_sdk.Client, web_gui._resolve_xai_api_key = real_client, real_key
+    assert [p["handle"] for p in out] == ["@real"] and out[0]["id"] == "111", out
+    assert out[0]["reply"] == "Start with the one task." and out[0]["url"] == "https://x.com/real/status/111"
+    assert r["success"] and len(r["posts"]) == 1
+    assert created["tools"] and created["max_turns"] == 6
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert "async function findXReplyTargets()" in html and "https://x.com/intent/post?in_reply_to=" in html
+    return "made-up, own-account, duplicate and malformed posts dropped; 'my' removed; copy + Reply on X wired"
+
+
+
+@check("YouTube thumbnails up to 50 MB (thumbnails.set's limit); a size refusal retries with a JPEG under 2 MB")
+def _():
+    import io as _io
+    import tempfile
+    import types as _types
+    from pathlib import Path
+    from PIL import Image
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+    import youtube_publisher as yp
+
+    assert yp.MAX_THUMBNAIL_BYTES == 50 * 1024 * 1024 and yp.LEGACY_THUMBNAIL_BYTES == 2 * 1024 * 1024
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        # A noisy 2816x1584 PNG (like a 2K Grok original), well over 2 MB.
+        big = d / "thumb_full.png"
+        Image.frombytes("RGB", (2816, 1584), os.urandom(2816 * 1584 * 3)).save(big, "PNG")
+        assert big.stat().st_size > 5 * 1024 * 1024
+        real_dir = web_gui._yt_uploads_dir
+        try:
+            web_gui._yt_uploads_dir = lambda: d
+            c = web_gui.app.test_client()
+            r = c.post("/api/youtube/upload-thumbnail", content_type="multipart/form-data",
+                       data={"file": (_io.BytesIO(big.read_bytes()), "big.png")})
+            assert r.status_code == 200 and r.get_json()["size_bytes"] > 5 * 1024 * 1024, r.get_json()
+        finally:
+            web_gui._yt_uploads_dir = real_dir
+        small = yp._compressed_thumbnail_copy(big)
+        assert small and small.name == "thumb_full_youtube.jpg" and small.stat().st_size <= yp.LEGACY_THUMBNAIL_BYTES
+    err = lambda status, body: _types.SimpleNamespace(resp=_types.SimpleNamespace(status=status), content=body.encode())
+    assert yp._is_size_rejection(err(413, ""))
+    assert yp._is_size_rejection(err(400, '{"error": {"message": "The thumbnail image file is too large."}}'))
+    assert not yp._is_size_rejection(err(403, '{"error": {"errors": [{"reason": "forbidden"}]}}'))
+    src = open(os.path.join(APP, "youtube_publisher.py"), encoding="utf-8").read()
+    assert "_is_size_rejection(big)" in src and "small = _compressed_thumbnail_copy(thumb_path)" in src
+    web = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    assert web.count("yp.MAX_THUMBNAIL_BYTES") >= 3 and "2 * 1024 * 1024:" not in web
+    return "5.6 MB thumbnail accepted; a noisy 2K PNG compresses under 2 MB for the fallback; size errors told apart from others"
+
+
 if __name__ == "__main__":
     width = max(len(n) for n, _, _ in RESULTS)
     for name, ok, detail in RESULTS:

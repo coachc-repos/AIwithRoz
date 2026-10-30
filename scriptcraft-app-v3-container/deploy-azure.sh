@@ -130,7 +130,11 @@ _resolve_key() {
         val=$(az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" \
             --query "properties.template.containers[0].env[?name=='$name'].value | [0]" -o tsv)
     fi
-    printf '%s' "$val"
+    # .env lines are raw text: drop a CR, surrounding spaces, and one pair of
+    # quotes (a trailing space once reached the cloud LINKEDIN_AUTHOR_URN).
+    printf '%s' "$val" | tr -d '\r' \
+        | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+              -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"
 }
 X_API_KEY=$(_resolve_key X_API_KEY)
 X_API_SECRET=$(_resolve_key X_API_SECRET)

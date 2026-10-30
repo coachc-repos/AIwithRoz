@@ -180,6 +180,86 @@ and traces).
   and used a saved key only where nothing was set, so a key changed in the
   dialog reverted to the `.env` value at the next restart while the dialog
   still showed the new one. Saved keys now win at startup too.
+- **Thumbnails up to 50 MB.** Publish to YouTube accepted thumbnails only up
+  to 2 MB, YouTube's old limit; `thumbnails.set` now takes up to 50 MB, so the
+  2K Grok originals (about 5 MB) upload as they are. If YouTube still refuses
+  a large file for its size, the upload retries once with a JPEG copy under
+  2 MB (`<name>_youtube.jpg`, full resolution when it fits).
+- **Durations use HeyGen's real pace, 175 words per minute.** Hook videos
+  from four episodes ran 170 to 177 wpm, so the old 150 wpm made every
+  duration on the page (script badge, Load Script panel, hook picker) and the
+  reading time about 17% too long. `HEYGEN_WPM` in `web_gui.py` and
+  `templates/index.html`. Shorten-to-length targets, B-roll timecodes, YouTube
+  timestamps, and the writers' word targets still plan at 150 wpm.
+- **Reply to related posts on X.** In the X composer, after picking a
+  published episode, "🔎 Find related posts" has Grok search X (last 2
+  weeks) for up to 5 posts on the episode's subject and draft a reply to each
+  (under 240 characters, no hashtags or links, never "my"). Copy a reply, or
+  "↩ Reply on X" opens X's reply box with it filled in; "add video link"
+  appends the episode link. A post is shown only if Grok's search actually
+  returned it (its link is in the search citations). A search takes about a
+  minute.
+- **Title Picker.** The last Process Script stage: Claude Opus 5.5 reads the
+  script and suggests 5 titles (under 70 characters, five different angles,
+  only facts from the script). Pick one, or type your own, and it replaces the
+  `Title:` line and a top `# ...` heading (or adds a `Title:` line when there
+  is none); the YouTube section's own A/B titles are left alone. With other
+  stages selected it opens when their run finishes, on the processed script.
+  The thumbnail gallery no longer shows the "Generated Thumbnails (N
+  variations)" heading.
+- **Edit thumbnails with a prompt.** Under the thumbnail gallery, type a change
+  ("change the 3 to a 9", "use Elon Musk instead of Roz") and Grok Imagine
+  (XAI_API_KEY, the same key as Grok Imagine video) makes only that change and
+  keeps the background, lighting, and style. The result is added as a new
+  version you can edit again; earlier versions stay. The Generate Thumbnails
+  dialog's "Start from a theme" opens the channel's reference thumbnails
+  (`tools/media/thumbnail_refs/`, now 13 with the gold "9" and "BROKEN?"), or
+  takes an uploaded image, as the starting point. An edit that names Roz also
+  sends her reference photos so she stays recognizable. "📎 Include image"
+  adds up to 3 images to an edit (a logo, a product shot; PNG transparency is
+  kept), and the edit says where they go ("put the logo top-right"). Edits of
+  a theme or upload are saved in `~/Dev/Thumbnails/edits/`; edits of a
+  generated thumbnail are saved next to it. From the command line:
+  `python tools/media/grok_thumbnail_generator.py --edit IMAGE "change" [--include LOGO]`.
+  "💾 Save as…" and "💾 Save 2K as…" (the 2816×1584 original, for Grok
+  thumbnails) open the browser's save dialog to pick the folder and name
+  (Chrome and Edge; other browsers download to Downloads).
+  Each gallery keeps its own state: galleries used to share element IDs, so
+  with two on the page Apply edit could read the other gallery's empty box and
+  appear to do nothing.
+- **Replace existing Grok Imagine prompts.** The Process Script dialog's Grok
+  Imagine Prompts stage has a "Replace existing prompts" option. It removes
+  every `[GROK IMAGINE / RESOLVE]` prompt and its `[QUOTE CARD / RESOLVE]` line
+  from the script body, drops production blocks left empty, and rescans for
+  new ones. VERIFY notes, cold opens, overlays, and the trailing sections are
+  kept, and if no new prompts come back the old ones stay. A paragraph that
+  follows a VERIFY note or other non-Grok block can now get a prompt too, so a
+  replaced Pro script ends up with about as many prompts as the writer made.
+- **X keys in the API Keys dialog.** The dialog has fields for the five
+  @AIwithRoz posting keys (X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN,
+  X_ACCESS_SECRET, X_BEARER_TOKEN), saved and loaded like the other keys, so
+  Post to X no longer needs `.env`.
+- **Key values stay on this computer.** The dialog shows full key values, and
+  the GUI listens on every network interface, so any device on the same
+  network could read them from `/api/keys` (and `/api/grok/key`). Those
+  endpoints now answer only a browser on this machine, or any browser once
+  `APP_AUTH_TOKEN` is set and it has signed in. The sign-in form posts the
+  token instead of putting it in the URL, where the access log recorded it.
+- **Word counts are spoken words.** Every word count the app shows (the
+  duration badge, the result's word count and reading time, the cloud script
+  list, the Shorten step's Host-word counts, and the Pro writer's progress
+  lines) now counts what the HeyGen avatar will speak:
+  `console_ui/text_processing.spoken_word_count`, which the page's badge
+  ports line for line. Before, the badge also counted the metadata block after
+  the hook (Title:, Script-ID:, Audience:, Tone:), the server counted the whole
+  file including the trailing research and packaging sections, and the two
+  disagreed on 4 of 10 sample scripts. Now they match on all 93 saved scripts.
+  The Process Script dialog's "Script loaded" line uses the same count, so a
+  script with an appended HEYGEN READY SCRIPT copy is no longer counted twice.
+  The HeyGen text also no longer includes the label "Summary:" when a summary
+  line follows spoken text directly (12 of 93 scripts), or a chapter title line
+  ("Chapter 2: Tell #1 (1:00-2:50)") that sits right under the previous
+  paragraph (2 of 93 scripts).
 - **Labels and port.** The tab title, header badge, version (`3.0-maf`), and
   default port (8082) identify v3.
 

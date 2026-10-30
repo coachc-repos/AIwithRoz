@@ -6,8 +6,10 @@ Wraps the existing `web_gui.py` Flask app for headless container hosting:
   1. Pre-installs stub modules so any `import davinci_resolve_api`,
      `import resolve_inspector`, or `import DaVinciResolveScript` calls
      succeed without actually requiring DaVinci Resolve to be installed.
-  2. Imports `web_gui` to register all routes.
-  3. Replaces routes that depend on a local file system, DaVinci Resolve,
+  2. Restores the 🔑 API Keys dialog's settings from a private blob (the
+     container disk is ephemeral) and uploads them again after every save.
+  3. Imports `web_gui` to register all routes.
+  4. Replaces routes that depend on a local file system, DaVinci Resolve,
      local Whisper transcription, or local video/audio download with a
      503 stub. Local-disk download/save endpoints are also disabled.
 
@@ -67,15 +69,101 @@ os.environ.setdefault("SCRIPTCRAFT_OUTPUT_PARENT", "/tmp/scriptcraft_output")
 Path("/tmp/scriptcraft_output").mkdir(parents=True, exist_ok=True)
 
 
-# --- 3. Import the unmodified web app ---------------------------------------
+# --- 3. Keep the API Keys dialog's settings across restarts ------------------
+# The container's disk is wiped on every restart and deploy, so keys saved in
+# the 🔑 API Keys dialog would quietly revert to the deploy-time env vars.
+# Restore the settings file from a private blob BEFORE web_gui reads it at
+# import, and upload it again after every save. Uses the app's managed
+# identity (Storage Blob Data Contributor on the account). Set
+# SCRIPTCRAFT_SETTINGS_BLOB_CONTAINER="" to turn this off.
+
+_SETTINGS_BLOB_CONTAINER = os.environ.get(
+    "SCRIPTCRAFT_SETTINGS_BLOB_CONTAINER", "app-settings").strip()
+_SETTINGS_BLOB_NAME = "web_gui_settings.json"
+_SETTINGS_PATH = Path(
+    os.environ.get("SCRIPTCRAFT_SETTINGS_FILE")
+    or (Path.home() / ".scriptcraft" / "web_gui_settings.json")
+).expanduser()
+
+
+def _settings_blob_service():
+    from azure.identity import DefaultAzureCredential
+    from azure.storage.blob import BlobServiceClient
+    account = os.environ.get("FINISHED_VIDEOS_BLOB_ACCOUNT",
+                             "linedrivestorage")
+    return BlobServiceClient(
+        account_url=f"https://{account}.blob.core.windows.net",
+        credential=DefaultAzureCredential(),
+        connection_timeout=10, read_timeout=30,
+    )
+
+
+def _restore_settings_from_blob() -> None:
+    if not _SETTINGS_BLOB_CONTAINER:
+        return
+    from azure.core.exceptions import ResourceNotFoundError
+    try:
+        blob = _settings_blob_service().get_blob_client(
+            _SETTINGS_BLOB_CONTAINER, _SETTINGS_BLOB_NAME)
+        data = blob.download_blob().readall()
+    except ResourceNotFoundError:
+        print("🔑 No saved settings blob yet; using the deploy-time keys")
+        return
+    except Exception as e:
+        print(f"⚠️ Could not restore saved settings from blob: {e}")
+        return
+    _SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _SETTINGS_PATH.write_bytes(data)
+    _SETTINGS_PATH.chmod(0o600)
+    print(f"🔑 Restored saved settings from blob "
+          f"{_SETTINGS_BLOB_CONTAINER}/{_SETTINGS_BLOB_NAME}")
+
+
+def _upload_settings_to_blob() -> bool:
+    if not _SETTINGS_BLOB_CONTAINER:
+        return True
+    from azure.core.exceptions import ResourceNotFoundError
+    try:
+        container = _settings_blob_service().get_container_client(
+            _SETTINGS_BLOB_CONTAINER)
+        data = _SETTINGS_PATH.read_bytes()
+        try:
+            container.upload_blob(_SETTINGS_BLOB_NAME, data, overwrite=True)
+        except ResourceNotFoundError:
+            # First save: create the container (private: no public access),
+            # then retry.
+            container.create_container()
+            container.upload_blob(_SETTINGS_BLOB_NAME, data, overwrite=True)
+        return True
+    except Exception as e:
+        print(f"❌ Could not upload settings to blob: {e}")
+        return False
+
+
+_restore_settings_from_blob()
+
+
+# --- 4. Import the unmodified web app ---------------------------------------
 
 import web_gui  # noqa: E402  (must come AFTER stubs/sys.path setup)
 
 app = web_gui.app
 app.config["CONTAINER_MODE"] = True
 
+# Every save (API Keys dialog and other settings) also goes to the blob. A
+# failed upload reports "Could not save settings" so the dialog never claims a
+# key will survive a restart when it won't.
+_save_settings_locally = web_gui._save_scriptcraft_settings
 
-# --- 4. Disable routes that require local-only resources --------------------
+
+def _save_settings_and_upload(settings: dict) -> bool:
+    return _save_settings_locally(settings) and _upload_settings_to_blob()
+
+
+web_gui._save_scriptcraft_settings = _save_settings_and_upload
+
+
+# --- 5. Disable routes that require local-only resources --------------------
 
 from flask import jsonify  # noqa: E402
 
@@ -178,7 +266,7 @@ print(f"🔒 Container mode: disabled {_overrides} local-only view functions")
 print(f"🔒 Disabled set ({len(_DISABLED_TAGS)}): {', '.join(_DISABLED_TAGS)}")
 
 
-# --- 5. Health endpoint for Container Apps probes ---------------------------
+# --- 6. Health endpoint for Container Apps probes ---------------------------
 
 @app.route("/healthz")
 def _container_healthz():

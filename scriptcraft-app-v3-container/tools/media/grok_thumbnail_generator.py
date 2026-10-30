@@ -21,7 +21,14 @@ Each thumbnail is saved twice: a 1280x720 PNG for YouTube (under its 2 MB
 limit) in the output folder, and the full-resolution original in full/, next
 to a JSON file with every concept, prompt and reference used.
 
+edit_thumbnail() changes an existing thumbnail (a generated one, one of the
+references, or any image) with a plain-language prompt such as "change the 3
+to a 9" or "use Elon Musk instead of Roz", keeping everything else, and saves
+the result as a new file. An edit that mentions Roz also sends her reference
+photos, so she stays recognizable.
+
     python tools/media/grok_thumbnail_generator.py "Topic" --hook "CHIP WAR" -n 2
+    python tools/media/grok_thumbnail_generator.py --edit thumbnail_refs/3_gold_neon.jpg "change the 3! to a 9"
 """
 from __future__ import annotations
 
@@ -39,9 +46,11 @@ REFS_DIR = Path(__file__).parent / "thumbnail_refs"
 IMAGE_MODEL = os.getenv("GROK_THUMBNAIL_MODEL", "grok-imagine-image-2.0")
 FALLBACK_IMAGE_MODEL = os.getenv("GROK_THUMBNAIL_FALLBACK_MODEL", "grok-imagine-image-pro")
 CONCEPT_MODEL = os.getenv("THUMBNAIL_CONCEPT_MODEL", "claude-opus-5-5")
-MAX_REFERENCES = 4          # xAI allows up to 5 source images per request
+MAX_SOURCE_IMAGES = 5       # xAI allows up to 5 source images per request
+MAX_REFERENCES = 4          # references per new thumbnail
+MAX_INCLUDES = 3            # images (logos etc.) added by one edit
 YOUTUBE_SIZE = (1280, 720)
-YOUTUBE_MAX_BYTES = 2 * 1024 * 1024 - 64 * 1024   # stay under YouTube's 2 MB thumbnail limit
+YOUTUBE_MAX_BYTES = 2 * 1024 * 1024 - 64 * 1024   # keep the 1280x720 copy small (YouTube now takes up to 50 MB)
 DEFAULT_PER_OPTION = 2      # thumbnails per hook text when the caller doesn't say
 MAX_PARALLEL = 3            # concurrent Grok renders
 
@@ -82,7 +91,7 @@ STYLE_GUIDE = f"""The channel's thumbnails share one look:
 - Her expressions are exaggerated so they read at small size: shocked, knowing smirk, warm smile, worried, skeptical.
 - Her gestures: pointing her index finger at the hero element (most common), pointing up, peeking around a door or through torn paper, holding a small object toward the camera.
 - Hero elements: a giant number or stat ("62%", "3!", "$15.9 BILLION!?"); a 1 to 3 word punch phrase ("PAID TO PANIC", "REAL or AI?"); a public figure spotlit against blue; a dramatic dark scene (silhouettes in an alley, hooded figures with glowing red eyes); a symbolic object (silicon wafer, gold bar, money arrow, glowing chip).
-- Backgrounds: deep crimson-red gradient (the default), a red-to-blue split when two sides face off, dark navy with torn-paper holes edged in red glow, or a dark scene lit red and blue. Neon green means growth or money.
+- Backgrounds: deep crimson-red gradient (the default), a red-to-blue split when two sides face off, dark navy with torn-paper holes edged in red glow, a dark red-to-teal gradient with faint glitchy code lines (tech going wrong), or a dark scene lit red and blue. Neon green means growth or money.
 - Text: at most one text element of 1 to 3 words or one number, huge and perfectly spelled. Nothing else written anywhere: no captions, watermarks or logos."""
 
 CONCEPT_SYSTEM = f"""You are the art director for the @AIwithRoz YouTube channel. You plan thumbnails that earn the click and look exactly like the channel's existing ones.
@@ -151,6 +160,38 @@ def pick_references(concept: dict, refs: list[dict], max_refs: int = MAX_REFEREN
 def _data_uri(path: Path) -> str:
     mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
     return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode()
+
+
+def _source_data_uri(path: Path, max_width: int = 2048) -> str:
+    """An image to edit, as a JPEG data URI no wider than max_width. A 2k PNG
+    thumbnail is several MB, too heavy to send as base64."""
+    from PIL import Image
+    img = Image.open(path).convert("RGB")
+    if img.width > max_width:
+        img = img.resize((max_width, round(img.height * max_width / img.width)),
+                         Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=92)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def _include_data_uri(data: bytes, max_side: int = 1024) -> str:
+    """An image to add to a thumbnail (a logo, a product shot) as a data URI no
+    larger than max_side. Transparency is kept (PNG), so a logo doesn't arrive
+    on a black or white box."""
+    from PIL import Image
+    img = Image.open(io.BytesIO(data))
+    img.load()
+    has_alpha = img.mode in ("RGBA", "LA", "P") and (
+        img.mode != "P" or "transparency" in img.info)
+    img = img.convert("RGBA" if has_alpha else "RGB")
+    img.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    if has_alpha:
+        img.save(buf, "PNG", optimize=True)
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    img.save(buf, "JPEG", quality=92)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +316,36 @@ def build_render_prompt(concept: dict) -> str:
     )
 
 
+# An edit that names the host gets her reference photos too, so she stays recognizable.
+_MENTIONS_HOST_RE = re.compile(r"\b(roz|host)\b", re.IGNORECASE)
+
+
+def build_edit_prompt(instruction: str, host_ref_count: int, include_count: int = 0) -> str:
+    """The prompt for one edit of an existing thumbnail. Images are sent in this order:
+    the thumbnail, then include_count images to add (logos etc.), then Roz's references."""
+    prompt = (
+        "Edit the FIRST image, a YouTube thumbnail. Make only this change: "
+        f"{instruction.strip()}\n"
+        "Keep everything else exactly as it is: the composition and framing, the background, "
+        "lighting and colors, the style, size and placement of any text, and every person and "
+        "object the change does not mention. Spell any new or changed text exactly as written "
+        "in the change. Keep it a 16:9 photographic thumbnail with high contrast."
+    )
+    if include_count:
+        which = ("The 2nd image is" if include_count == 1
+                 else f"Images 2 to {include_count + 1} are")
+        prompt += (f" {which} supplied to be added to the thumbnail as the change describes "
+                   "(for example a logo). Reproduce each one faithfully, with the same shapes, "
+                   "colors and lettering, lit to match the scene. If the change doesn't say "
+                   "where, place it prominently without covering a face or the main text.")
+    if host_ref_count:
+        which = ("The last image shows" if host_ref_count == 1
+                 else f"The last {host_ref_count} images show")
+        prompt += (f" {which} Roz, the channel's host ({HOST_LOOK}). Wherever Roz or the host "
+                   "appears in the result, she must look exactly like her.")
+    return prompt
+
+
 # ---------------------------------------------------------------------------
 # Generator
 # ---------------------------------------------------------------------------
@@ -300,7 +371,9 @@ class GrokThumbnailGenerator:
 
     def render(self, prompt: str, refs: list[dict]) -> tuple[bytes, str]:
         """PNG bytes and the model that made them. Tries the fallback model once."""
-        uris = [_data_uri(self.refs_dir / r["file"]) for r in refs]
+        return self._sample(prompt, [_data_uri(self.refs_dir / r["file"]) for r in refs])
+
+    def _sample(self, prompt: str, uris: list[str]) -> tuple[bytes, str]:
         last = None
         for model in dict.fromkeys([self.model, FALLBACK_IMAGE_MODEL]):
             try:
@@ -314,12 +387,68 @@ class GrokThumbnailGenerator:
                     break                      # the same prompt won't pass on another model
         raise last
 
+    @staticmethod
+    def _save(data: bytes, out_dir: Path, stem: str) -> tuple[Path, Path]:
+        """Save the full-resolution original in out_dir/full/ and a 1280x720 copy for
+        YouTube in out_dir. Returns (youtube_copy, full_resolution)."""
+        from PIL import Image, ImageOps
+        full_dir = out_dir / "full"
+        full_dir.mkdir(parents=True, exist_ok=True)
+        # The full-resolution copy gets its own name: the GUI finds thumbnails by
+        # file name anywhere under the output folder.
+        full_path = full_dir / f"{stem}_full.png"
+        full_path.write_bytes(data)
+        img = ImageOps.fit(Image.open(io.BytesIO(data)).convert("RGB"), YOUTUBE_SIZE,
+                           Image.Resampling.LANCZOS)
+        path = out_dir / f"{stem}.png"
+        img.save(path, "PNG", optimize=True)
+        if path.stat().st_size > YOUTUBE_MAX_BYTES:      # a big PNG: save a JPEG instead
+            path.unlink()
+            path = out_dir / f"{stem}.jpg"
+            img.save(path, "JPEG", quality=92, optimize=True)
+        return path, full_path
+
+    def edit_thumbnail(self, source_path, instruction: str, out_dir=None,
+                       include_images=None) -> dict:
+        """Apply one prompt edit ("change the 3 to a 9", "use Elon Musk instead of Roz") to
+        an existing thumbnail and save the result as a new file; the source is untouched.
+        include_images: up to MAX_INCLUDES images (bytes, e.g. a logo) to add to it.
+        Returns the new thumbnail in the same shape as a generated variation."""
+        source = Path(source_path)
+        instruction = (instruction or "").strip()
+        includes = list(include_images or [])
+        if not source.is_file():
+            raise FileNotFoundError(f"Thumbnail not found: {source.name}")
+        if not instruction:
+            raise ValueError("Describe the change to make")
+        if len(includes) > MAX_INCLUDES:
+            raise ValueError(f"Include at most {MAX_INCLUDES} images per edit")
+        # Up to MAX_SOURCE_IMAGES go in: the thumbnail, the includes, then Roz's references.
+        room = MAX_SOURCE_IMAGES - 1 - len(includes)
+        host_refs = ([r for r in self.refs if r["host"]][:min(2, room)]
+                     if _MENTIONS_HOST_RE.search(instruction) else [])
+        prompt = build_edit_prompt(instruction, len(host_refs), len(includes))
+        uris = ([_source_data_uri(source)] + [_include_data_uri(b) for b in includes]
+                + [_data_uri(self.refs_dir / r["file"]) for r in host_refs])
+        data, used_model = self._sample(prompt, uris)
+        # "X_grok01_20261022_101500" -> "X_grok01_edit_<now>": a chain of edits keeps one stem.
+        base = re.sub(r"_full$", "", source.stem)
+        base = re.sub(r"(?:_edit)?_\d{8}_\d{6}$", "", base)[:70] or "thumbnail"
+        out = Path(out_dir) if out_dir else self.output_dir / "edits"
+        path, full_path = self._save(data, out, f"{base}_edit_{datetime.now():%Y%m%d_%H%M%S}")
+        return {
+            "number": 0, "emotion": "✏️ Edit", "text": instruction, "engine": "grok",
+            "model": used_model, "instruction": instruction, "source": source.name,
+            "included_images": len(includes),
+            "references": [r["file"] for r in host_refs], "prompt": prompt,
+            "filename": path.name, "filepath": str(path), "full_path": str(full_path),
+            "dimensions": list(YOUTUBE_SIZE),
+        }
+
     def generate_all_thumbnails(self, script_title, script_content=None, youtube_upload_details=None,
                                 headline_text=None, headline_options=None,
                                 progress_callback=None, cancel_check=None,
                                 variations_per_option=None):
-        from PIL import Image, ImageOps
-
         def notify(msg):
             print(msg)
             if progress_callback:
@@ -373,19 +502,7 @@ class GrokThumbnailGenerator:
                 with lock:
                     results["errors"].append({"number": num, "error": reason})
                 return None
-            stem = f"{safe_title}_grok{num:02d}_{stamp}"
-            # The full-resolution copy gets its own name: the GUI finds thumbnails by
-            # file name anywhere under the output folder.
-            full_path = full_dir / f"{stem}_full.png"
-            full_path.write_bytes(data)
-            img = ImageOps.fit(Image.open(io.BytesIO(data)).convert("RGB"), YOUTUBE_SIZE,
-                               Image.Resampling.LANCZOS)
-            path = self.output_dir / f"{stem}.png"
-            img.save(path, "PNG", optimize=True)
-            if path.stat().st_size > YOUTUBE_MAX_BYTES:      # YouTube rejects thumbnails over 2 MB
-                path.unlink()
-                path = self.output_dir / f"{stem}.jpg"
-                img.save(path, "JPEG", quality=92, optimize=True)
+            path, full_path = self._save(data, self.output_dir, f"{safe_title}_grok{num:02d}_{stamp}")
             filename = path.name
             notify(f"   ✅ Thumbnail {num}/{total} saved: {filename}")
             hook = options[concept["option_index"] - 1] if options[0] is not None else None
@@ -426,17 +543,28 @@ class GrokThumbnailGenerator:
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="Channel-style thumbnails with Grok Imagine")
-    ap.add_argument("title")
+    ap.add_argument("title", nargs="?")
     ap.add_argument("--hook", action="append", help="hook text (repeat up to 3 times)")
     ap.add_argument("-n", type=int, default=DEFAULT_PER_OPTION, help="thumbnails per hook")
     ap.add_argument("--out", help="output folder (default ~/Dev/Thumbnails)")
+    ap.add_argument("--edit", nargs=2, metavar=("IMAGE", "CHANGE"),
+                    help="edit an existing thumbnail instead of generating new ones")
+    ap.add_argument("--include", action="append", metavar="IMAGE",
+                    help="with --edit: an image to add, e.g. a logo (repeat up to 3 times)")
     a = ap.parse_args()
+    if not a.title and not a.edit:
+        ap.error("give a title, or --edit IMAGE CHANGE")
     try:
         from dotenv import load_dotenv
         load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
     except Exception:
         pass
     gen = GrokThumbnailGenerator(output_dir=a.out)
+    if a.edit:
+        v = gen.edit_thumbnail(a.edit[0], a.edit[1],
+                               include_images=[Path(p).read_bytes() for p in a.include or []])
+        print(f"✏️  {v['filepath']}  (full size: {v['full_path']})")
+        return
     res = gen.generate_all_thumbnails(a.title, headline_options=a.hook, variations_per_option=a.n)
     for v in res["variations"]:
         print(f"{v['number']:>2}. {v['emotion']:<28} {v['text']!r:<24} {v['filepath']}")
