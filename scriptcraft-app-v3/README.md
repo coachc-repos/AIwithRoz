@@ -308,6 +308,20 @@ and traces).
   `~/.scriptcraft/youtube_studio_reach.json`. It covers that export's date
   range and is the only source for lifetime numbers. A window the daily reports
   reach back to uses them; otherwise the Studio import is used.
+- **🎙️ ElevenLabs Audio.** A toolbar button (also on the HeyGen Script tab)
+  reads the HeyGen script with one of your ElevenLabs voices and saves one
+  MP3 in the script's output folder under `voiceover/`. It uses the
+  HEYGEN READY SCRIPT section when the script has one; otherwise it extracts
+  the spoken text the way the HeyGen stage does. The key goes in the API Keys
+  dialog (`ELEVENLABS_API_KEY`), masked like the others. The dialog lists
+  your own voices first, with ▶ Sample, and offers Eleven v4 (the default),
+  Multilingual v2, and Flash v2.5; it remembers the last voice and model.
+  Long scripts go in requests of about 3,000 characters, each passing the
+  previous three request IDs (ElevenLabs request stitching) so the joins
+  keep one delivery, and ffmpeg joins the parts. The Execution Log shows the
+  start, each finished part, and the saved file. The key needs the Text to
+  Speech and Voices (read) permissions; with User (read) the dialog also
+  shows the credit balance.
 
 ## Test results
 

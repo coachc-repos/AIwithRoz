@@ -38,7 +38,7 @@ if str(REPO_ROOT) not in sys.path:
     print(f"✅ Added to sys.path: {REPO_ROOT}")
 
 # Load all API keys from the single root .env (GOOGLE_API_KEY, XAI_API_KEY,
-# HEYGEN_API_KEY, HEYGEN_VOICE_ID, X_* ...). Does not override anything already
+# HEYGEN_API_KEY, HEYGEN_VOICE_ID, ELEVENLABS_API_KEY, X_* ...). Does not override anything already
 # set in the real environment, so per-shell overrides still win.
 try:
     from dotenv import load_dotenv
@@ -109,6 +109,7 @@ def _hydrate_env_from_settings() -> None:
             "google_api_key": "GOOGLE_API_KEY",
             "heygen_api_key": "HEYGEN_API_KEY",
             "heygen_voice_id": "HEYGEN_VOICE_ID",
+            "elevenlabs_api_key": "ELEVENLABS_API_KEY",
             "grok_api_key": "XAI_API_KEY",
             "anthropic_api_key": "ANTHROPIC_API_KEY",
             "x_api_key": "X_API_KEY",
@@ -9258,6 +9259,396 @@ def heygen_test_generate():
         return jsonify({"error": str(e)}), 500
 
 
+# ---- ElevenLabs voiceover from the HeyGen script ----
+# The HeyGen script (spoken words only) is read by an ElevenLabs voice and saved
+# as one MP3 in the script's output folder. Long scripts go in parts of about
+# _ELEVEN_CHUNK_CHARS; each part passes the previous parts' request IDs
+# (request stitching) so the joins keep the same delivery.
+ELEVEN_API = "https://api.elevenlabs.io"
+ELEVEN_MODELS = [
+    ("eleven_v4", "Eleven v4 (newest, best quality)"),
+    ("eleven_multilingual_v2", "Multilingual v2 (steady long-form)"),
+    ("eleven_flash_v2_5", "Flash v2.5 (fastest, half the credits)"),
+]
+ELEVEN_DEFAULT_MODEL = "eleven_v4"
+ELEVEN_OUTPUT_FORMAT = "mp3_44100_128"
+_ELEVEN_CHUNK_CHARS = 3000      # under every listed model's per-request limit
+ELEVEN_DEFAULT_SIMILARITY = 0.75   # "Clarity + Similarity Enhancement"; closer to the cloned voice
+_ELEVEN_VOICE_SETTING_KEYS = ("stability", "similarity_boost", "style", "use_speaker_boost",
+                              "speed", "clone_strength")
+_ELEVEN_MAX_CHARS = 200_000
+_ELEVEN_JOBS: dict = {}
+_ELEVEN_LOCK = threading.Lock()
+
+
+def _eleven_key() -> str:
+    return _saved_or_env_key("elevenlabs_api_key", "ELEVENLABS_API_KEY")
+
+
+def _eleven_error(resp) -> str:
+    """Plain-language error from an ElevenLabs response (key never included)."""
+    status = getattr(resp, "status_code", 0)
+    code, msg = "", ""
+    try:
+        detail = resp.json().get("detail")
+        if isinstance(detail, dict):
+            code = str(detail.get("status") or detail.get("code") or "")
+            msg = str(detail.get("message") or "")
+        elif isinstance(detail, list) and detail:
+            msg = "; ".join(str(d.get("msg") or d) for d in detail if d)
+        elif detail:
+            msg = str(detail)
+    except Exception:
+        msg = (getattr(resp, "text", "") or "")[:300]
+    if code == "quota_exceeded":
+        return f"Your ElevenLabs account doesn't have enough credits left. {msg}".strip()
+    if code == "missing_permissions":
+        return (f"{msg} In ElevenLabs → Developers → API Keys, turn on Text to Speech "
+                "and Voices (read) for this key.").strip()
+    if status == 401:
+        return f"ElevenLabs rejected the API key (401). {msg}".strip()
+    return f"ElevenLabs error {status}: {msg or 'no details'}"
+
+
+def _eleven_get(path: str, key: str, params=None, timeout: float = 30.0):
+    return requests.get(f"{ELEVEN_API}{path}", params=params or {},
+                        headers={"xi-api-key": key}, timeout=timeout)
+
+
+def _eleven_voice_settings(key: str, voice_id: str, similarity: float) -> dict:
+    """The voice's saved settings with similarity_boost replaced. A request's
+    voice_settings replace the saved ones, so the rest are sent unchanged."""
+    saved = {}
+    try:
+        resp = _eleven_get(f"/v1/voices/{urllib.parse.quote(voice_id, safe='')}/settings", key, timeout=15)
+        if resp.status_code == 200:
+            saved = resp.json() or {}
+        else:
+            logger.warning(f"⚠️ ElevenLabs voice settings not read ({resp.status_code}); "
+                           "sending similarity only")
+    except Exception as e:
+        logger.warning(f"⚠️ ElevenLabs voice settings not read ({e}); sending similarity only")
+    out = {k: saved[k] for k in _ELEVEN_VOICE_SETTING_KEYS if saved.get(k) is not None}
+    out["similarity_boost"] = similarity
+    return out
+
+
+def _heygen_ready_section(script: str) -> str:
+    """The HEYGEN READY SCRIPT section of an assembled script ('' if none)."""
+    m = re.search(r"#\s*🎬\s*HEYGEN READY SCRIPT[\s\S]*?={3,}\s*([\s\S]*?)(?:\n\s*\n#\s|$)",
+                  script or "")
+    return m.group(1).strip() if m else ""
+
+
+def _eleven_script_text(data: dict) -> "tuple[str, str]":
+    """(spoken text, source). Uses the page's HeyGen text, else the script's
+    HEYGEN READY section, else extracts it the way the HeyGen stage does."""
+    text = (data.get("text") or "").strip()
+    if text:
+        return text, "HeyGen script"
+    script = data.get("script") or ""
+    section = _heygen_ready_section(script)
+    if section:
+        return section, "HeyGen script"
+    from console_ui.text_processing import extract_heygen_host_script, scrub_heygen_text
+    src = _strip_production_blocks(script)
+    text = (extract_heygen_host_script(src, verbose=False) or scrub_heygen_text(src) or "").strip()
+    return text, "HeyGen text extracted from the open script"
+
+
+def _eleven_chunks(text: str, limit: int = _ELEVEN_CHUNK_CHARS) -> list:
+    """Split at paragraph breaks into parts of at most `limit` characters;
+    an over-long paragraph splits at sentence ends, then at spaces."""
+    pieces = []
+    for para in re.split(r"\n\s*\n", text or ""):
+        para = " ".join(para.split())
+        if not para:
+            continue
+        if len(para) <= limit:
+            pieces.append(para)
+            continue
+        cur = ""
+        for sent in re.split(r"(?<=[.!?…])\s+", para):
+            while len(sent) > limit:
+                cut = sent.rfind(" ", 0, limit)
+                cut = cut if cut > 0 else limit
+                if cur:
+                    pieces.append(cur)
+                    cur = ""
+                pieces.append(sent[:cut].strip())
+                sent = sent[cut:].strip()
+            if cur and len(cur) + 1 + len(sent) > limit:
+                pieces.append(cur)
+                cur = sent
+            else:
+                cur = f"{cur} {sent}".strip()
+        if cur:
+            pieces.append(cur)
+    chunks, cur = [], ""
+    for p in pieces:
+        if cur and len(cur) + 2 + len(p) > limit:
+            chunks.append(cur)
+            cur = p
+        else:
+            cur = f"{cur}\n\n{p}" if cur else p
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _eleven_tts_part(key: str, voice_id: str, model_id: str, text: str,
+                     previous_ids: list, voice_settings: dict = None) -> "tuple[bytes, str]":
+    """One text-to-speech request. Returns (mp3 bytes, request id). Retries
+    busy/5xx replies; raises RuntimeError with a plain message otherwise."""
+    body = {"text": text, "model_id": model_id}
+    if voice_settings:
+        body["voice_settings"] = voice_settings
+    if previous_ids:
+        body["previous_request_ids"] = previous_ids[-3:]
+    last = ""
+    for attempt, wait in enumerate((0, 3, 8, 20)):
+        if wait:
+            time.sleep(wait)
+        try:
+            resp = requests.post(
+                f"{ELEVEN_API}/v1/text-to-speech/{urllib.parse.quote(voice_id, safe='')}",
+                params={"output_format": ELEVEN_OUTPUT_FORMAT},
+                headers={"xi-api-key": key, "Content-Type": "application/json",
+                         "Accept": "audio/mpeg"},
+                json=body, timeout=240)
+        except requests.exceptions.RequestException as e:
+            last = f"Could not reach ElevenLabs: {e}"
+            continue
+        if resp.status_code == 200 and resp.content:
+            return resp.content, resp.headers.get("request-id") or ""
+        last = _eleven_error(resp)
+        if resp.status_code not in (429, 500, 502, 503, 504):
+            break
+    raise RuntimeError(_redact_secret(last, key))
+
+
+def _eleven_join_mp3(parts: list, out_path: Path) -> None:
+    """Join MP3 parts into out_path. ffmpeg copies the frames and writes a
+    header with the real length; without ffmpeg the bytes are concatenated."""
+    import shutil
+    import subprocess
+    import tempfile
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if len(parts) > 1 and shutil.which("ffmpeg"):
+        with tempfile.TemporaryDirectory() as td:
+            lst = Path(td) / "parts.txt"
+            names = []
+            for i, b in enumerate(parts):
+                p = Path(td) / f"part_{i:03d}.mp3"
+                p.write_bytes(b)
+                names.append(f"file '{p}'")
+            lst.write_text("\n".join(names) + "\n", encoding="utf-8")
+            r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+                                "-i", str(lst), "-c", "copy", str(out_path)],
+                               capture_output=True, text=True, timeout=300)
+            if r.returncode == 0 and out_path.exists() and out_path.stat().st_size:
+                return
+            logger.warning(f"⚠️ ffmpeg join failed ({r.stderr.strip()[:200]}); joining bytes")
+    out_path.write_bytes(b"".join(parts))
+
+
+def _eleven_set(job_id: str, **kw) -> None:
+    with _ELEVEN_LOCK:
+        _ELEVEN_JOBS.setdefault(job_id, {}).update(kw)
+
+
+def _eleven_run(job_id: str, key: str, voice_id: str, voice_name: str, model_id: str,
+                chunks: list, out_path: Path, similarity: float = ELEVEN_DEFAULT_SIMILARITY) -> None:
+    started = time.time()
+    total = len(chunks)
+    try:
+        vs = _eleven_voice_settings(key, voice_id, similarity)
+        logger.info("🎙️ ElevenLabs voice settings: " + ", ".join(f"{k} {v}" for k, v in vs.items()))
+        parts, ids = [], []
+        for i, chunk in enumerate(chunks, 1):
+            t0 = time.time()
+            _eleven_set(job_id, message=f"Reading part {i} of {total} ({len(chunk):,} characters)…")
+            audio, rid = _eleven_tts_part(key, voice_id, model_id, chunk, ids, vs)
+            parts.append(audio)
+            if rid:
+                ids.append(rid)
+            logger.info(f"🎙️ ElevenLabs part {i}/{total}: {len(chunk):,} chars → "
+                        f"{len(audio) / 1024:,.0f} KB in {time.time() - t0:.1f}s")
+            _eleven_set(job_id, done=i)
+        _eleven_join_mp3(parts, out_path)
+        size = out_path.stat().st_size
+        seconds = int(size * 8 / 128000)   # mp3_44100_128 is constant bitrate
+        elapsed = time.time() - started
+        logger.info(f"✅ ElevenLabs voiceover saved: {out_path} ({size / 1048576:.1f} MB, "
+                    f"~{seconds // 60}:{seconds % 60:02d}, {elapsed:.0f}s)")
+        _eleven_set(job_id, status="done", path=str(out_path), size=size,
+                    audio_seconds=seconds, elapsed=round(elapsed),
+                    message=f"Saved {out_path.name}")
+    except Exception as e:
+        err = _redact_secret(str(e), key)
+        logger.error(f"❌ ElevenLabs voiceover failed after {time.time() - started:.0f}s: {err}")
+        _eleven_set(job_id, status="error", error=err, elapsed=round(time.time() - started))
+
+
+@app.route("/api/elevenlabs/voices", methods=["GET"])
+def elevenlabs_voices():
+    """The account's voices (own voices first), the models, the saved choice,
+    and the character balance when the key may read it."""
+    key = _eleven_key()
+    if not key:
+        return jsonify({"success": False, "needs_key": True,
+                        "error": "Add your ElevenLabs API key in 🔑 API Keys first."}), 400
+    try:
+        voices, token = [], None
+        for _ in range(5):
+            params = {"page_size": 100, "include_total_count": "false"}
+            if token:
+                params["next_page_token"] = token
+            resp = _eleven_get("/v2/voices", key, params)
+            if resp.status_code != 200:
+                return jsonify({"success": False,
+                                "error": _redact_secret(_eleven_error(resp), key)}), 502
+            body = resp.json() or {}
+            voices.extend(body.get("voices") or [])
+            token = body.get("next_page_token")
+            if not body.get("has_more") or not token:
+                break
+        own = {"cloned", "professional", "generated"}
+        out = []
+        for v in voices:
+            labels = v.get("labels") or {}
+            out.append({
+                "voice_id": v.get("voice_id"), "name": v.get("name") or v.get("voice_id"),
+                "category": v.get("category") or "",
+                "own": (v.get("category") or "") in own,
+                "detail": ", ".join(str(labels[k]) for k in ("gender", "accent", "age", "use_case")
+                                    if labels.get(k)),
+                "preview_url": v.get("preview_url") or "",
+            })
+        out.sort(key=lambda v: (not v["own"], (v["name"] or "").lower()))
+        balance = None
+        try:
+            sub = _eleven_get("/v1/user/subscription", key, timeout=15)
+            if sub.status_code == 200:
+                s = sub.json() or {}
+                limit, used = s.get("character_limit"), s.get("character_count")
+                if isinstance(limit, int) and isinstance(used, int):
+                    balance = {"remaining": max(0, limit - used), "limit": limit,
+                               "tier": s.get("tier") or ""}
+        except Exception:
+            pass
+        settings = _load_scriptcraft_settings()
+        return jsonify({
+            "success": True, "voices": out, "balance": balance,
+            "models": [{"id": m, "label": label} for m, label in ELEVEN_MODELS],
+            "voice_id": settings.get("elevenlabs_voice_id") or "",
+            "model_id": settings.get("elevenlabs_model_id") or ELEVEN_DEFAULT_MODEL,
+            "similarity": settings.get("elevenlabs_similarity", ELEVEN_DEFAULT_SIMILARITY),
+        })
+    except Exception as e:
+        logger.error(f"❌ ElevenLabs voices failed: {e}")
+        return jsonify({"success": False, "error": _redact_secret(str(e), key)}), 500
+
+
+@app.route("/api/elevenlabs/prepare", methods=["POST"])
+def elevenlabs_prepare():
+    """What would be read: the HeyGen text, its size, and how many parts."""
+    data = request.get_json(silent=True) or {}
+    try:
+        text, source = _eleven_script_text(data)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read the script: {e}"}), 500
+    if not text:
+        return jsonify({"success": False,
+                        "error": "No spoken text found. Open a script with Host: lines or a HeyGen script first."}), 400
+    return jsonify({"success": True, "text": text, "source": source, "chars": len(text),
+                    "words": len(text.split()), "parts": len(_eleven_chunks(text))})
+
+
+@app.route("/api/elevenlabs/tts", methods=["POST"])
+def elevenlabs_tts_start():
+    """Start reading the HeyGen script with the chosen voice. Returns job_id;
+    poll /api/elevenlabs/tts/<job_id>."""
+    key = _eleven_key()
+    if not key:
+        return jsonify({"success": False, "needs_key": True,
+                        "error": "Add your ElevenLabs API key in 🔑 API Keys first."}), 400
+    data = request.get_json(silent=True) or {}
+    voice_id = (data.get("voice_id") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", voice_id):
+        return jsonify({"success": False, "error": "Pick a voice first."}), 400
+    model_id = (data.get("model_id") or ELEVEN_DEFAULT_MODEL).strip()
+    if model_id not in {m for m, _ in ELEVEN_MODELS}:
+        return jsonify({"success": False, "error": f"Unknown model: {model_id}"}), 400
+    try:
+        similarity = float(data.get("similarity", ELEVEN_DEFAULT_SIMILARITY))
+    except (TypeError, ValueError):
+        similarity = -1.0
+    if not 0.0 <= similarity <= 1.0:
+        return jsonify({"success": False, "error": "Similarity must be between 0 and 100%."}), 400
+    similarity = round(similarity, 2)
+    try:
+        text, source = _eleven_script_text(data)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read the script: {e}"}), 500
+    if not text:
+        return jsonify({"success": False,
+                        "error": "No spoken text found. Open a script with Host: lines or a HeyGen script first."}), 400
+    if len(text) > _ELEVEN_MAX_CHARS:
+        return jsonify({"success": False,
+                        "error": f"The script is {len(text):,} characters; the limit here is {_ELEVEN_MAX_CHARS:,}."}), 400
+    voice_name = (data.get("voice_name") or "voice").strip()[:60]
+    title = (data.get("title") or "").strip() or "Voiceover"
+    safe_title = _safe_title_for_paths(title) or "Voiceover"
+    safe_voice = re.sub(r"[^A-Za-z0-9]+", "_", voice_name).strip("_") or "voice"
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = (_get_run_output_dir(title) / "voiceover"
+                / f"{safe_title}_elevenlabs_{safe_voice}_{stamp}.mp3")
+    chunks = _eleven_chunks(text)
+
+    settings = _load_scriptcraft_settings()
+    settings.update(elevenlabs_voice_id=voice_id, elevenlabs_voice_name=voice_name,
+                    elevenlabs_model_id=model_id, elevenlabs_similarity=similarity)
+    _save_scriptcraft_settings(settings)
+
+    job_id = uuid.uuid4().hex
+    with _ELEVEN_LOCK:
+        for old in sorted(_ELEVEN_JOBS, key=lambda j: _ELEVEN_JOBS[j].get("created", 0))[:-20]:
+            _ELEVEN_JOBS.pop(old, None)
+    _eleven_set(job_id, status="running", created=time.time(), total=len(chunks), done=0,
+                chars=len(text), words=len(text.split()), source=source, voice=voice_name,
+                model=model_id, similarity=similarity, message="Starting…")
+    logger.info(f"🎙️ ElevenLabs voiceover for {title[:60]!r}: {len(text):,} chars in "
+                f"{len(chunks)} part(s), voice {voice_name!r}, {model_id}, "
+                f"similarity {similarity:.0%}")
+    _threading.Thread(target=_eleven_run, daemon=True,
+                      args=(job_id, key, voice_id, voice_name, model_id, chunks, out_path,
+                            similarity)).start()
+    return jsonify({"success": True, "job_id": job_id, "parts": len(chunks),
+                    "chars": len(text), "source": source})
+
+
+@app.route("/api/elevenlabs/tts/<job_id>", methods=["GET"])
+def elevenlabs_tts_status(job_id):
+    with _ELEVEN_LOCK:
+        job = dict(_ELEVEN_JOBS.get(job_id) or {})
+    if not job:
+        return jsonify({"success": False, "error": "Unknown job (the app may have restarted)."}), 404
+    job.pop("created", None)
+    return jsonify({"success": True, **job})
+
+
+@app.route("/api/elevenlabs/audio/<job_id>", methods=["GET"])
+def elevenlabs_tts_audio(job_id):
+    with _ELEVEN_LOCK:
+        path = (_ELEVEN_JOBS.get(job_id) or {}).get("path")
+    if not path or not Path(path).is_file():
+        return jsonify({"success": False, "error": "Audio not found."}), 404
+    return send_file(path, mimetype="audio/mpeg", conditional=True,
+                     as_attachment=request.args.get("download") == "1",
+                     download_name=Path(path).name)
+
+
 @app.route("/api/grok/test-video", methods=["POST"])
 def grok_test_video_generate():
     """Generate a single Grok test video from a prompt and return a local preview path."""
@@ -9759,7 +10150,7 @@ def _key_access_denied():
 
 @app.route("/api/keys", methods=["GET"])
 def api_keys_get():
-    """Return all saved API keys (Claude, Google, HeyGen, Grok, X). Falls back to env vars."""
+    """Return all saved API keys (Claude, Google, HeyGen, ElevenLabs, Grok, X). Falls back to env vars."""
     denied = _key_access_denied()
     if denied:
         return denied
@@ -9781,6 +10172,7 @@ def api_keys_get():
         _map = {
             "google_api_key": "GOOGLE_API_KEY",
             "heygen_api_key": "HEYGEN_API_KEY",
+            "elevenlabs_api_key": "ELEVENLABS_API_KEY",
             "grok_api_key": "XAI_API_KEY",
             "anthropic_api_key": "ANTHROPIC_API_KEY",
         }
@@ -9838,6 +10230,7 @@ def api_keys_save():
         mapping = {
             "google_api_key": "GOOGLE_API_KEY",
             "heygen_api_key": "HEYGEN_API_KEY",
+            "elevenlabs_api_key": "ELEVENLABS_API_KEY",
             "grok_api_key": "XAI_API_KEY",
             "anthropic_api_key": "ANTHROPIC_API_KEY",
         }
@@ -9865,7 +10258,7 @@ def api_keys_save():
                     settings[setting_key] = val
                     os.environ[env_var] = val
                     updated.append(setting_key)
-        # Google / HeyGen / Grok / Claude keys: a blank or masked value means
+        # Google / HeyGen / ElevenLabs / Grok / Claude keys: a blank or masked value means
         # "leave unchanged" (the dialog only gets masked hints). To remove a
         # saved key, list it in "clear": ["heygen_api_key", ...].
         to_clear = data.get("clear") or []

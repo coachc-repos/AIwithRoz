@@ -1380,6 +1380,10 @@
                     <span class="toolbar-icon" style="display:inline-flex; align-items:center;"><img src="{{ url_for('static', filename='grok_icon.png') }}" alt="Grok" style="height:28px; width:auto; vertical-align:middle; display:inline-block;"></span>
                     <span class="toolbar-text">Grok Test</span>
                 </button>
+                <button class="toolbar-btn" onclick="openElevenLabsModal()" title="Read the HeyGen script with your ElevenLabs voice and save an MP3">
+                    <span class="toolbar-icon" style="display:inline-flex; align-items:center;"><img src="{{ url_for('static', filename='icons8-elevenlabs-500.png') }}" alt="ElevenLabs" onerror="this.replaceWith(document.createTextNode('🎙️'))" style="height:28px; width:auto; vertical-align:middle; display:inline-block; filter:invert(1);"></span>
+                    <span class="toolbar-text">ElevenLabs Audio</span>
+                </button>
                 <button class="toolbar-btn" onclick="openYouTubePipelineModal()" title="Render audio → transcribe → generate YouTube details → publish" style="background:#7f1d1d; border-color:#b91c1c; color:#fff;">
                     <span class="toolbar-icon" style="display:inline-flex; align-items:center;"><img src="{{ url_for('static', filename='youtube_icon.png') }}" alt="YouTube" style="height:28px; width:auto; vertical-align:middle; display:inline-block;"></span>
                     <span class="toolbar-text">Publish to YouTube</span>
@@ -3429,6 +3433,11 @@
                     <input type="password" id="modalHeygenApiKey" autocomplete="off" placeholder="sk_V2_..." style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
                 </div>
 
+                <div style="margin-bottom:14px;">
+                    <label for="modalElevenlabsApiKey" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;"><span id="src_elevenlabs" class="key-src"></span>🎙️ ElevenLabs API Key <span style="color:#64748b; font-weight:normal;">(ELEVENLABS_API_KEY — voiceover audio from the HeyGen script)</span> <a href="#" onclick="clearSavedKey('elevenlabs_api_key'); return false;" title="Remove the key saved in this dialog (.env value, if any, still applies)" style="color:#f87171; font-weight:normal; font-size:0.9em;">clear saved</a></label>
+                    <input type="password" id="modalElevenlabsApiKey" autocomplete="off" placeholder="sk_..." style="display:block; width:100%; padding:8px 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-family:monospace; font-size:0.9em; box-sizing:border-box;">
+                </div>
+
                 <div style="margin:4px 0 14px 0; padding:12px; background:#0b1220; border:1px solid #1e293b; border-radius:6px;">
                     <div style="font-size:0.85em; color:#e2e8f0; font-weight:700; margin-bottom:4px;">𝕏 X (@AIwithRoz) posting keys</div>
                     <p style="margin:0 0 10px 0; color:#64748b; font-size:0.75em; line-height:1.5;">Saved values are never shown. Leave a field blank to keep its current value. <a href="#" onclick="clearXKeys(); return false;" style="color:#f87171;">Clear saved X keys</a></p>
@@ -3493,6 +3502,46 @@
                     </div>
                 </div>
                 <div id="apiKeysModalStatus" style="margin-top:10px; font-size:0.8em; color:#64748b; min-height:1.1em;"></div>
+            </div>
+        </div>
+
+        <!-- ElevenLabs Audio Modal: the HeyGen script read by an ElevenLabs voice -->
+        <div id="elevenLabsModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:10040; align-items:center; justify-content:center;">
+            <div style="background:#0f172a; border:1px solid #334155; border-radius:10px; width:min(600px, 92vw); max-height:92vh; overflow-y:auto; padding:22px 24px; box-sizing:border-box; box-shadow:0 20px 50px rgba(0,0,0,0.6);">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                    <h2 style="margin:0; color:#e2e8f0; font-size:1.15em;">🎙️ ElevenLabs Audio</h2>
+                    <button onclick="closeElevenLabsModal()" style="background:transparent; color:#94a3b8; border:none; font-size:1.4em; cursor:pointer;">×</button>
+                </div>
+                <p style="margin:0 0 12px 0; color:#94a3b8; font-size:0.85em; line-height:1.5;">
+                    Reads the HeyGen script (spoken words only) with one of your ElevenLabs voices and saves one MP3 in this script's output folder, under <code style="color:#60a5fa;">voiceover/</code>.
+                </p>
+                <div id="elSourceInfo" style="font-size:0.85em; color:#94a3b8; margin-bottom:6px;"></div>
+                <details style="margin-bottom:14px;">
+                    <summary style="cursor:pointer; color:#60a5fa; font-size:0.8em;">Show the text it will read</summary>
+                    <textarea id="elText" readonly style="width:100%; min-height:180px; margin-top:6px; padding:10px; background:#020617; color:#cbd5e1; border:1px solid #334155; border-radius:6px; font-family:'SF Mono', Menlo, monospace; font-size:12px; line-height:1.5; box-sizing:border-box;"></textarea>
+                </details>
+                <div id="elVoiceWrap">
+                    <label for="elVoice" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;">Voice</label>
+                    <div style="display:flex; gap:8px; margin-bottom:12px;">
+                        <select id="elVoice" style="flex:1; min-width:0; height:38px; box-sizing:border-box; line-height:normal; padding:0 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-size:0.9em;"><option value="">Loading voices…</option></select>
+                        <button type="button" onclick="previewElevenLabsVoice()" title="Play ElevenLabs' sample of this voice (free)" style="padding:7px 12px; background:#334155; color:#e2e8f0; border:none; border-radius:4px; cursor:pointer; font-size:0.8em; font-weight:600;">▶ Sample</button>
+                    </div>
+                    <label for="elModel" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;">Model</label>
+                    <select id="elModel" style="display:block; width:100%; height:38px; box-sizing:border-box; line-height:normal; padding:0 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-size:0.9em;"></select>
+                    <label for="elSimilarity" style="display:flex; justify-content:space-between; margin:12px 0 4px 0; font-size:0.85em; color:#94a3b8; font-weight:600;" title="ElevenLabs' Clarity + Similarity Enhancement: higher stays closer to the cloned voice. The voice's other saved settings are kept.">
+                        <span>Similarity <span style="color:#64748b; font-weight:normal;">(closer to the cloned voice)</span></span>
+                        <span id="elSimilarityValue" style="color:#e2e8f0;">75%</span>
+                    </label>
+                    <input type="range" id="elSimilarity" min="0" max="100" step="5" value="75" oninput="document.getElementById('elSimilarityValue').textContent = this.value + '%'" style="display:block; width:100%; margin:0; padding:0; height:auto; accent-color:#8b5cf6; background:transparent; border:none;">
+                </div>
+                <div id="elBalance" style="font-size:0.78em; color:#64748b; margin-top:8px; min-height:1.1em;"></div>
+                <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px;">
+                    <button onclick="closeElevenLabsModal()" style="padding:8px 14px; background:#334155; color:#e2e8f0; border:none; border-radius:4px; cursor:pointer; font-size:0.85em; font-weight:600;">Close</button>
+                    <button id="elGenerateBtn" onclick="startElevenLabsAudio()" disabled style="padding:8px 14px; background:linear-gradient(135deg, #8b5cf6, #6d28d9); color:white; border:none; border-radius:4px; cursor:pointer; font-size:0.85em; font-weight:600; opacity:0.5;">🎙️ Generate audio</button>
+                </div>
+                <div id="elProgress" style="display:none; height:6px; background:#1e293b; border-radius:3px; margin-top:12px; overflow:hidden;"><div id="elProgressFill" style="height:100%; width:0; background:linear-gradient(90deg, #8b5cf6, #0ea5e9); transition:width 0.4s;"></div></div>
+                <div id="elStatus" style="margin-top:8px; font-size:0.82em; color:#94a3b8; min-height:1.1em;"></div>
+                <div id="elResult"></div>
             </div>
         </div>
 
@@ -6522,6 +6571,7 @@ Time management content here...`;
                 html += '<button onclick="copyHeyGenToClipboard()" class="toolbar-btn" style="display:flex;"><span class="toolbar-icon">📋</span><span class="toolbar-text">Copy</span></button>';
                 html += '<button onclick="downloadHeyGenText()" class="toolbar-btn" style="display:flex;"><span class="toolbar-icon">💾</span><span class="toolbar-text">Download .txt</span></button>';
                 html += '<button onclick="exportHeyGenToWord()" class="toolbar-btn" style="display:flex;"><span class="toolbar-icon" style="display:inline-flex; align-items:center;"><img src="/static/word_icon.png" alt="Word" onerror="this.replaceWith(document.createTextNode(\'📄\'))" style="height:18px; width:auto; vertical-align:middle;"></span><span class="toolbar-text">Save as Word</span></button>';
+                html += '<button onclick="openElevenLabsModal()" class="toolbar-btn" style="display:flex;" title="Read this script with your ElevenLabs voice and save an MP3"><span class="toolbar-icon" style="display:inline-flex; align-items:center;"><img src="/static/icons8-elevenlabs-500.png" alt="ElevenLabs" onerror="this.replaceWith(document.createTextNode(\'🎙️\'))" style="height:18px; width:auto; vertical-align:middle; filter:invert(1);"></span><span class="toolbar-text">ElevenLabs Audio</span></button>';
                 html += '</div>';
                 html += `<textarea id="heygenScriptTextarea" readonly style="width:100%; min-height:480px; padding:14px; background:#0f172a; color:#e2e8f0; border:1px solid #334155; border-radius:6px; font-family:'SF Mono', Menlo, monospace; font-size:13px; line-height:1.55; white-space:pre-wrap;">${escapeHtml(heygenText)}</textarea>`;
                 html += '</div>';
@@ -11443,7 +11493,207 @@ Thank you for watching!`;
         // Minimal HTML escaper for safe text injection in hook picker.
         // (Reuses the project-wide escapeHtml defined earlier in this file.)
 
-        // ---- API Keys modal (Claude / Google / HeyGen / Grok / X) ----
+        // ---- ElevenLabs Audio: the HeyGen script read by an ElevenLabs voice ----
+        let _elPrepared = null, _elPreview = null, _elPoll = null;
+
+        // Execution Log, like the B-roll regenerate button: the live Progress
+        // Log while a run is going, else the Execution Log itself.
+        function _elLog(m, type) {
+            const prog = document.getElementById('progress');
+            if (prog && prog.style.display === 'block' && typeof addProgressMessage === 'function') addProgressMessage(m, type || 'info');
+            else if (typeof addToDebugLog === 'function') addToDebugLog(m.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'));
+        }
+
+        function _elStatus(html, color) {
+            const el = document.getElementById('elStatus');
+            if (el) { el.style.color = color || '#94a3b8'; el.innerHTML = html; }
+        }
+
+        function _elSetGenerate(enabled) {
+            const b = document.getElementById('elGenerateBtn');
+            if (b) { b.disabled = !enabled; b.style.opacity = enabled ? '1' : '0.5'; b.style.cursor = enabled ? 'pointer' : 'default'; }
+        }
+
+        // The open script's HeyGen section, or the open script itself for the
+        // server to pull the spoken text out of (the way the HeyGen stage does).
+        function _elSource() {
+            const ta = document.getElementById('scriptInput');
+            const script = (window.currentScript || (ta && ta.value) || '').trim();
+            const heygen = extractHeyGenSection(script);
+            const title = window.currentScriptTitle
+                || (typeof _parseScriptTitleFromText === 'function' && _parseScriptTitleFromText(script)) || '';
+            return { body: heygen ? { text: heygen } : { script: script }, empty: !script, title: title };
+        }
+
+        async function openElevenLabsModal() {
+            const modal = document.getElementById('elevenLabsModal');
+            if (!modal) return;
+            modal.style.display = 'flex';
+            if (_elPoll !== null) return;  // a job is running: keep showing it
+            const info = document.getElementById('elSourceInfo');
+            const sel = document.getElementById('elVoice');
+            const modelSel = document.getElementById('elModel');
+            const bal = document.getElementById('elBalance');
+            document.getElementById('elResult').innerHTML = '';
+            document.getElementById('elProgress').style.display = 'none';
+            document.getElementById('elText').value = '';
+            _elStatus('');
+            bal.textContent = '';
+            _elSetGenerate(false);
+            _elPrepared = null;
+            const src = _elSource();
+            if (src.empty) {
+                info.style.color = '#f87171';
+                info.textContent = '❌ No script is open. Open or create a script first.';
+                return;
+            }
+            info.style.color = '#94a3b8';
+            info.textContent = 'Reading the HeyGen script…';
+            sel.innerHTML = '<option value="">Loading voices…</option>';
+            const post = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(src.body) };
+            const [prep, v] = await Promise.all([
+                fetch('/api/elevenlabs/prepare', post).then(r => r.json()).catch(e => ({ success: false, error: e.message })),
+                fetch('/api/elevenlabs/voices').then(r => r.json()).catch(e => ({ success: false, error: e.message })),
+            ]);
+            if (prep.success) {
+                _elPrepared = { body: { text: prep.text }, title: src.title, chars: prep.chars };
+                document.getElementById('elText').value = prep.text;
+                const est = estimateHeyGenDuration(prep.text);
+                const sec = Math.round(est.minutes * 60);
+                info.innerHTML = '📝 ' + escapeHtml(prep.source) + (src.title ? ' of <strong style="color:#e2e8f0;">' + escapeHtml(src.title) + '</strong>' : '')
+                    + ': ' + prep.words.toLocaleString() + ' words · ' + prep.chars.toLocaleString() + ' characters · ~'
+                    + Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0') + ' at ' + HEYGEN_WPM + ' wpm · '
+                    + prep.parts + (prep.parts === 1 ? ' request' : ' requests');
+            } else {
+                info.style.color = '#f87171';
+                info.textContent = '❌ ' + (prep.error || 'Could not read the script.');
+            }
+            if (!v.success) {
+                sel.innerHTML = '<option value="">—</option>';
+                if (v.needs_key) {
+                    bal.innerHTML = '<span style="color:#fbbf24;">⚠️ No ElevenLabs API key yet.</span> '
+                        + '<a href="#" onclick="closeElevenLabsModal(); openApiKeysModal(); return false;" style="color:#60a5fa;">🔑 Add it in API Keys</a>, then open this again.';
+                } else {
+                    bal.innerHTML = '<span style="color:#f87171;">❌ ' + escapeHtml(v.error || 'Could not load voices.') + '</span>';
+                }
+                return;
+            }
+            const own = v.voices.filter(x => x.own), lib = v.voices.filter(x => !x.own);
+            const opt = x => '<option value="' + escapeHtml(x.voice_id) + '" data-name="' + escapeHtml(x.name)
+                + '" data-preview="' + escapeHtml(x.preview_url || '') + '">' + escapeHtml(x.name)
+                + (x.detail ? ' — ' + escapeHtml(x.detail) : '') + '</option>';
+            sel.innerHTML = (own.length ? '<optgroup label="Your voices">' + own.map(opt).join('') + '</optgroup>' : '')
+                + (lib.length ? '<optgroup label="ElevenLabs voices">' + lib.map(opt).join('') + '</optgroup>' : '');
+            if (v.voice_id && v.voices.some(x => x.voice_id === v.voice_id)) sel.value = v.voice_id;
+            modelSel.innerHTML = v.models.map(m => '<option value="' + escapeHtml(m.id) + '">' + escapeHtml(m.label) + '</option>').join('');
+            modelSel.value = v.model_id;
+            const simEl = document.getElementById('elSimilarity');
+            simEl.value = Math.round(100 * (typeof v.similarity === 'number' ? v.similarity : 0.75));
+            document.getElementById('elSimilarityValue').textContent = simEl.value + '%';
+            if (v.balance) {
+                const short = _elPrepared && v.balance.remaining < _elPrepared.chars;
+                bal.innerHTML = (short ? '<span style="color:#fbbf24;">⚠️ ' : '<span>')
+                    + 'ElevenLabs balance: ' + v.balance.remaining.toLocaleString() + ' of ' + v.balance.limit.toLocaleString()
+                    + ' credits left' + (v.balance.tier ? ' (' + escapeHtml(v.balance.tier) + ' plan)' : '')
+                    + (short ? '. That may not cover this script (about 1 credit per character; Flash costs half).' : '.') + '</span>';
+            }
+            _elSetGenerate(!!_elPrepared && v.voices.length > 0);
+        }
+
+        function closeElevenLabsModal() {
+            const modal = document.getElementById('elevenLabsModal');
+            if (modal) modal.style.display = 'none';
+            if (_elPreview) { _elPreview.pause(); _elPreview = null; }
+        }
+
+        function previewElevenLabsVoice() {
+            const sel = document.getElementById('elVoice');
+            const opt = sel && sel.options[sel.selectedIndex];
+            if (_elPreview) { _elPreview.pause(); _elPreview = null; }
+            const url = opt && opt.dataset.preview;
+            if (!url) { _elStatus('This voice has no sample.', '#fbbf24'); return; }
+            _elPreview = new Audio(url);
+            _elPreview.play().catch(e => _elStatus('Could not play the sample: ' + escapeHtml(e.message), '#f87171'));
+        }
+
+        async function startElevenLabsAudio() {
+            if (!_elPrepared || _elPoll !== null) return;
+            const sel = document.getElementById('elVoice');
+            const opt = sel && sel.options[sel.selectedIndex];
+            if (!opt || !opt.value) { _elStatus('Pick a voice first.', '#f87171'); return; }
+            const voiceName = opt.dataset.name || opt.textContent;
+            const model = document.getElementById('elModel').value;
+            const similarity = Number(document.getElementById('elSimilarity').value) / 100;
+            if (_elPreview) { _elPreview.pause(); _elPreview = null; }
+            _elSetGenerate(false);
+            document.getElementById('elResult').innerHTML = '';
+            const t0 = Date.now();
+            const secs = () => Math.round((Date.now() - t0) / 1000);
+            _elStatus('Starting…');
+            let d;
+            try {
+                const r = await fetch('/api/elevenlabs/tts', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(Object.assign({}, _elPrepared.body, {
+                        voice_id: opt.value, voice_name: voiceName, model_id: model, similarity: similarity, title: _elPrepared.title }))
+                });
+                d = await r.json();
+            } catch (e) { d = { success: false, error: e.message }; }
+            if (!d.success) {
+                _elStatus('❌ ' + escapeHtml(d.error || 'Could not start.'), '#f87171');
+                _elLog('❌ ElevenLabs audio could not start: ' + (d.error || 'unknown error'), 'error');
+                _elSetGenerate(true);
+                return;
+            }
+            _elLog('🎙️ ElevenLabs audio started: ' + d.chars.toLocaleString() + ' characters of the ' + d.source
+                + (_elPrepared.title ? ' for “' + _elPrepared.title + '”' : '') + ' in ' + d.parts
+                + (d.parts === 1 ? ' request' : ' requests') + ', voice “' + voiceName + '”, ' + model + ', similarity ' + Math.round(similarity * 100) + '%…');
+            const bar = document.getElementById('elProgress'), fill = document.getElementById('elProgressFill');
+            bar.style.display = 'block';
+            fill.style.width = '3%';
+            let lastDone = 0, busy = false;
+            _elPoll = setInterval(async () => {
+                if (busy) return;
+                busy = true;
+                let s;
+                try { s = await (await fetch('/api/elevenlabs/tts/' + d.job_id)).json(); }
+                catch (e) { busy = false; return; }  // keep polling through a blip
+                busy = false;
+                const total = s.total || d.parts, done = s.done || 0;
+                if (s.success && s.status === 'running') {
+                    fill.style.width = Math.max(3, Math.round(100 * done / total)) + '%';
+                    if (done > lastDone) {
+                        lastDone = done;
+                        _elLog('🎙️ ElevenLabs: part ' + done + ' of ' + total + ' done (' + secs() + 's)');
+                    }
+                    _elStatus(escapeHtml(s.message || 'Working…') + ' · ' + secs() + 's');
+                    return;
+                }
+                clearInterval(_elPoll);
+                _elPoll = null;
+                _elSetGenerate(true);
+                if (!s.success || s.status !== 'done') {
+                    const err = s.error || 'unknown error';
+                    _elStatus('❌ ' + escapeHtml(err), '#f87171');
+                    _elLog('❌ ElevenLabs audio failed after ' + secs() + 's: ' + err, 'error');
+                    return;
+                }
+                fill.style.width = '100%';
+                const sec = s.audio_seconds || 0;
+                const len = Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+                const mb = ((s.size || 0) / 1048576).toFixed(1);
+                const src = '/api/elevenlabs/audio/' + encodeURIComponent(d.job_id);
+                _elStatus('✅ Done in ' + secs() + 's: ~' + len + ' of audio, ' + mb + ' MB.', '#34d399');
+                document.getElementById('elResult').innerHTML =
+                    '<audio controls preload="metadata" src="' + src + '" style="width:100%; margin-top:10px;"></audio>'
+                    + '<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:8px;">'
+                    + '<a href="' + src + '?download=1" style="padding:7px 12px; background:#0ea5e9; color:white; border-radius:4px; text-decoration:none; font-size:0.8em; font-weight:600;">💾 Download MP3</a>'
+                    + '<span style="font-size:0.75em; color:#64748b; font-family:monospace; word-break:break-all;">Saved to ' + escapeHtml(s.path || '') + '</span></div>';
+                _elLog('✅ ElevenLabs audio saved in ' + secs() + 's (~' + len + ', ' + mb + ' MB): ' + (s.path || ''), 'success');
+            }, 2000);
+        }
+
+        // ---- API Keys modal (Claude / Google / HeyGen / ElevenLabs / Grok / X) ----
 
         function openApiKeysModal() {
             const modal = document.getElementById('apiKeysModal');
@@ -11457,7 +11707,7 @@ Thank you for watching!`;
             toggleApiKeysVisible(false);
             // Fields start blank: the server only ever sends masked hints
             // (shown as placeholders). Blank on save = keep the current key.
-            ['modalAnthropicApiKey', 'modalGoogleApiKey', 'modalHeygenApiKey', 'modalGrokApiKey'].forEach(id => {
+            ['modalAnthropicApiKey', 'modalGoogleApiKey', 'modalHeygenApiKey', 'modalElevenlabsApiKey', 'modalGrokApiKey'].forEach(id => {
                 const el = document.getElementById(id); if (el) el.value = '';
             });
             modal.style.display = 'flex';
@@ -11468,7 +11718,7 @@ Thank you for watching!`;
                     if (data && data.success && data.keys) {
                         // Server returns masked hints only (last 4 chars), never values.
                         const present = data.present || {};
-                        [['modalAnthropicApiKey','anthropic_api_key'],['modalGoogleApiKey','google_api_key'],['modalHeygenApiKey','heygen_api_key'],['modalGrokApiKey','grok_api_key']].forEach(([id, key]) => {
+                        [['modalAnthropicApiKey','anthropic_api_key'],['modalGoogleApiKey','google_api_key'],['modalHeygenApiKey','heygen_api_key'],['modalElevenlabsApiKey','elevenlabs_api_key'],['modalGrokApiKey','grok_api_key']].forEach(([id, key]) => {
                             const el = document.getElementById(id);
                             if (!el) return;
                             if (!el.dataset.origPlaceholder) el.dataset.origPlaceholder = el.placeholder || '';
@@ -11488,6 +11738,7 @@ Thank you for watching!`;
                         setSrc('src_anthropic', srcMap.anthropic_api_key);
                         setSrc('src_google', srcMap.google_api_key);
                         setSrc('src_heygen', srcMap.heygen_api_key);
+                        setSrc('src_elevenlabs', srcMap.elevenlabs_api_key);
                         setSrc('src_grok', srcMap.grok_api_key);
                         // X keys: server returns only masked hints, never values.
                         const xk = data.x_keys || {};
@@ -11580,7 +11831,7 @@ Thank you for watching!`;
 
         function toggleApiKeysVisible(show) {
             const t = show ? 'text' : 'password';
-            ['modalAnthropicApiKey', 'modalGoogleApiKey', 'modalHeygenApiKey', 'modalGrokApiKey', 'modalXApiKey', 'modalXApiSecret', 'modalXAccessToken', 'modalXAccessSecret', 'modalXBearerToken'].forEach(id => {
+            ['modalAnthropicApiKey', 'modalGoogleApiKey', 'modalHeygenApiKey', 'modalElevenlabsApiKey', 'modalGrokApiKey', 'modalXApiKey', 'modalXApiSecret', 'modalXAccessToken', 'modalXAccessSecret', 'modalXBearerToken'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) el.type = t;
             });
@@ -11591,7 +11842,7 @@ Thank you for watching!`;
             // Only send fields the user typed (blank = keep current), and
             // never echo a masked hint back as if it were a key.
             const payload = {};
-            [['modalAnthropicApiKey','anthropic_api_key'],['modalGoogleApiKey','google_api_key'],['modalHeygenApiKey','heygen_api_key'],['modalGrokApiKey','grok_api_key']].forEach(([id, key]) => {
+            [['modalAnthropicApiKey','anthropic_api_key'],['modalGoogleApiKey','google_api_key'],['modalHeygenApiKey','heygen_api_key'],['modalElevenlabsApiKey','elevenlabs_api_key'],['modalGrokApiKey','grok_api_key']].forEach(([id, key]) => {
                 const el = document.getElementById(id);
                 const v = el ? el.value.trim() : '';
                 if (v && !v.startsWith('\u2022\u2022\u2022\u2022')) payload[key] = v;

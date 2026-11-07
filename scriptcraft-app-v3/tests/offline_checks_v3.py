@@ -1553,6 +1553,173 @@ def _():
     assert "(data.note ? '<br>⚠️ '" in html
     return "700-chapter script refined by edits (blocks + ending intact, skipped edit reported); short script cut off → edits; no placeable edit → unchanged; max_tokens reply refused"
 
+
+@check("ElevenLabs Audio: the HeyGen script is read in stitched parts at the chosen similarity and saved as one MP3; the key is saved and masked like the others and never reaches the page")
+def _():
+    import json as _json
+    import shutil
+    import subprocess
+    import tempfile
+    import threading as _thr
+    from pathlib import Path
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+
+    # Parts: paragraph breaks first, sentences inside a long paragraph, never over the limit, nothing dropped.
+    long_para = " ".join(f"Sentence number {i} is here." for i in range(400))
+    text = "Short opening.\n\n" + long_para + "\n\nClosing line."
+    parts = web_gui._eleven_chunks(text, 3000)
+    assert len(parts) >= 4 and all(len(p) <= 3000 for p in parts), [len(p) for p in parts]
+    assert " ".join(" ".join(parts).split()) == " ".join(text.split()) and parts[0].startswith("Short opening.")
+    assert [len(p) for p in web_gui._eleven_chunks("x" * 7000, 3000)] == [3000, 3000, 1000]
+
+    # Text: the page's HeyGen text, else the script's HEYGEN READY section, else extracted like the HeyGen stage.
+    assert web_gui._eleven_script_text({"text": " Hi. ", "script": "ignored"}) == ("Hi.", "HeyGen script")
+    assembled = "Title: T\n\nHost: Not this.\n\n# 🎬 HEYGEN READY SCRIPT\n" + "=" * 80 + "\n\nHello there.\n\nSecond paragraph."
+    assert web_gui._eleven_script_text({"script": assembled}) == ("Hello there.\n\nSecond paragraph.", "HeyGen script")
+    t, src = web_gui._eleven_script_text({"script": _WORD_COUNT_SAMPLE})
+    assert "One two three" in t and "GROK IMAGINE" not in t and "Confirm the price" not in t, t
+    assert src.startswith("HeyGen text extracted")
+
+    have_ff = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        if have_ff:   # a real 1-second MP3 at the format ElevenLabs returns
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                            "-ar", "44100", "-b:a", "128k", str(d / "s.mp3")], check=True)
+            mp3 = (d / "s.mp3").read_bytes()
+        else:
+            mp3 = b"\xff\xfb\x90\x00" + b"\x00" * 400
+        key = "sk_test_eleven_ABCD1234"
+        posts, gets, mode = [], [], {"fail_once": True, "quota": False}
+
+        class _R:
+            def __init__(self, status, content=b"", body=None, headers=None):
+                self.status_code, self.content, self._b, self.headers = status, content, body, headers or {}
+                self.text = _json.dumps(body) if body is not None else ""
+            def json(self):
+                return self._b
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            gets.append((url, dict(params or {}), dict(headers or {})))
+            if url.endswith("/v2/voices"):
+                if not (params or {}).get("next_page_token"):
+                    return _R(200, body={"voices": [{"voice_id": "premade0001", "name": "Adam", "category": "premade",
+                                                     "labels": {"gender": "male"}, "preview_url": "https://x/a.mp3"}],
+                                         "has_more": True, "next_page_token": "p2"})
+                return _R(200, body={"voices": [{"voice_id": "voiceABC123", "name": "Roz Clone", "category": "cloned",
+                                                 "labels": {"accent": "american"}, "preview_url": ""}],
+                                     "has_more": False, "next_page_token": None})
+            if url.endswith("/v1/user/subscription"):
+                return _R(200, body={"character_limit": 100000, "character_count": 99000, "tier": "creator"})
+            if url.endswith("/v1/voices/voiceABC123/settings"):   # the voice's saved settings
+                return _R(200, body={"stability": 0.4, "similarity_boost": 0.3, "style": 0.1,
+                                     "use_speaker_boost": True, "speed": 1.05, "clone_strength": None})
+            return _R(404, body={"detail": "nope"})
+
+        def fake_post(url, params=None, headers=None, json=None, timeout=None):
+            posts.append((url, dict(params or {}), dict(headers or {}), dict(json or {})))
+            if mode["quota"]:
+                return _R(401, body={"detail": {"status": "quota_exceeded", "message": f"You have 5 credits left ({key})."}})
+            if mode["fail_once"] and len(posts) == 2:
+                mode["fail_once"] = False
+                return _R(503, body={"detail": {"status": "system_busy", "message": "busy"}})
+            return _R(200, content=mp3, headers={"request-id": f"req{len(posts)}"})
+
+        def wait_job(client, job_id):
+            for _ in range(400):
+                s = client.get(f"/api/elevenlabs/tts/{job_id}").get_json()
+                if s.get("status") != "running":
+                    return s
+                _thr.Event().wait(0.05)
+            raise AssertionError("ElevenLabs job never finished")
+
+        keep = (web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._get_run_output_dir, web_gui.requests.get,
+                web_gui.requests.post, web_gui.time.sleep, os.environ.get("ELEVENLABS_API_KEY"))
+        try:
+            settings = d / "settings.json"
+            settings.write_text("{}")
+            web_gui.SCRIPTCRAFT_SETTINGS_PATH = settings
+            web_gui._get_run_output_dir = lambda title, create=True: d / "out"
+            web_gui.requests.get, web_gui.requests.post = fake_get, fake_post
+            web_gui.time.sleep = lambda s: None
+            os.environ.pop("ELEVENLABS_API_KEY", None)
+            c = web_gui.app.test_client()
+
+            r = c.get("/api/elevenlabs/voices")
+            assert r.status_code == 400 and r.get_json()["needs_key"], r.get_json()
+            assert c.post("/api/elevenlabs/tts", json={"text": "Hi.", "voice_id": "voiceABC123"}).get_json()["needs_key"]
+
+            # The key: saved in the dialog, masked on the way back, hydrated at startup.
+            assert c.post("/api/keys", json={"elevenlabs_api_key": key}).get_json()["updated"] == ["elevenlabs_api_key"]
+            k = c.get("/api/keys")
+            kj = k.get_json()
+            assert kj["keys"]["elevenlabs_api_key"] == "•" * 4 + "1234" and kj["sources"]["elevenlabs_api_key"] == "saved"
+            assert key not in k.get_data(as_text=True)
+            os.environ.pop("ELEVENLABS_API_KEY", None)
+            web_gui._hydrate_env_from_settings()
+            assert os.environ.get("ELEVENLABS_API_KEY") == key
+
+            v = c.get("/api/elevenlabs/voices")
+            vj = v.get_json()
+            assert vj["success"] and [x["name"] for x in vj["voices"]] == ["Roz Clone", "Adam"], vj
+            assert vj["balance"]["remaining"] == 1000 and vj["model_id"] == "eleven_v4" and key not in v.get_data(as_text=True)
+            assert vj["similarity"] == 0.75                                    # default before any run
+            assert all(h.get("xi-api-key") == key for _, _, h in gets) and gets[1][1]["next_page_token"] == "p2"
+
+            p = c.post("/api/elevenlabs/prepare", json={"script": assembled}).get_json()
+            assert p["text"] == "Hello there.\n\nSecond paragraph." and p["parts"] == 1 and p["words"] == 4
+
+            assert c.post("/api/elevenlabs/tts", json={"text": "Hi.", "voice_id": "../x"}).status_code == 400
+            assert c.post("/api/elevenlabs/tts", json={"text": "Hi.", "voice_id": "voiceABC123", "model_id": "nope"}).status_code == 400
+            assert c.post("/api/elevenlabs/tts", json={"text": "Hi.", "voice_id": "voiceABC123", "similarity": 1.5}).status_code == 400
+
+            r = c.post("/api/elevenlabs/tts", json={"text": text, "voice_id": "voiceABC123", "voice_name": "Roz Clone",
+                                                    "model_id": "eleven_v4", "similarity": 0.75, "title": "My Test Title"}).get_json()
+            assert r["success"] and r["parts"] == len(parts), r
+            s = wait_job(c, r["job_id"])
+            assert s["status"] == "done" and s["done"] == len(parts), s
+            tts = [b for u, prm, h, b in posts]
+            assert len(posts) == len(parts) + 1                                   # one busy reply retried
+            assert all(prm["output_format"] == "mp3_44100_128" and h["xi-api-key"] == key for _, prm, h, _ in posts)
+            assert posts[0][0].endswith("/v1/text-to-speech/voiceABC123") and tts[0]["model_id"] == "eleven_v4"
+            assert "previous_request_ids" not in tts[0] and tts[-1]["previous_request_ids"] == [f"req{len(posts) - i}" for i in (3, 2, 1)]
+            # Similarity 75%; the voice's other saved settings sent unchanged (a null clone_strength left out).
+            assert all(b["voice_settings"] == {"stability": 0.4, "similarity_boost": 0.75, "style": 0.1,
+                                               "use_speaker_boost": True, "speed": 1.05} for b in tts), tts[0]
+            out = Path(s["path"])
+            assert out.parent == d / "out" / "voiceover" and out.name.startswith("My_Test_Title_elevenlabs_Roz_Clone_")
+            if have_ff:
+                dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                            str(out)], capture_output=True, text=True).stdout.strip())
+                assert abs(dur - len(parts)) < 0.5, dur                        # one clean file, every part in it
+            saved = _json.loads(settings.read_text())
+            assert saved["elevenlabs_voice_id"] == "voiceABC123" and saved["elevenlabs_model_id"] == "eleven_v4"
+            assert saved["elevenlabs_similarity"] == 0.75 and c.get("/api/elevenlabs/voices").get_json()["similarity"] == 0.75
+            a = c.get(f"/api/elevenlabs/audio/{r['job_id']}?download=1")
+            assert a.status_code == 200 and a.mimetype == "audio/mpeg" and "attachment" in a.headers["Content-Disposition"]
+            a.close()
+
+            mode["quota"] = True
+            r = c.post("/api/elevenlabs/tts", json={"text": "Hi.", "voice_id": "voiceABC123"}).get_json()
+            s = wait_job(c, r["job_id"])
+            assert s["status"] == "error" and "enough credits" in s["error"] and key not in s["error"], s
+        finally:
+            (web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._get_run_output_dir, web_gui.requests.get,
+             web_gui.requests.post, web_gui.time.sleep, env) = keep
+            if env is None:
+                os.environ.pop("ELEVENLABS_API_KEY", None)
+            else:
+                os.environ["ELEVENLABS_API_KEY"] = env
+
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert 'id="modalElevenlabsApiKey"' in html and "setSrc('src_elevenlabs', srcMap.elevenlabs_api_key);" in html
+    assert html.count("['modalElevenlabsApiKey','elevenlabs_api_key']") == 2 and html.count('onclick="openElevenLabsModal()"') == 2
+    assert 'id="elevenLabsModal"' in html and "async function startElevenLabsAudio()" in html
+    assert 'id="elSimilarity"' in html and "similarity: similarity," in html
+    return (f"{len(parts)} stitched parts (last 3 request IDs passed), similarity 75% with the voice's other settings kept, busy reply retried, one MP3"
+            + (" checked with ffprobe" if have_ff else "") + "; key masked + hydrated; own voices first; quota error plain, key redacted")
+
 if __name__ == "__main__":
     width = max(len(n) for n, _, _ in RESULTS)
     for name, ok, detail in RESULTS:
