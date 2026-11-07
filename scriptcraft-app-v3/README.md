@@ -274,25 +274,40 @@ and traces).
   channel's best click-through rate and average view duration: topics, titles,
   thumbnails, hook, and retention. Idea generation, briefs, both Pro writers,
   the agentic pipeline's style context, and the Title Picker all read it. Raw
-  metrics stay out of the repo.
+  metrics stay out of the repo. The idea generator gets the golden reference
+  as its model episode (title, spoken hook, chapter headings, and verdict, read
+  from the file at each run). With no topic or document, about three of the
+  ten ideas continue it: a sequel, the case against its verdict, or the same
+  verdict frame applied to another player or race.
 - **Provocative by default.** Ideas, briefs, and titles take a side, name who
   wins and who loses, and promise a verdict, while staying true and attributed.
   Ideas gain two formats, The Power Play and Follow the Money. The Grok
   thumbnail style guide favors the verdict or the conflict as on-image text.
-- **📊 Analytics.** A toolbar dialog lists the channel's videos for the last 7,
-  28, 90, or 365 days, or lifetime. It shows views, average view duration and
-  percentage, watch hours, likes, and subscribers, with sortable columns and
-  total tiles. Click a video to see its audience-retention curve, with the
-  average-view mark and the three steepest drops. ⬇ CSV exports the table,
+- **📊 Analytics.** A toolbar dialog lists the channel's videos for their
+  lifetime (the default) or the last 7, 28, 90, or 365 days. It shows views,
+  average view duration and percentage, watch hours, likes, and subscribers,
+  with sortable columns and total tiles. In a short window a video can have a
+  few search views that left within a second, so YouTube reports a 0:00
+  average. Averages from fewer than 10 views are greyed out, with the
+  lifetime average on hover. Click a video to see its lifetime
+  audience-retention curve, with its lifetime average-view mark and the three
+  steepest drops (the opening and the end screen are left out). ⬇ CSV exports the table,
   and ✨ Analyze with Claude compares the top and bottom videos against the
   playbook. It uses its own read-only Google sign-in
   (`~/.scriptcraft/youtube_analytics_token.json`, with the same
   `youtube_client_secret.json` as publishing), so publishing is not affected.
   The Google Cloud project needs the YouTube Analytics API enabled. The
   Analytics API does not report thumbnail impressions or click-through rate,
-  so ⬆ Import Studio export reads them from a YouTube Studio Advanced mode
-  export (the .zip or its Table data.csv). They are saved to
-  `~/.scriptcraft/youtube_studio_reach.json` and cover that export's date range.
+  so they come from two places. **📡 Turn on daily reach reports** creates one
+  read-only YouTube Reporting API job (`channel_reach_basic_a1`). YouTube posts
+  its first reports within 48 hours, covering the 30 days before the job, then
+  one a day. The dialog downloads new ones at most every 6 hours and keeps them
+  in `~/.scriptcraft/youtube_reach_daily.json`, since YouTube deletes reports
+  after 30 to 60 days. **⬆ Import Studio export** reads a YouTube Studio
+  Advanced mode export (the .zip or its Table data.csv) into
+  `~/.scriptcraft/youtube_studio_reach.json`. It covers that export's date
+  range and is the only source for lifetime numbers. A window the daily reports
+  reach back to uses them; otherwise the Studio import is used.
 
 ## Test results
 

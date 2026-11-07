@@ -194,6 +194,7 @@ _DISABLED_VIEWS = {
     "api_analytics_retention",
     "api_analytics_import_reach",
     "api_analytics_insights",
+    "api_analytics_daily_reach_start",
     "create_resolve_project",
     "create_resolve_with_videos",
     "check_aroll_videos",

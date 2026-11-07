@@ -722,60 +722,8 @@ def upload_video(
     thumbnail_error: Optional[str] = None
     if video_id and thumb_path is not None:
         _set_state(upload_id, status="setting_thumbnail", progress=100)
-        # YouTube rejects the wildcard 'image/*' mimetype. Map by extension.
-        ext = thumb_path.suffix.lower()
-        thumb_mime = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".webp": "image/webp",
-            ".gif": "image/gif",
-        }.get(ext, "image/jpeg")
-        logger.info(
-            f"🖼️  Setting thumbnail for video {video_id}: {thumb_path} "
-            f"({thumb_path.stat().st_size} bytes, mime={thumb_mime})")
-        try:
-            try:
-                thumb_media = MediaFileUpload(
-                    str(thumb_path), mimetype=thumb_mime, resumable=False)
-                resp = service.thumbnails().set(
-                    videoId=video_id, media_body=thumb_media).execute()
-            except HttpError as big:
-                # If YouTube refuses the file for its size, retry once with a
-                # JPEG copy under the old 2 MB limit.
-                small = None
-                if (thumb_path.stat().st_size > LEGACY_THUMBNAIL_BYTES
-                        and _is_size_rejection(big)):
-                    small = _compressed_thumbnail_copy(thumb_path)
-                if not small:
-                    raise
-                logger.warning(
-                    f"⚠️ YouTube refused the {thumb_path.stat().st_size} byte "
-                    f"thumbnail for its size; retrying with {small.name} "
-                    f"({small.stat().st_size} bytes)")
-                resp = service.thumbnails().set(
-                    videoId=video_id,
-                    media_body=MediaFileUpload(str(small), mimetype="image/jpeg",
-                                               resumable=False)).execute()
-            thumbnail_set = True
-            logger.info(f"✅ Thumbnail set OK for {video_id}: {resp}")
-        except HttpError as te:
-            # The API error body usually contains a useful 'reason' (e.g.
-            # 'youtubeSignupRequired' or 'mediaBodyRequired').
-            try:
-                err_text = te.content.decode("utf-8", errors="replace") \
-                    if hasattr(te, "content") and te.content else str(te)
-            except Exception:  # pragma: no cover
-                err_text = str(te)
-            thumbnail_error = err_text
-            logger.error(
-                f"❌ Thumbnail set FAILED for {video_id} "
-                f"(file={thumb_path}): {err_text}")
-        except Exception as te:  # network / generic
-            thumbnail_error = str(te)
-            logger.error(
-                f"❌ Thumbnail set FAILED for {video_id} "
-                f"(file={thumb_path}): {te}")
+        thumbnail_set, thumbnail_error = set_thumbnail(
+            video_id, thumb_path, service=service)
     elif video_id and thumb_path is None:
         logger.info(
             f"ℹ️  No thumbnail_path supplied for video {video_id}; "
@@ -983,20 +931,10 @@ THUMBNAIL_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 # YouTube custom thumbnail size limit for thumbnails.set: 50 MB ("Maximum file
 # size: 50MB" in the API reference, checked 2026-10-26; it used to be 2 MB).
 MAX_THUMBNAIL_BYTES = 50 * 1024 * 1024
-# Fallback when YouTube still refuses a large file: a JPEG copy under the old
-# 2 MB limit, at full resolution when possible.
+# But the Google client still enforces the discovery doc's 2 MB maxSize before
+# sending, so set_thumbnail sends bigger files as a JPEG copy under 2 MB, at
+# full resolution when possible.
 LEGACY_THUMBNAIL_BYTES = 2 * 1024 * 1024
-
-
-def _is_size_rejection(err) -> bool:
-    """True when a thumbnails.set HttpError says the file is too big."""
-    status = getattr(getattr(err, "resp", None), "status", None)
-    try:
-        body = err.content.decode("utf-8", errors="replace") if err.content else ""
-    except Exception:
-        body = str(err)
-    return status == 413 or any(w in body.lower() for w in (
-        "too large", "toolarge", "file size", "mediabodytoolarge", "exceeds"))
 
 
 def _compressed_thumbnail_copy(path: Path) -> Optional[Path]:
@@ -1019,6 +957,60 @@ def _compressed_thumbnail_copy(path: Path) -> Optional[Path]:
             if out.stat().st_size <= LEGACY_THUMBNAIL_BYTES:
                 return out
     return None
+
+
+def set_thumbnail(video_id: str, thumb_path: Path,
+                  service=None) -> "tuple[bool, Optional[str]]":
+    """Set the custom thumbnail of an uploaded video. Returns (ok, error).
+
+    A file over 2 MB is sent as a JPEG copy under 2 MB: the Google client
+    checks the API's declared 2 MB maxSize itself and refuses bigger files
+    before sending ("Media larger than: 2097152"), whatever the server allows.
+    """
+    libs = _import_google_libs()
+    HttpError = libs["HttpError"]
+    MediaFileUpload = libs["MediaFileUpload"]
+    service = service or _build_service()
+    thumb_path = Path(thumb_path).expanduser()
+    upload = thumb_path
+    if thumb_path.stat().st_size > LEGACY_THUMBNAIL_BYTES:
+        small = _compressed_thumbnail_copy(thumb_path)
+        if small:
+            logger.info(
+                f"🗜️  Thumbnail is {thumb_path.stat().st_size} bytes; sending "
+                f"{small.name} ({small.stat().st_size} bytes) under the 2 MB limit")
+            upload = small
+    # YouTube rejects the wildcard 'image/*' mimetype. Map by extension.
+    mime = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }.get(upload.suffix.lower(), "image/jpeg")
+    logger.info(
+        f"🖼️  Setting thumbnail for video {video_id}: {upload} "
+        f"({upload.stat().st_size} bytes, mime={mime})")
+    try:
+        resp = service.thumbnails().set(
+            videoId=video_id,
+            media_body=MediaFileUpload(str(upload), mimetype=mime,
+                                       resumable=False)).execute()
+        logger.info(f"✅ Thumbnail set OK for {video_id}: {resp}")
+        return True, None
+    except HttpError as te:
+        # The API error body usually contains a useful 'reason' (e.g.
+        # 'youtubeSignupRequired' or 'mediaBodyRequired').
+        try:
+            err_text = te.content.decode("utf-8", errors="replace") \
+                if hasattr(te, "content") and te.content else str(te)
+        except Exception:  # pragma: no cover
+            err_text = str(te)
+    except Exception as te:  # network / generic / client-side size check
+        err_text = str(te)
+    logger.error(
+        f"❌ Thumbnail set FAILED for {video_id} (file={upload}): {err_text}")
+    return False, err_text
 
 
 def list_thumbnails_for_video(video_path: str) -> List[Dict[str, Any]]:

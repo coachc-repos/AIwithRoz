@@ -4915,11 +4915,16 @@ def _get_anthropic_client(timeout: float = 60.0):
     return anthropic.Anthropic(api_key=api_key, timeout=timeout, max_retries=1)
 
 
+class ClaudeReplyCutOff(RuntimeError):
+    """Claude stopped at max_tokens, so its reply is incomplete."""
+
+
 def _anthropic_complete(system: str, user: str, max_tokens: int = 4000,
                         use_web_search: bool = True, max_searches: int = 4,
                         model: str = None, timeout: float = 60.0,
                         documents=None, effort: str = None,
-                        thinking: bool = False) -> str:
+                        thinking: bool = False,
+                        require_complete: bool = False) -> str:
     """Run one Claude turn, draining the server-side web_search loop.
 
     `model` defaults to ANTHROPIC_MODEL (Opus 4.8). `timeout` (seconds) bounds
@@ -4929,6 +4934,8 @@ def _anthropic_complete(system: str, user: str, max_tokens: int = 4000,
     in an uploaded file. Returns the concatenated text of the final assistant
     message. If a request with web search fails (e.g. the tool isn't enabled on
     the account), it retries once without tools. Raises on hard failures.
+    `require_complete` raises ClaudeReplyCutOff instead of returning a reply
+    cut off at max_tokens — for callers that replace a whole script with it.
     """
     _model = model or ANTHROPIC_MODEL
     client = _get_anthropic_client(timeout=timeout)
@@ -5028,6 +5035,11 @@ def _anthropic_complete(system: str, user: str, max_tokens: int = 4000,
             resp = _run(False)
         else:
             raise
+
+    if require_complete and getattr(resp, "stop_reason", None) == "max_tokens":
+        raise ClaudeReplyCutOff(
+            f"Claude hit its {max_tokens:,}-token reply limit before finishing, "
+            "so the reply was cut off and nothing was changed.")
 
     # With web search the response interleaves narration text, server_tool_use,
     # and web_search_tool_result blocks. Only the final run of text blocks (after
@@ -5702,6 +5714,7 @@ def api_ideas_generate():
         "AI news (this week, this month), then build the ideas on what you find. "
         "Do not spend searches confirming ideas one at a time."
         + _channel_playbook_block()
+        + _golden_reference_ideas_block(follow_ups=not has_request)
     )
     if has_request and not has_doc:
         # Topic lock: the producer's topic is the subject of ALL ideas. The brand
@@ -5828,7 +5841,9 @@ def api_ideas_generate():
         # Claude gets the PDF as a native document block (best grounding).
         # v3: 8 searches (4 ran out before Claude found news from the recency
         # window) and a longer per-request timeout for the extra search rounds.
-        raw = _anthropic_complete(system, user, max_tokens=4000,
+        # 16,000 tokens: on 2026-10-29 a run spent 4,000 on searches and its
+        # notes and stopped before writing the JSON (0 Claude ideas).
+        raw = _anthropic_complete(system, user, max_tokens=16000,
                                   use_web_search=True, max_searches=8,
                                   model=IDEA_MODEL,
                                   documents=[idea_doc] if idea_doc else None,
@@ -6624,7 +6639,7 @@ def _grok_imagine_assets_for_beat(beat_text: str, section_title: str = "",
     """
     base = (beat_text or "").strip()
     if not base:
-        return "", None
+        return "", None, None
     parts = []
     if video_title:
         parts.append(f"VIDEO TITLE: {video_title}")
@@ -6893,6 +6908,7 @@ def _call_polish_model(text_to_polish: str, header: str,
             out = _anthropic_complete(
                 _POLISH_SYSTEM, user, max_tokens=16000,
                 use_web_search=False, model=model, timeout=200.0,
+                require_complete=True,
             )
             out = _strip_reminder_tags(out)
             if out:
@@ -7011,15 +7027,80 @@ _REFINE_SYSTEM = (
 )
 
 
+# A whole-script Refine reply must fit in one 32k-token answer, thinking
+# included. A 64k-char masked script fit; 88k and 99k were cut off mid-script.
+# Past this size the model returns exact find/replace edits instead, applied
+# here, so the reply stays small however long the script is.
+_REFINE_WHOLE_MAX_CHARS = 50000
+
+_REFINE_EDITS_FORMAT = (
+    "\n\nOUTPUT FORMAT (overrides the instruction to return the full script): "
+    "the script is too long to send back whole, so return ONLY a JSON array of "
+    "edits and nothing else, e.g. "
+    '[{"find": "exact text from the script", "replace": "new text"}]. '
+    "Each \"find\" must be copied character for character from the script and "
+    "be long enough to occur only once (a whole sentence or line is best). To "
+    "change every occurrence of a short term, add \"all\": true. To insert new "
+    "lines, use the line before them as \"find\" and repeat it at the start of "
+    "\"replace\". To delete, use an empty \"replace\". Never put a "
+    "[[PRODUCTION_BLOCK_N]] token in find or replace. Include every edit the "
+    "change request needs, and nothing else."
+)
+
+
+def _apply_refine_edits(text: str, edits) -> tuple:
+    """Apply model-proposed {find, replace[, all]} edits to ``text``.
+
+    A find must match exactly once (or anywhere with ``all``). If the exact text
+    is missing, a match that differs only in whitespace or straight/curly quotes
+    is accepted when it is unique. Edits that would add or drop a production
+    placeholder are refused. Returns (text, applied_count, skipped_finds).
+    """
+    applied, skipped = 0, []
+    tok = re.compile(r"\[\[PRODUCTION_BLOCK_\d+\]\]")
+    for e in edits if isinstance(edits, list) else []:
+        f = e.get("find") if isinstance(e, dict) else None
+        r = e.get("replace", "") if isinstance(e, dict) else None
+        if not isinstance(f, str) or not f.strip() or not isinstance(r, str):
+            continue
+        if sorted(tok.findall(f)) != sorted(tok.findall(r)):
+            skipped.append(f)
+            continue
+        every = bool(e.get("all")) and len(f.strip()) >= 4   # never "AI" everywhere
+        if every and f in text:
+            text = text.replace(f, r)
+            applied += 1
+            continue
+        if text.count(f) == 1:
+            text = text.replace(f, r, 1)
+            applied += 1
+            continue
+        loose = re.compile("".join(
+            r"\s+" if ch.isspace() else
+            "[\"\u201c\u201d]" if ch in "\"\u201c\u201d" else
+            "['\u2018\u2019]" if ch in "'\u2018\u2019" else re.escape(ch)
+            for ch in re.sub(r"\s+", " ", f.strip())))
+        hits = list(loose.finditer(text))
+        if len(hits) == 1 or (hits and every):
+            for m in reversed(hits):
+                text = text[:m.start()] + r + text[m.end():]
+            applied += 1
+        else:
+            skipped.append(f)
+    return text, applied, skipped
+
+
 def _refine_script(script: str, instructions: str, model: str = "claude",
                    title: str = "", audience: str = "") -> tuple:
     """Apply a single user-directed change to a finished script.
 
-    Returns (updated_text, model_used). `model` is "claude" (Opus 5.5, web
-    search on) or "grok" (xAI, X/recent-aware). Production blocks are masked and
-    restored byte-for-byte; if the model drops a placeholder, we retry once on
-    the raw script asking it to keep the blocks verbatim (a per-segment fallback
-    like Polish's would wrongly apply a single targeted edit to every segment).
+    Returns (updated_text, model_used, note). `model` is "claude" (Opus 5.5,
+    web search on) or "grok" (xAI, X/recent-aware). Production blocks are masked
+    and restored byte-for-byte; if the model drops a placeholder, we retry once
+    on the raw script asking it to keep the blocks verbatim (a per-segment
+    fallback like Polish's would wrongly apply a single targeted edit to every
+    segment). Long scripts are refined as an edit list (_REFINE_WHOLE_MAX_CHARS);
+    `note` then reports edits that could not be placed, else it is "".
     """
     ctx = []
     if title:
@@ -7030,14 +7111,17 @@ def _refine_script(script: str, instructions: str, model: str = "claude",
 
     use_grok = (model or "").lower().startswith("grok")
 
-    def _call(text: str, extra: str = "") -> tuple:
+    def _call(text: str, extra: str = "", edits: bool = False) -> tuple:
         user = (
             f"{header}CHANGE REQUEST:\n{instructions}\n\n{extra}"
             f"Here is the full script. Apply ONLY the change request above and "
-            f"return the complete, updated script:\n\n{text}"
+            + ("return the JSON array of edits:" if edits else
+               "return the complete, updated script:")
+            + f"\n\n{text}"
         )
+        system = _REFINE_SYSTEM + (_REFINE_EDITS_FORMAT if edits else "")
         if use_grok:
-            out = _grok_complete(_REFINE_SYSTEM, user, model=IDEA_GROK_MODEL)
+            out = _grok_complete(system, user, model=IDEA_GROK_MODEL)
             return _strip_reminder_tags(out or ""), IDEA_GROK_MODEL
         # Claude Opus 5.5 at HIGH reasoning effort (not Opus 4.8, not medium).
         # NOTE: effort="max" on opus-5-5 OVERTHINKS this task — it burns the
@@ -7046,18 +7130,48 @@ def _refine_script(script: str, instructions: str, model: str = "claude",
         # hard and still emits the full updated script. max_tokens is raised so
         # a long script (2k+ words) fits alongside the thinking block.
         out = _anthropic_complete(
-            _REFINE_SYSTEM, user, max_tokens=32000,
+            system, user, max_tokens=(16000 if edits else 32000),
             use_web_search=True, model=REFINE_MODEL, timeout=240.0,
-            effort="high", thinking=True,
+            effort="high", thinking=True, require_complete=True,
         )
         return _strip_reminder_tags(out or ""), REFINE_MODEL
 
     masked, blocks = _mask_production_blocks(script)
+
+    def _by_edits() -> tuple:
+        logger.info("✏️ refine: %d-char script — asking for edits, not the "
+                    "whole script", len(masked))
+        out, used = _call(masked, edits=True)
+        edits = _parse_json_array(out)
+        updated, applied, skipped = _apply_refine_edits(masked, edits)
+        logger.info("✏️ refine: applied %d of %d edit(s)", applied, len(edits))
+        if not applied:
+            raise RuntimeError(
+                "Refine could not place any of its edits in the script, so "
+                "nothing was changed. Try rewording the request.")
+        restored, missing = _restore_production_blocks(updated, blocks)
+        if missing:
+            raise RuntimeError("Refine edits disturbed a production block, so "
+                               "nothing was changed.")
+        note = ""
+        if skipped:
+            note = (f"{len(skipped)} of {applied + len(skipped)} edits could not "
+                    "be matched in the script and were skipped: "
+                    + "; ".join(f"“{f[:60]}”" for f in skipped[:3]))
+        return restored, used, note
+
+    if len(masked) > _REFINE_WHOLE_MAX_CHARS:
+        return _by_edits()
+
     if not blocks:
-        out, used = _call(script)
+        try:
+            out, used = _call(script)
+        except ClaudeReplyCutOff:
+            logger.warning("⚠️ refine: whole-script reply cut off; using edits")
+            return _by_edits()
         if not out:
             raise RuntimeError("Refine returned an empty script.")
-        return out, used
+        return out, used, ""
 
     sentinel_note = (
         "IMPORTANT — PRESERVE PLACEHOLDERS: the script contains tokens of the "
@@ -7065,12 +7179,16 @@ def _refine_script(script: str, instructions: str, model: str = "claude",
         "on its own line, in the same order. Edit ONLY the surrounding host "
         "narration.\n\n"
     )
-    out, used = _call(masked, extra=sentinel_note)
+    try:
+        out, used = _call(masked, extra=sentinel_note)
+    except ClaudeReplyCutOff:
+        logger.warning("⚠️ refine: whole-script reply cut off; using edits")
+        return _by_edits()
     if not out:
         raise RuntimeError("Refine returned an empty script.")
     restored, missing = _restore_production_blocks(out, blocks)
     if not missing:
-        return restored, used
+        return restored, used, ""
 
     logger.warning("⚠️ refine: %d production sentinel(s) missing from output; "
                    "retrying unmasked", len(missing))
@@ -7081,8 +7199,8 @@ def _refine_script(script: str, instructions: str, model: str = "claude",
     )
     out2, used2 = _call(script, extra=keep_note)
     if out2:
-        return out2, used2
-    return restored, used  # best effort — return what we could restore
+        return out2, used2, ""
+    return restored, used, ""  # best effort — return what we could restore
 
 
 @app.route("/api/script/refine", methods=["POST"])
@@ -7106,14 +7224,22 @@ def api_script_refine():
     title = (data.get("title") or "").strip()
     audience = (data.get("audience") or "").strip()
     try:
-        updated, used = _refine_script(
+        updated, used, note = _refine_script(
             script, instructions, model=model, title=title, audience=audience)
+    except ClaudeReplyCutOff as e:
+        logger.error(f"❌ Script refine cut off ({len(script):,} chars): {e}")
+        return jsonify({"success": False, "error": (
+            f"{e} This script is {len(script):,} characters, more than Refine "
+            "can send back in one reply. Your script is unchanged. Remove what "
+            "you don't need with ✏️ Edit (for example an appended B-roll table "
+            "or HeyGen copy), then refine again.")}), 500
     except Exception as e:
         logger.error(f"❌ Script refine failed: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
     logger.info("✏️ Script refined with %s (%d → %d chars) | ask: %s",
                 used, len(script), len(updated), instructions[:80])
-    return jsonify({"success": True, "updated_script": updated, "model": used})
+    return jsonify({"success": True, "updated_script": updated, "model": used,
+                    "note": note})
 
 
 @app.route("/api/script/save-to-cloud", methods=["POST"])
@@ -7210,6 +7336,8 @@ def api_broll_regenerate():
         cleaned = re.sub(r'__([^_]+)__', r'\1', cleaned)
         cleaned = re.sub(r'_([^_]+)_', r'\1', cleaned)
 
+        logger.info("🔄 Regenerating B-roll table for %r (%d chars)…",
+                    title[:60], len(cleaned))
         from linedrive_azure.agents import ScriptBRollAgentClient
         agent = ScriptBRollAgentClient()
         result = agent.generate_broll_table_with_timecodes(
@@ -9201,8 +9329,9 @@ def grok_test_video_generate():
         })
 
     except Exception as e:
-        logger.error(f"❌ Grok test video generation failed: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+        err_text = _grok_error_text(e)[0]
+        logger.error(f"❌ Grok test video generation failed: {err_text}")
+        return jsonify({"success": False, "error": err_text}), 500
 
 
 @app.route("/api/cancel-workflow/<session_id>", methods=["POST"])
@@ -9782,8 +9911,9 @@ _YT_TOKEN_PATH = Path.home() / ".scriptcraft" / "youtube_token.json"
 
 # ---- Channel analytics (📊 Analytics) ----
 # Per-video performance and retention from the YouTube Analytics API, through
-# its own read-only sign-in (youtube_analytics.py). Impressions and CTR come
-# from an imported YouTube Studio export, since the API does not offer them.
+# its own read-only sign-in (youtube_analytics.py). The Analytics API has no
+# impressions or CTR: they come from the Reporting API's daily reach reports
+# (once the user turns them on) or an imported YouTube Studio export.
 
 def _analytics_error(e: Exception, status: int = 500):
     import youtube_analytics as ya
@@ -9797,12 +9927,31 @@ def _analytics_error(e: Exception, status: int = 500):
 def api_analytics_status():
     import youtube_analytics as ya
     from youtube_publisher import CLIENT_SECRET_PATH
-    reach = ya.load_reach()
+    reach, daily = ya.load_reach(), ya.load_daily_reach()
     return jsonify({"success": True, "connected": ya.is_connected(),
                     "has_client_secret": CLIENT_SECRET_PATH.exists(),
                     "reach_imported_at": reach.get("imported_at"),
                     "reach_source": reach.get("source"),
-                    "reach_videos": len(reach.get("videos", {}))})
+                    "reach_videos": len(reach.get("videos", {})),
+                    "daily_job": bool(daily.get("job_id")),
+                    "daily_since": daily.get("job_created"),
+                    "daily_days": len(daily.get("days") or {})})
+
+
+@app.route("/api/analytics/daily-reach/start", methods=["POST"])
+def api_analytics_daily_reach_start():
+    """Turn on YouTube's daily reach report (impressions and CTR) for the
+    channel: one read-only Reporting API job, created when the user asks."""
+    import youtube_analytics as ya
+    if not ya.is_connected():
+        return jsonify({"success": False, "connected": False,
+                        "error": "Connect YouTube Analytics first."}), 401
+    try:
+        state = ya.start_daily_reach()
+        logger.info(f"📡 Daily reach reports on (job {state['job_id']})")
+        return jsonify({"success": True, "daily_since": state.get("job_created")})
+    except Exception as e:
+        return _analytics_error(e)
 
 
 @app.route("/api/analytics/connect", methods=["POST"])
@@ -9833,6 +9982,10 @@ def api_analytics_videos():
     if not ya.is_connected():
         return jsonify({"success": False, "connected": False,
                         "error": "Connect YouTube Analytics first."}), 401
+    try:
+        ya.sync_daily_reach()       # new reach reports, at most every few hours
+    except Exception as e:
+        logger.warning(f"⚠️ daily reach sync failed: {ya.explain_error(e)}")
     try:
         report = ya.video_report(range_key)
         return jsonify({"success": True, "connected": True, **report})
@@ -9880,7 +10033,9 @@ _ANALYTICS_INSIGHTS_SYSTEM = (
     "people, stance) and what drives average view duration and percentage "
     "(length, format, topic), comparing the top and bottom videos by name. "
     "Use only the numbers in the table; do not invent metrics. Where impressions "
-    "or CTR are missing, say so instead of guessing. Then give five specific, "
+    "or CTR are missing, say so instead of guessing. Averages from fewer than "
+    "10 views in the window are noise: use the lifetime columns for those "
+    "videos, or leave them out. Then give five specific, "
     "provocative episode ideas and title patterns the channel should try next, "
     "and three things to stop doing. Plain English, short sections with "
     "headings: What drives clicks, What keeps people watching, Make next, Stop "
@@ -9895,17 +10050,22 @@ def api_analytics_insights():
     videos = data.get("videos") or []
     if not isinstance(videos, list) or not videos:
         return jsonify({"success": False, "error": "Load the analytics first."}), 400
-    lines = ["title | published | length | impressions | CTR % | views | avg view duration | avg viewed % | subs gained"]
+    lines = ["title | published | length | impressions | CTR % | views | avg view duration | avg viewed % | subs gained"
+             " | lifetime views | lifetime avg view duration | lifetime avg viewed %"]
     for v in videos[:60]:
         def _f(x):
             return "n/a" if x is None or x == "" else str(x)
         dur = int(v.get("duration_seconds") or 0)
         avd = int(v.get("avg_view_duration") or 0)
+        life = v.get("lifetime") if isinstance(v.get("lifetime"), dict) else {}
+        lavd = int(life.get("avg_view_duration") or 0)
         lines.append(" | ".join([
             str(v.get("title") or "")[:120], str(v.get("published_at") or "")[:10],
             f"{dur // 60}:{dur % 60:02d}", _f(v.get("impressions")), _f(v.get("ctr")),
             _f(v.get("views")), f"{avd // 60}:{avd % 60:02d}",
-            _f(v.get("avg_view_percentage")), _f(v.get("subscribers_gained"))]))
+            _f(v.get("avg_view_percentage")), _f(v.get("subscribers_gained")),
+            _f(life.get("views")), f"{lavd // 60}:{lavd % 60:02d}" if life else "n/a",
+            _f(life.get("avg_view_percentage"))]))
     window_note = f"Window: {data.get('start', '?')} to {data.get('end', '?')}."
     playbook = ""
     try:
@@ -9919,7 +10079,8 @@ def api_analytics_insights():
     import anthropic
     for model in (IDEA_MODEL, ANTHROPIC_MODEL):
         try:
-            text = _anthropic_complete(_ANALYTICS_INSIGHTS_SYSTEM, user, max_tokens=3000,
+            # 10,000: the first real run (31 videos) stopped at 3,000 mid-section.
+            text = _anthropic_complete(_ANALYTICS_INSIGHTS_SYSTEM, user, max_tokens=10000,
                                        use_web_search=False, model=model, timeout=120.0)
             return jsonify({"success": True, "insights": _strip_reminder_tags(text).strip(),
                             "model": model})
@@ -10821,6 +10982,28 @@ def _upscale_video_to_1080p(path) -> bool:
     return False
 
 
+def _grok_error_text(err) -> tuple:
+    """Readable text for an xAI SDK error, and whether the rest of a batch
+    should stop. str() of a gRPC error is a multi-line repr; details() is the
+    message. Credit / spending-limit and key refusals fail every later request
+    too (instantly, unbilled), so they end the batch instead of each clip."""
+    code, details = "", ""
+    try:
+        code = err.code().name
+        details = err.details() or ""
+    except Exception:
+        details = str(err)
+    low = details.lower()
+    if "credits" in low or "spending limit" in low:
+        return ("xAI API credits are used up or the team's monthly spending "
+                "limit is reached. Add credits or raise the limit at "
+                "console.x.ai → Billing (a Grok app subscription does not "
+                "fund API calls).", True)
+    if code in ("UNAUTHENTICATED", "PERMISSION_DENIED"):
+        return (f"xAI refused the Grok API key ({code}): {details}", True)
+    return ((f"{code}: {details}" if code else details) or repr(err), False)
+
+
 def _grok_generate_worker(session_id: str, selected_rows: list, api_key: str, script_title: str = "", script_id: str = "") -> None:
     """Background worker: generate Grok videos one-by-one, streaming progress and honoring cancel."""
     cancel_evt = grok_video_cancel_events.setdefault(
@@ -10832,6 +11015,7 @@ def _grok_generate_worker(session_id: str, selected_rows: list, api_key: str, sc
     # chalk-sketch take — so the total is ~2× the rows.
     total = len(selected_rows) * 2
     cancelled = False
+    stopped_reason = None
 
     try:
         import xai_sdk  # type: ignore
@@ -10978,6 +11162,7 @@ def _grok_generate_worker(session_id: str, selected_rows: list, api_key: str, sc
                 if blob_url:
                     video_entry["url"] = blob_url
                     video_entry["persisted"] = True
+                    video_entry["script_id"] = _safe_blob_id(script_id)
                 videos.append(video_entry)
 
                 _grok_emit(session_id, {
@@ -10987,39 +11172,49 @@ def _grok_generate_worker(session_id: str, selected_rows: list, api_key: str, sc
                     "message": f"✅ [{clip_no}/{total}] Saved {style} '{term}' → {local_path}",
                 })
             except Exception as row_err:
+                err_text, fatal = _grok_error_text(row_err)
+                logger.warning(f"❌ Grok {style} clip '{term}' failed: {err_text}")
                 failures.append({
                     "index": i,
                     "timecode": timecode,
                     "search_term": term,
                     "style": style,
-                    "error": str(row_err),
+                    "error": err_text,
                 })
                 _grok_emit(session_id, {
                     "type": "video_failed",
                     "index": i, "current": clip_no, "total": total,
                     "search_term": term, "style": style, "timecode": timecode,
-                    "error": str(row_err),
-                    "message": f"❌ [{clip_no}/{total}] Failed {style} '{term}': {row_err}",
+                    "error": err_text,
+                    "message": f"❌ [{clip_no}/{total}] Failed {style} '{term}': {err_text}",
                 })
+                if fatal:
+                    stopped_reason = err_text
+                    break
 
-        if cancelled:
+        if cancelled or stopped_reason:
             break
 
     grok_video_results[session_id] = {
         "videos": videos,
         "failures": failures,
         "cancelled": cancelled,
+        "stopped_reason": stopped_reason,
         "output_dir": str(out_dir),
     }
 
-    final_msg = (
-        f"🛑 Cancelled — kept {len(videos)} of {total} videos"
-        if cancelled
-        else f"✅ Grok videos complete: {len(videos)}/{total} (failed: {len(failures)})"
-    )
+    if cancelled:
+        final_msg = f"🛑 Cancelled — kept {len(videos)} of {total} videos"
+    elif stopped_reason:
+        final_msg = (f"⛔ Grok videos stopped after {len(videos)}/{total}: "
+                     f"{stopped_reason} Re-run the rows that are missing once that's fixed.")
+    else:
+        final_msg = f"✅ Grok videos complete: {len(videos)}/{total} (failed: {len(failures)})"
+    logger.info(final_msg)
     _grok_emit(session_id, {
         "type": "done",
         "cancelled": cancelled,
+        "stopped_reason": stopped_reason,
         "videos": videos,
         "failures": failures,
         "generated_count": len(videos),
@@ -12261,6 +12456,36 @@ def youtube_publish_status(upload_id):
     except Exception as e:
         logger.error(f"❌ youtube_publish_status error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/youtube/set-thumbnail", methods=["POST"])
+def youtube_set_thumbnail():
+    """Set (or retry) the custom thumbnail of an already-published video, so a
+    failed thumbnail step never needs a re-upload."""
+    data = request.get_json(silent=True) or {}
+    video_id = (data.get("video_id") or "").strip()
+    thumbnail_path = (data.get("thumbnail_path") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,20}", video_id):
+        return jsonify({"success": False, "error": "A valid video_id is required."}), 400
+    try:
+        import youtube_publisher as yp
+        tp = Path(thumbnail_path).expanduser()
+        if not thumbnail_path or not tp.is_file():
+            return jsonify({"success": False,
+                            "error": f"Thumbnail file not found: {tp}"}), 400
+        if tp.suffix.lower() not in yp.THUMBNAIL_EXTS:
+            return jsonify({"success": False,
+                            "error": f"Unsupported thumbnail extension {tp.suffix}."}), 400
+        if tp.stat().st_size > yp.MAX_THUMBNAIL_BYTES:
+            return jsonify({"success": False,
+                            "error": f"Thumbnail is larger than YouTube's 50 MB limit: {tp}"}), 400
+        ok, err = yp.set_thumbnail(video_id, tp)
+    except Exception as e:
+        logger.error(f"❌ youtube_set_thumbnail error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    if not ok:
+        return jsonify({"success": False, "error": err}), 502
+    return jsonify({"success": True})
 
 
 @app.route("/test-thumbnails")
@@ -14728,7 +14953,11 @@ def _persist_grok_video(script_id: str, local_path, entry: dict) -> "Optional[st
         "timecode": entry.get("timecode", ""),
         "description": entry.get("description", ""),
         "generated_prompt": entry.get("generated_prompt", ""),
+        "resolution": entry.get("resolution", ""),
         "script_id": sid,
+        # Where the mp4 was saved, so Delete still finds it after the output
+        # folder setting changes.
+        "local_path": str(local_path),
     }
     _artifacts_upload_bytes(
         blob + ".json", json.dumps(meta).encode("utf-8"), "application/json")
@@ -14762,6 +14991,9 @@ def _list_grok_videos_for_script(script_id: str) -> list:
                 "timecode": meta.get("timecode", ""),
                 "description": meta.get("description", ""),
                 "generated_prompt": meta.get("generated_prompt", ""),
+                "resolution": meta.get("resolution", ""),
+                "local_path": meta.get("local_path", ""),
+                "script_id": sid,
                 "persisted": True,
             })
     except Exception as e:
@@ -15257,6 +15489,76 @@ def _channel_playbook_block() -> str:
             "clicks and keeps viewers watching; follow it):\n" + playbook)
 
 
+def _golden_reference_digest() -> dict:
+    """The current golden reference script, condensed for idea generation: its
+    published title, spoken hook, chapter headings, and the opening of its
+    verdict. {} if the file is missing."""
+    try:
+        from linedrive_azure.agents.pro_script_writer import _GOLDEN_REF_PATH
+        raw = open(_GOLDEN_REF_PATH, encoding="utf-8").read()
+    except Exception:
+        return {}
+    header = re.match(r"(?s)\s*<!--(.*?)-->", raw)
+    published = re.search(r'Published as\s+"([^"]+)"', header.group(1)) if header else None
+    body = _strip_production_blocks(raw[header.end():] if header else raw)
+    title_line = re.search(r"(?m)^Title:\s*(.+)$", body)
+
+    def spoken(chunk: str, limit: int) -> str:
+        lines = [ln.strip() for ln in chunk.splitlines()
+                 if ln.strip() and not re.match(r"(Host:|_{5,}|#|[A-Z][A-Za-z -]+:\s)", ln.strip())]
+        text = " ".join(lines)
+        return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " ..."
+
+    hook = re.search(r"(?s)FINAL HOOK:(.*?)(?:\n_{5,}|\n# Heading:)", body)
+    chapters = re.findall(r"(?m)^#\s*Heading:\s*(Chapter .+)$", body)
+    last = None
+    for last in re.finditer(r"(?m)^#\s*Heading:\s*Chapter .+$", body):
+        pass
+    verdict = ""
+    if last:
+        end = re.search(r"\n_{5,}|\n# ===", body[last.end():])
+        verdict = spoken(body[last.end():last.end() + (end.start() if end else 3000)], 500)
+    return {
+        "title": (published.group(1) if published else
+                  title_line.group(1).strip() if title_line else ""),
+        "hook": spoken(hook.group(1), 600) if hook else "",
+        "chapters": chapters,
+        "verdict": verdict,
+    }
+
+
+def _golden_reference_ideas_block(follow_ups: bool) -> str:
+    """The golden reference as the model episode for the idea generator. With
+    follow_ups (no producer topic or document), about three of the ten ideas
+    continue its story; otherwise it shapes stance and structure only."""
+    g = _golden_reference_digest()
+    if not g.get("title"):
+        return ""
+    block = (
+        "\n\nMODEL EPISODE (the channel's golden reference and best performer; "
+        "every idea should carry its DNA: a named power player, a provocative "
+        "verdict in the title, a numbered scoreboard of reasons, real stakes for "
+        "the viewer, and the verdict delivered at the end):\n"
+        f'  Title: "{g["title"]}"\n'
+        + (f'  Hook: "{g["hook"]}"\n' if g.get("hook") else "")
+        + ("  Chapters: " + "; ".join(g["chapters"]) + "\n" if g.get("chapters") else "")
+        + (f'  Verdict: "{g["verdict"]}"\n' if g.get("verdict") else "")
+    )
+    if follow_ups:
+        block += (
+            "Use it as motivation. About three of the ten ideas should continue "
+            "it: a sequel built on what has happened since in that story, the "
+            "strongest case against its verdict, or the same verdict frame "
+            "applied to another player or another race (who wins, who loses, "
+            "and why). Ground each in current news. Do not re-pitch its own "
+            "title. The other ideas use its stance and structure on new topics."
+        )
+    else:
+        block += ("Use it for stance and structure only; the producer's topic or "
+                  "document below sets the subject.")
+    return block
+
+
 def _build_style_context_block(exclude_script_id: str = "") -> str:
     """A delimited style-reference block built from recent saved scripts, or ''
     when style memory is unavailable/empty. Fed to the Script Writer so new
@@ -15621,6 +15923,19 @@ def api_grok_video_delete():
                             "error": "Filename must be a .mp4"}), 400
 
         candidates = []
+        # The path recorded when the clip was generated, so a clip saved under
+        # an earlier output folder is still removed. Only a Grok mp4 in a
+        # broll folder under the home directory qualifies.
+        hint = (data.get("path") or "").strip()
+        if hint:
+            try:
+                hp = Path(hint).expanduser().resolve()
+                if (hp.name == safe_name and safe_name.startswith("grok_")
+                        and hp.parent.name in ("broll", "brollvideos")
+                        and Path.home().resolve() in hp.parents):
+                    candidates.append(hp)
+            except Exception:  # noqa: BLE001
+                pass
         base = _get_output_base_dir()
         if base is not None:
             candidates.append(base / "broll" / safe_name)
@@ -15641,6 +15956,7 @@ def api_grok_video_delete():
         # <script_id>/videos/. Without this the video reappears from Azure on the
         # next load as a dead grey card (local file gone, blob entry still there).
         blob_deleted = []
+        blob_errors = []
         script_id = (data.get("script_id") or "").strip()
         if script_id and _artifacts_enabled():
             try:
@@ -15652,11 +15968,24 @@ def api_grok_video_delete():
                         cc.delete_blob(bn)
                         blob_deleted.append(bn)
                     except Exception as be:  # noqa: BLE001
-                        # Missing blob (already gone) is fine — anything else logs.
-                        logger.info(
-                            f"grok-video blob delete skipped {bn}: {be}")
+                        # Missing blob (already gone) is fine; anything else
+                        # would bring the clip back on the next load.
+                        if type(be).__name__ == "ResourceNotFoundError":
+                            logger.info(f"grok-video blob already gone: {bn}")
+                        else:
+                            blob_errors.append(f"{bn}: {be}")
             except Exception as e:  # noqa: BLE001
-                logger.error(f"❌ grok-video blob delete failed: {e}")
+                blob_errors.append(str(e))
+        if blob_errors:
+            logger.error(f"❌ grok-video blob delete failed: {blob_errors}")
+            return jsonify({
+                "success": False, "deleted": deleted,
+                "error": "Deleted from disk, but the cloud copy could not be "
+                         "removed, so it would come back on reload: "
+                         + blob_errors[0][:300],
+            }), 502
+        logger.info(f"🗑️ Deleted Grok video {safe_name}: "
+                    f"{len(deleted)} file(s), {len(blob_deleted)} blob(s)")
 
         # Idempotent: even if the file was already gone locally AND in blob, the
         # desired end state (not present anywhere) is met — return success so the

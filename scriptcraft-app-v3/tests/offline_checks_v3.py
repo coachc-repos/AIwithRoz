@@ -764,7 +764,7 @@ def _():
 
     calls = []
     real = web_gui._grok_imagine_assets_for_beat
-    web_gui._grok_imagine_assets_for_beat = lambda beat, sec="", title="": (calls.append(beat) or "NEW prompt. style", None)
+    web_gui._grok_imagine_assets_for_beat = lambda beat, sec="", title="": (calls.append(beat) or "NEW prompt. style", None, None)
     try:
         new, added = web_gui._inject_grok_imagine_prompts(out, video_title="Sample")
     finally:
@@ -958,21 +958,36 @@ def _():
 
 
 
-@check("YouTube thumbnails up to 50 MB (thumbnails.set's limit); a size refusal retries with a JPEG under 2 MB")
+@check("YouTube thumbnails over 2 MB are sent as a JPEG under 2 MB (the Google client refuses bigger media), and a failed thumbnail can be retried without a re-upload")
 def _():
     import io as _io
     import tempfile
-    import types as _types
     from pathlib import Path
     from PIL import Image
     os.environ.setdefault("PORT", "0")
     import web_gui  # noqa: PLC0415
     import youtube_publisher as yp
+    from googleapiclient.errors import MediaUploadSizeError, HttpError
+
+    class _Svc:
+        """thumbnails().set like the real client: media over the discovery
+        doc's 2 MB maxSize is refused before anything is sent."""
+        def __init__(self):
+            self.sent = []
+        def thumbnails(self):
+            return self
+        def set(self, videoId, media_body):
+            if media_body.size() > 2097152:
+                raise MediaUploadSizeError("Media larger than: 2097152")
+            self.sent.append((videoId, media_body.mimetype(), media_body.size()))
+            return self
+        def execute(self):
+            return {"kind": "youtube#thumbnailSetResponse"}
 
     assert yp.MAX_THUMBNAIL_BYTES == 50 * 1024 * 1024 and yp.LEGACY_THUMBNAIL_BYTES == 2 * 1024 * 1024
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
-        # A noisy 2816x1584 PNG (like a 2K Grok original), well over 2 MB.
+        # A noisy 2816x1584 PNG (like the 6.3 MB split-edit thumbnail), well over 2 MB.
         big = d / "thumb_full.png"
         Image.frombytes("RGB", (2816, 1584), os.urandom(2816 * 1584 * 3)).save(big, "PNG")
         assert big.stat().st_size > 5 * 1024 * 1024
@@ -985,21 +1000,47 @@ def _():
             assert r.status_code == 200 and r.get_json()["size_bytes"] > 5 * 1024 * 1024, r.get_json()
         finally:
             web_gui._yt_uploads_dir = real_dir
-        small = yp._compressed_thumbnail_copy(big)
-        assert small and small.name == "thumb_full_youtube.jpg" and small.stat().st_size <= yp.LEGACY_THUMBNAIL_BYTES
-    err = lambda status, body: _types.SimpleNamespace(resp=_types.SimpleNamespace(status=status), content=body.encode())
-    assert yp._is_size_rejection(err(413, ""))
-    assert yp._is_size_rejection(err(400, '{"error": {"message": "The thumbnail image file is too large."}}'))
-    assert not yp._is_size_rejection(err(403, '{"error": {"errors": [{"reason": "forbidden"}]}}'))
+
+        svc = _Svc()
+        ok, err = yp.set_thumbnail("nZ5MQL-OIUo", big, service=svc)
+        assert ok and err is None and svc.sent[0][0] == "nZ5MQL-OIUo", (ok, err)
+        assert svc.sent[0][1] == "image/jpeg" and svc.sent[0][2] <= yp.LEGACY_THUMBNAIL_BYTES
+        assert (d / "thumb_full_youtube.jpg").is_file()
+        small = d / "small.png"
+        Image.new("RGB", (1280, 720), (12, 20, 40)).save(small, "PNG")
+        ok, _ = yp.set_thumbnail("nZ5MQL-OIUo", small, service=svc)
+        assert ok and svc.sent[1][1] == "image/png"                     # small files go as they are
+
+        class _Refuse(_Svc):
+            def set(self, videoId, media_body):
+                raise HttpError(type("R", (), {"status": 403, "reason": "Forbidden"})(),
+                                b'{"error": {"errors": [{"reason": "forbidden"}]}}')
+        ok, err = yp.set_thumbnail("nZ5MQL-OIUo", small, service=_Refuse())
+        assert not ok and "forbidden" in err
+
+        # Retry route: validates, then calls set_thumbnail for the published video.
+        calls = []
+        real_set = yp.set_thumbnail
+        yp.set_thumbnail = lambda vid, tp: (calls.append((vid, str(tp))) or (True, None))
+        try:
+            c = web_gui.app.test_client()
+            assert c.post("/api/youtube/set-thumbnail", json={"video_id": "x", "thumbnail_path": str(big)}).status_code == 400
+            assert c.post("/api/youtube/set-thumbnail", json={"video_id": "nZ5MQL-OIUo", "thumbnail_path": str(d / "nope.png")}).status_code == 400
+            r = c.post("/api/youtube/set-thumbnail", json={"video_id": "nZ5MQL-OIUo", "thumbnail_path": str(big)})
+            assert r.status_code == 200 and r.get_json()["success"] and calls == [("nZ5MQL-OIUo", str(big))]
+        finally:
+            yp.set_thumbnail = real_set
     src = open(os.path.join(APP, "youtube_publisher.py"), encoding="utf-8").read()
-    assert "_is_size_rejection(big)" in src and "small = _compressed_thumbnail_copy(thumb_path)" in src
+    assert "thumbnail_set, thumbnail_error = set_thumbnail(" in src and "_is_size_rejection" not in src
     web = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
-    assert web.count("yp.MAX_THUMBNAIL_BYTES") >= 3 and "2 * 1024 * 1024:" not in web
-    return "5.6 MB thumbnail accepted; a noisy 2K PNG compresses under 2 MB for the fallback; size errors told apart from others"
+    assert web.count("yp.MAX_THUMBNAIL_BYTES") >= 4 and "2 * 1024 * 1024:" not in web
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert 'onclick="retryYouTubeThumbnail(' in html and "async function retryYouTubeThumbnail(videoId)" in html
+    return "6 MB PNG sent as a <2 MB JPEG (client size check passes), small PNG as is, API refusal reported; retry route validates and sets"
 
 
 
-@check("Golden reference and channel playbook: the Musk script and the analytics lessons reach the writers, ideas, briefs, and titles")
+@check("Golden reference and channel playbook: the Musk script and the analytics lessons reach the writers, ideas, briefs, and titles; ideas build on the golden episode")
 def _():
     os.environ.setdefault("PORT", "0")
     import web_gui  # noqa: PLC0415
@@ -1025,12 +1066,39 @@ def _():
     ideas = src[src.index("def api_ideas_generate("):src.index("def _gen_claude():")]
     assert "provocative, opinionated videos" in ideas and "'The Power Play'" in ideas and "+ _channel_playbook_block()" in ideas
     assert "punchy, optimistic" not in ideas
+    # The idea generator gets the golden reference as its model episode: Claude and Grok
+    # both see its title, hook, chapters, and verdict, and with no topic typed about
+    # three ideas continue its story.
+    seen = {}
+    stubs = {"_anthropic_complete": lambda system, user, **kw: (seen.setdefault("claude", []).append(system) or seen.setdefault("max_tokens", kw["max_tokens"]) and '[{"title": "A", "angle": "B"}]'),
+             "_grok_complete": lambda system, user, **kw: (seen.setdefault("grok", []).append(system) or '[{"title": "C", "angle": "D"}]'),
+             "_fetch_top_youtube_ai_titles": lambda n: [],
+             "_save_idea_batch": lambda req, ideas, **kw: {"id": "test-batch"}}
+    real = {k: getattr(web_gui, k) for k in stubs}
+    try:
+        for k, v in stubs.items():
+            setattr(web_gui, k, v)
+        c = web_gui.app.test_client()
+        assert c.post("/api/ideas/generate", json={}).get_json()["success"]
+        assert c.post("/api/ideas/generate", json={"request": "AI in hospitals"}).get_json()["success"]
+    finally:
+        for k, v in real.items():
+            setattr(web_gui, k, v)
+    free, topic = seen["claude"]
+    assert seen["max_tokens"] >= 16000      # room to write the JSON after the searches
+    assert seen["grok"] == seen["claude"]
+    for system in (free, topic):
+        assert 'MODEL EPISODE' in system and 'Title: "Musk Will Win the AI Race - Here is Why"' in system
+        assert "weapon four is already parked in your driveway" in system and "Chapter 5 - Weapon Four" in system and "Yes, he can win." in system
+        assert "[PRODUCTION BEGIN]" not in system and "COLD OPEN" not in system
+    assert "About three of the ten ideas should continue it" in free and "stance and structure only" not in free
+    assert "stance and structure only" in topic and "About three of the ten" not in topic
     brief = src[src.index("You are a creative director writing a production brief"):src.index("logger.info(\"✍️ Brief requested")]
     assert "provocative, opinionated YouTube video" in brief and "_channel_playbook_block()" in brief and "energizing, optimistic" not in brief
-    return f"golden reference {len(golden):,} chars embedded whole; playbook in Pro, style context, ideas, briefs, and titles"
+    return f"golden reference {len(golden):,} chars embedded whole; playbook in Pro, style context, ideas, briefs, and titles; ideas pitch follow-ups to the golden episode"
 
 
-@check("Analytics: per-video report, retention drops, Studio impressions/CTR import, routes, and the toolbar dialog")
+@check("Analytics: per-video report, retention drops, impressions/CTR from daily reach reports or a Studio import, routes, and the toolbar dialog")
 def _():
     import io as _io
     import json
@@ -1056,9 +1124,17 @@ def _():
                        ["k09qNviJ4oM", 154, 438, 175, 28.2, 9, 1, 0, 2]]}
     retention = {"columnHeaders": [{"name": "elapsedVideoTimeRatio"}, {"name": "audienceWatchRatio"}, {"name": "relativeRetentionPerformance"}],
                  "rows": [[0.01, 1.0, 0.5], [0.03, 0.7, 0.5], [0.1, 0.6, 0.55], [0.2, 0.45, 0.4], [0.3, 0.43, 0.4], [0.5, 0.30, 0.3]]}
+    lifetime = {"columnHeaders": [{"name": n} for n in ["video", "views", "averageViewDuration", "averageViewPercentage"]],
+                "rows": [["yHyhG6nHsKs", 1200, 165, 31.5], ["k09qNviJ4oM", 300, 180, 29.0]]}
+    summary = {"columnHeaders": [{"name": n} for n in ["views", "averageViewDuration", "averageViewPercentage"]],
+               "rows": [[1200, 165, 31.5]]}
     def query(**kw):
         calls.setdefault("q", []).append(kw)
-        return Exec(retention if kw.get("dimensions") == "elapsedVideoTimeRatio" else report)
+        if kw.get("dimensions") == "elapsedVideoTimeRatio":
+            return Exec(retention)
+        if not kw.get("dimensions"):
+            return Exec(summary)
+        return Exec(lifetime if kw["startDate"] == "2005-04-01" else report)
     yta = _types.SimpleNamespace(reports=lambda: _types.SimpleNamespace(query=query))
     meta = {"items": [
         {"id": "yHyhG6nHsKs", "snippet": {"title": "Musk Will Win the AI Race - Here is Why", "publishedAt": "2026-08-27T15:00:00Z",
@@ -1069,8 +1145,8 @@ def _():
     yt = _types.SimpleNamespace(videos=lambda: _types.SimpleNamespace(list=lambda **kw: Exec(meta)))
 
     with tempfile.TemporaryDirectory() as d:
-        real = (ya.REACH_PATH, ya.TOKEN_PATH)
-        ya.REACH_PATH, ya.TOKEN_PATH = Path(d) / "reach.json", Path(d) / "token.json"
+        real = (ya.REACH_PATH, ya.TOKEN_PATH, ya.DAILY_REACH_PATH)
+        ya.REACH_PATH, ya.TOKEN_PATH, ya.DAILY_REACH_PATH = Path(d) / "reach.json", Path(d) / "token.json", Path(d) / "daily.json"
         try:
             csv_text = ("Content,Video title,Video publish time,Duration,Impressions,Impressions click-through rate (%),Views\n"
                         "Total,,,,54995,2.5,4060\n"
@@ -1081,17 +1157,41 @@ def _():
             with zipfile.ZipFile(buf, "w") as z:
                 z.writestr("Table data.csv", "﻿" + csv_text)
             assert ya.import_studio_export(buf.getvalue(), "export.zip")["videos"] == 2
+            # Studio's current export (2026-10): 'Thumbnail impressions' and 'Thumbnail
+            # click-through rate (%)', with Totals.csv giving the days it covers.
+            new_csv = ("Content,Video title,Video publish time,Duration,Thumbnail impressions,Thumbnail click-through rate (%),Views,Average view duration,Watch time (hours),Hypes\n"
+                       "Total,,,,54995,2.47,4060,0:02:55,132.776,0\n"
+                       "yHyhG6nHsKs,Musk Will Win the AI Race - Here is Why,\"Aug 27, 2026\",524,4604,4.69,903,0:02:51,16.5433,0\n"
+                       "k09qNviJ4oM,Everyone Fears AI Taking Jobs - Nobody Sees the Raise,\"Jul 20, 2026\",622,443,10.61,154,0:02:55,7.2795,0\n")
+            zbuf = _io.BytesIO()
+            with zipfile.ZipFile(zbuf, "w") as z:
+                z.writestr("Table data.csv", "\ufeff" + new_csv)
+                z.writestr("Totals.csv", "Date,Views\n2026-05-28,5\n2026-05-29,18\n2026-10-28,53\n")
+            res = ya.import_studio_export(zbuf.getvalue(), "Content 2026-05-28_2026-10-29 AI with Roz.zip")
+            assert res["videos"] == 2 and (res["first"], res["last"]) == ("2026-05-28", "2026-10-28"), res
+            assert ya.load_reach()["videos"]["yHyhG6nHsKs"] == {"impressions": 4604, "ctr": 4.69}
+            assert ya._parse_studio_export(new_csv.encode(), "Content 2026-05-28_2026-10-29 AI with Roz.csv")[1] == ("2026-05-28", "2026-10-29")
+            assert ya.import_studio_export(buf.getvalue(), "export.zip")["videos"] == 2
             rep = ya.video_report("28", services=(yta, yt))
             v0 = rep["videos"][0]
             assert v0["title"].startswith("Musk") and v0["duration_seconds"] == 524 and v0["impressions"] == 4604 and v0["ctr"] == 4.7
             assert v0["watch_hours"] == 42.9 and v0["avg_view_duration"] == 171
+            assert rep["reach"]["source"] == "studio" and rep["reach"]["daily_job"] is False
             assert calls["q"][0]["dimensions"] == "video" and calls["q"][0]["sort"] == "-views"
+            # A windowed report carries each video's lifetime average (a few views can average 0:00).
+            assert v0["lifetime"] == {"views": 1200, "avg_view_duration": 165, "avg_view_percentage": 31.5}
+            assert ya.video_report("lifetime", services=(yta, yt))["videos"][0]["lifetime"] is None
             t = rep["totals"]
+            # Total average view from raw minutes, not the per-video 0.1-hour rounding.
+            assert t["avg_view_duration"] == round((2574 + 438) * 60 / 1057), t
             assert t["views"] == 1057 and t["impressions"] == 5047 and abs(t["ctr"] - round((4604 * 4.7 + 443 * 10.6) / 100 / 5047 * 100, 1)) < 0.05
             ret = ya.retention("yHyhG6nHsKs", services=(yta, yt))
             assert calls["q"][-1]["filters"] == "video==yHyhG6nHsKs" and len(ret["points"]) == 6
+            assert ret["avg_view_duration"] == 165 and ret["avg_view_percentage"] == 31.5
             # Falls that start in the first 5 percent (0.01 and 0.03) are the opening; skipped.
             assert [round(x["t"], 2) for x in ret["drops"]] == [0.2, 0.3, 0.5], ret["drops"]
+            # The end screen's fall is skipped too.
+            assert ya.biggest_drops([{"t": 0.5, "watch": 0.3}, {"t": 0.9, "watch": 0.29}, {"t": 0.99, "watch": 0.1}]) == [{"t": 0.9, "drop": 0.01}]
             for bad in ("x", "abc/../../etc"):
                 try:
                     ya.retention(bad, services=(yta, yt)); raise AssertionError("bad id accepted")
@@ -1100,34 +1200,358 @@ def _():
             try:
                 ya.parse_studio_export(b"Video title,Views\nA,1\n"); raise AssertionError("bad csv accepted")
             except ValueError as e:
-                assert "Impressions" in str(e)
+                assert "impressions" in str(e)
+            # Daily reach reports (Reporting API): the job is made once, reports download
+            # once each, a newer report of the same day wins, CTR fractions become percents.
+            jobs, made, listed = [], [], []
+            def _create(body):
+                made.append(body); jobs.append({"id": "job1", "reportTypeId": body["reportTypeId"], "createTime": "2026-10-29T20:00:00Z"})
+                return Exec(jobs[-1])
+            pages = {None: {"reports": [{"id": "r1", "startTime": "2026-10-20T07:00:00Z", "createTime": "2026-10-29T21:00:00Z", "downloadUrl": "u1"},
+                                        {"id": "r2", "startTime": "2026-10-21T07:00:00Z", "createTime": "2026-10-29T21:00:00Z", "downloadUrl": "u2"}],
+                             "nextPageToken": "p2"},
+                     "p2": {"reports": [{"id": "r3", "startTime": "2026-10-20T07:00:00Z", "createTime": "2026-10-30T09:00:00Z", "downloadUrl": "u3"},
+                                        {"id": "r4", "startTime": "2026-10-22T07:00:00Z", "createTime": "2026-10-30T09:00:00Z", "downloadUrl": "u4"}]}}
+            def _reports_list(jobId, pageToken=None):
+                listed.append(pageToken); assert jobId == "job1"
+                return Exec(pages[pageToken])
+            yr = _types.SimpleNamespace(jobs=lambda: _types.SimpleNamespace(
+                list=lambda: Exec({"jobs": list(jobs)}), create=_create,
+                reports=lambda: _types.SimpleNamespace(list=_reports_list)))
+            head = "date,channel_id,video_id,video_thumbnail_impressions,video_thumbnail_impressions_ctr\n"
+            files = {"u1": head + "20261020,UC1,yHyhG6nHsKs,1000,0.01\n",           # superseded by u3
+                     "u2": head + "20261021,UC1,yHyhG6nHsKs,500,0.06\n20261021,UC1,k09qNviJ4oM,200,0.1\n",
+                     "u3": head + "20261020,UC1,yHyhG6nHsKs,1000,0.04\n",
+                     "u4": head + "20261022,UC1,k09qNviJ4oM,0,0\n"}             # a day with no impressions
+            assert ya.start_daily_reach(yr)["job_id"] == "job1" and ya.start_daily_reach(yr)["job_id"] == "job1"
+            assert len(made) == 1 and made[0]["reportTypeId"] == "channel_reach_basic_a1"
+            state = ya.sync_daily_reach(yr, fetch=lambda u: files[u].encode())
+            assert listed == [None, "p2"] and sorted(state["days"]) == ["2026-10-20", "2026-10-21", "2026-10-22"]
+            assert state["days"]["2026-10-20"]["videos"]["yHyhG6nHsKs"] == [1000, 0.04] and state["days"]["2026-10-22"]["videos"] == {}
+            ya.sync_daily_reach(yr, fetch=lambda u: 1 / 0)                       # within 6 hours: no API calls
+            assert listed == [None, "p2"]
+            agg = ya.daily_reach_for("2026-10-20", "2026-10-22")
+            assert agg["videos"]["yHyhG6nHsKs"] == {"impressions": 1500, "ctr": round((40 + 30) / 1500 * 100, 1)}
+            assert agg["videos"]["k09qNviJ4oM"] == {"impressions": 200, "ctr": 10.0} and (agg["first"], agg["days"]) == ("2026-10-20", 3)
+            assert ya._ctr_scale({"days": {"d": {"videos": {"v": [100, 4.7]}}}}) == 1.0     # already percents
+            # A window the daily reports cover uses them; lifetime keeps the Studio import.
+            real_window = ya.window
+            ya.window = lambda rk, today=None: ("2026-10-20", "2026-10-22") if rk != "lifetime" else ("2005-04-01", "2026-10-22")
+            try:
+                r7 = ya.video_report("7", services=(yta, yt))
+                assert r7["reach"]["source"] == "daily" and r7["reach"]["covers_window"] and r7["videos"][0]["impressions"] == 1500
+                assert ya.video_report("lifetime", services=(yta, yt))["reach"]["source"] == "studio"
+                ya.REACH_PATH.unlink()
+                rl = ya.video_report("lifetime", services=(yta, yt))
+                assert rl["reach"]["source"] == "daily" and rl["reach"]["covers_window"] is False
+            finally:
+                ya.window = real_window
             c = web_gui.app.test_client()
             st = c.get("/api/analytics/status").get_json()
-            assert st["success"] and st["connected"] is False and st["reach_videos"] == 2
+            assert st["success"] and st["connected"] is False and st["reach_videos"] == 0 and st["daily_job"] and st["daily_days"] == 3
+            assert c.post("/api/analytics/daily-reach/start").status_code == 401
+            assert ya.import_studio_export(buf.getvalue(), "export.zip")["videos"] == 2
             r = c.get("/api/analytics/videos?range=28")
             assert r.status_code == 401 and r.get_json()["connected"] is False
             assert c.get("/api/analytics/videos?range=bogus").status_code == 400
             assert c.post("/api/analytics/import-reach").status_code == 400
             real_ac = web_gui._anthropic_complete
             seen = {}
-            web_gui._anthropic_complete = lambda system, user, **kw: (seen.update(user=user) or "## What drives clicks\nNamed players.")
+            web_gui._anthropic_complete = lambda system, user, **kw: (seen.update(user=user, max_tokens=kw["max_tokens"]) or "## What drives clicks\nNamed players.")
             try:
                 r = c.post("/api/analytics/insights", json={"videos": rep["videos"], "start": rep["start"], "end": rep["end"]})
             finally:
                 web_gui._anthropic_complete = real_ac
             assert r.get_json()["success"] and "Musk Will Win" in seen["user"] and "8:44" in seen["user"] and "| 4.7 |" in seen["user"]
+            assert "| 1200 | 2:45 | 31.5" in seen["user"], seen["user"]
+            assert seen["max_tokens"] >= 10000      # room for all four sections
             assert c.post("/api/analytics/insights", json={}).status_code == 400
         finally:
-            ya.REACH_PATH, ya.TOKEN_PATH = real
+            ya.REACH_PATH, ya.TOKEN_PATH, ya.DAILY_REACH_PATH = real
     html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
     assert 'onclick="openAnalyticsModal()"' in html and "window.openAnalyticsModal = async function" in html
     assert "function drawRetention(box, points, drops, dur, avd)" in html
+    assert "range: 'lifetime'" in html and '<option value="lifetime" selected>' in html and "function fewViews(v, text)" in html
+    assert "function renderReachHelp(rc)" in html and "fetch('/api/analytics/daily-reach/start'" in html
     cont = open(os.path.join(os.path.dirname(APP), "scriptcraft-app-v3-container", "container_app.py"), encoding="utf-8").read()
-    for view in ("status", "connect", "disconnect", "videos", "retention", "import_reach", "insights"):
+    for view in ("status", "connect", "disconnect", "videos", "retention", "import_reach", "insights", "daily_reach_start"):
         assert f'"api_analytics_{view}",' in cont, view
     assert "feature_disabled_in_container" in html
-    return "report + metadata + imported CTR merged; impression-weighted CTR; 3 steepest drops; CSV and zip import; routes guard input"
+    return "report + metadata + lifetime averages merged; impressions/CTR from daily reach reports (job, sync, newest report per day) or the Studio import; 3 steepest drops; routes guard input"
 
+
+@check("Grok videos: an xAI credit / spending-limit refusal reads plainly and stops the batch; the script can be hand-edited and saved as a new cloud version")
+def _():
+    import queue
+    import tempfile
+    from pathlib import Path
+    import grpc
+    import xai_sdk
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+
+    class _Rpc(grpc.RpcError):
+        def __init__(self, code, details):
+            self._c, self._d = code, details
+        def code(self): return self._c
+        def details(self): return self._d
+        def __str__(self): return "<_InactiveRpcError of RPC that terminated with: …>"
+
+    credits = _Rpc(grpc.StatusCode.PERMISSION_DENIED, "Your team abc has either used all available "
+                   "credits or reached its monthly spending limit. To continue making API requests, …")
+    text, fatal = web_gui._grok_error_text(credits)
+    assert fatal and "console.x.ai" in text and "_InactiveRpcError" not in text, text
+    assert web_gui._grok_error_text(_Rpc(grpc.StatusCode.UNAUTHENTICATED, "bad key"))[1] is True
+    text, fatal = web_gui._grok_error_text(ValueError("Video did not respect moderation rules; URL is not available."))
+    assert not fatal and "moderation" in text
+    assert web_gui._grok_error_text(_Rpc(grpc.StatusCode.DEADLINE_EXCEEDED, "slow")) == ("DEADLINE_EXCEEDED: slow", False)
+
+    calls = []
+
+    class _Video:
+        def generate(self, **kw):
+            calls.append(kw["prompt"])
+            if len(calls) > 1:
+                raise credits
+            return types.SimpleNamespace(url="https://x.invalid/v.mp4")
+
+    class _Dl:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def raise_for_status(self): pass
+        def iter_content(self, chunk_size=0): yield b"mp4"
+
+    real = (xai_sdk.Client, web_gui.requests.get, web_gui._grok_get_output_dir,
+            web_gui._upscale_video_to_1080p, web_gui._persist_grok_video)
+    with tempfile.TemporaryDirectory() as td:
+        xai_sdk.Client = lambda api_key=None: types.SimpleNamespace(video=_Video())
+        web_gui.requests.get = lambda *a, **k: _Dl()
+        web_gui._grok_get_output_dir = lambda title=None: Path(td)
+        web_gui._upscale_video_to_1080p = lambda p: False
+        web_gui._persist_grok_video = lambda *a: None
+        sid = "offline-credits"
+        web_gui.grok_video_streams[sid] = q = queue.Queue()
+        try:
+            rows = [{"description": f"scene {n}", "search_term": f"t{n}", "grok_prompt": f"cine {n}",
+                     "grok_chalk_prompt": f"chalk {n}"} for n in range(3)]
+            web_gui._grok_generate_worker(sid, rows, "k", "T", "")
+        finally:
+            (xai_sdk.Client, web_gui.requests.get, web_gui._grok_get_output_dir,
+             web_gui._upscale_video_to_1080p, web_gui._persist_grok_video) = real
+            web_gui.grok_video_streams.pop(sid, None)
+    events = [q.get_nowait() for _ in range(q.qsize())]
+    done = events[-1]
+    assert len(calls) == 2, calls       # stopped at the refusal; 4 more clips never sent
+    assert done["type"] == "done" and done["generated_count"] == 1 and done["failed_count"] == 1
+    assert done["stopped_reason"] and "console.x.ai" in done["message"] and not done["cancelled"]
+    failed = [e for e in events if e["type"] == "video_failed"]
+    assert len(failed) == 1 and "_InactiveRpcError" not in failed[0]["message"]
+
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert "if (payload.stopped_reason) {" in html
+    assert 'onclick="startScriptEdit()"' in html and 'onclick="saveScriptEdit(true)"' in html
+    assert "function saveScriptEdit(toCloud)" in html and "newCopy: false," in html
+    assert "#mainScriptTab.script-editing h3 .script-hdr-btn" in html and "Undo last AI edit" not in html
+    assert "_refreshMainScriptBadge();" in html and html.count("_openScriptChanged(") >= 5  # badge after polish/refine/edit/undo
+    return "credit refusal → plain text + batch stops after 1 saved / 1 refused; editor saves a new version; badge refreshes after edits"
+
+
+@check("Grok video delete: the file goes from its recorded broll folder and the blob from its own Script-ID; the gallery never redraws a deleted clip")
+def _():
+    import tempfile
+    from pathlib import Path
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+
+    class ResourceNotFoundError(Exception):
+        pass
+
+    class _CC:
+        def __init__(self, fail=None):
+            self.fail, self.deleted = fail, []
+        def delete_blob(self, name):
+            if self.fail:
+                raise self.fail
+            self.deleted.append(name)
+
+    real = (web_gui._artifacts_enabled, web_gui._artifacts_container, web_gui._get_output_base_dir,
+            os.environ.get("HOME"))
+    c = web_gui.app.test_client()
+    with tempfile.TemporaryDirectory() as home:
+        os.environ["HOME"] = home
+        old = Path(home) / "iCloud" / "AI Loser" / "broll"     # a previous output folder
+        old.mkdir(parents=True)
+        clip = old / "grok_20261030_180214_0_cinematic_stadium_scoreboard.mp4"
+        stray = Path(home) / "notes" / "grok_x.mp4"
+        stray.parent.mkdir()
+        try:
+            web_gui._get_output_base_dir = lambda: Path(home) / "Final" / "AI Loser"
+            web_gui._artifacts_enabled = lambda: True
+            cc = _CC()
+            web_gui._artifacts_container = lambda: cc
+            clip.write_bytes(b"mp4")
+            r = c.post("/api/grok-videos/delete", json={"filename": clip.name, "path": str(clip),
+                                                        "script_id": "ld-a6d792f14b"}).get_json()
+            assert r["success"] and not clip.exists() and r["deleted"] == [str(clip.resolve())], r
+            assert cc.deleted == [f"ld-a6d792f14b/videos/{clip.name}", f"ld-a6d792f14b/videos/{clip.name}.json"]
+            stray.write_bytes(b"x")                              # not in a broll folder: left alone
+            c.post("/api/grok-videos/delete", json={"filename": stray.name, "path": str(stray)})
+            assert stray.exists()
+            cc.fail = ResourceNotFoundError("The specified blob does not exist.")
+            assert c.post("/api/grok-videos/delete", json={"filename": clip.name, "script_id": "ld-1"}).get_json()["success"]
+            cc.fail = RuntimeError("AuthorizationFailure")
+            r = c.post("/api/grok-videos/delete", json={"filename": clip.name, "script_id": "ld-1"})
+            assert r.status_code == 502 and "come back on reload" in r.get_json()["error"]
+        finally:
+            (web_gui._artifacts_enabled, web_gui._artifacts_container, web_gui._get_output_base_dir) = real[:3]
+            os.environ["HOME"] = real[3]
+
+    src = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    assert '"local_path": str(local_path),' in src and '"local_path": meta.get("local_path", ""),' in src
+    assert 'video_entry["script_id"] = _safe_blob_id(script_id)' in src
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert "grokVideos = _withoutDeletedGrok(grokVideos);" in html              # gallery
+    assert "p.grokVideos = _withoutDeletedGrok(grokVideos);" in html            # live batch redraws
+    assert "window.currentGrokVideos = _withoutDeletedGrok(list);" in html      # end-of-batch Azure refresh
+    assert "window._deletedGrokVideos.add(filename);" in html and "script_id: entry.script_id ||" in html
+    return "recorded path from an old output folder deleted, stray mp4 kept; blob under the clip's Script-ID; real blob errors → 502; deleted clips filtered from every redraw"
+
+
+
+@check("B-roll Regenerate in the Process Script dialog + Execution Log; a refined/edited script is what later runs and redraws use (never the old copy)")
+def _():
+    import logging
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+    import linedrive_azure.agents as agents  # noqa: PLC0415
+
+    class _Agent:
+        def generate_broll_table_with_timecodes(self, **kw):
+            assert "Host:" in kw["script_content"] and kw["script_title"] == "AI Loser"
+            return {"success": True, "table": "| Time | Term |\n|---|---|\n| 0:00 | stadium |",
+                    "parsed_data": [{"term": "stadium"}]}
+
+    seen = []
+    class _H(logging.Handler):
+        def emit(self, rec):
+            seen.append(rec.getMessage())
+    h = _H()
+    web_gui.logger.addHandler(h)
+    real = getattr(agents, "ScriptBRollAgentClient", None)
+    agents.ScriptBRollAgentClient = _Agent
+    try:
+        d = web_gui.app.test_client().post("/api/broll/regenerate", json={
+            "script": "Title: AI Loser\n\nHost: The scoreboard says it all.", "title": "AI Loser"}).get_json()
+    finally:
+        agents.ScriptBRollAgentClient = real
+        web_gui.logger.removeHandler(h)
+    assert d["success"] and "stadium" in d["broll_table"] and d["broll_rows"], d
+    assert any(m.startswith("🔄 Regenerating B-roll table for 'AI Loser'") for m in seen), seen
+    assert any(m.startswith("🔄 Regenerated B-roll table") for m in seen), seen
+
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert 'id="spsBrollRegenBtn" onclick="regenerateBrollTable(true)"' in html          # dialog button
+    assert 'data-sps-current="broll_table"' in html and "spsRefreshBrollInfo();\n      spsRenderStepper();" in html
+    fn = html[html.index("async function regenerateBrollTable(fromDialog)"):html.index("function loadBrollTableFromFile()")]
+    assert "addToDebugLog(" in fn and "addProgressMessage(" in fn                      # Execution Log / live log
+    assert "🔄 Regenerating the B-roll table" in fn and "⏳ Still waiting on the B-roll agent" in fn
+    assert "✅ B-roll table regenerated in " in fn and "❌ B-roll table regeneration failed after " in fn
+    assert "window.currentResultPayload.brollTable = window._currentBrollTable;" in fn  # survives redraws
+    assert "ta.value : (window.currentScript" in fn                                     # dialog's own script
+    assert html.count("_openScriptChanged();") == 4                                      # polish, undo, refine, hand edit
+    helper = html[html.index("function _openScriptChanged()"):html.index("function _updateScriptEditBadge()")]
+    assert "window.currentResultPayload.mainScript = text;" in helper                    # redraws keep the refined script
+    assert "ta.value = text;" in helper and "ta.value.trim() ===" not in helper           # Process Script runs on it too
+    assert "if (window.currentResultPayload) window.currentResultPayload.mainScript = updated;" in html  # Title Picker
+    return "endpoint logs start + result; dialog button, table-state line, Execution Log start/heartbeat/result, payload updated; Refine/Polish/edit/Undo/Title update the Process input + redraw payload"
+
+
+@check("Refine never returns a cut-off script: long scripts are refined as exact edits; a max_tokens reply is refused (Refine + Polish)")
+def _():
+    os.environ.setdefault("PORT", "0")
+    import json as _json
+    import web_gui  # noqa: PLC0415
+
+    blk = "[PRODUCTION BEGIN]\n[GROK IMAGINE / RESOLVE] a dark navy chart\n[PRODUCTION END]"
+    body = "".join(f"## Chapter {i}\n\nHost: The Free Agents story keeps moving, part {i}.\n"
+                   f"It’s a race for “developer attention” in round {i}.\n\n{blk}\n\n" for i in range(700))
+    script = "Title: OpenAI Will Lose\n\n" + body + "Until next time."
+    masked, blocks = web_gui._mask_production_blocks(script)
+    assert len(masked) > web_gui._REFINE_WHOLE_MAX_CHARS and len(blocks) == 700
+
+    # Edit application: unique, all, curly-quote/whitespace tolerant, ambiguous + placeholder refused.
+    t, n, skipped = web_gui._apply_refine_edits(masked, [
+        {"find": "Free Agents", "replace": "Developer Mindshare", "all": True},
+        {"find": 'It\'s a race for "developer attention" in round 3.', "replace": "It's a race in round 3."},
+        {"find": "Host:", "replace": "Narrator:"},                        # ambiguous: skipped
+        {"find": "in", "replace": "XX", "all": True},                    # too short for all: skipped
+        {"find": "[[PRODUCTION_BLOCK_0]]", "replace": ""},              # would drop a block: skipped
+        {"find": "Until next time.", "replace": "See you next week."},
+    ])
+    assert n == 3 and len(skipped) == 3, (n, skipped)
+    assert "Free Agents" not in t and t.count("Developer Mindshare") == 700
+    assert "It's a race in round 3." in t and "round 3.\n" in t and "See you next week." in t
+    assert web_gui._restore_production_blocks(t, blocks)[1] == []
+
+    calls = []
+    def fake(system, user, max_tokens=4000, **kw):
+        calls.append((system, max_tokens, kw.get("require_complete")))
+        return "Here you go:\n```json\n" + _json.dumps([
+            {"find": "Free Agents", "replace": "Developer Mindshare", "all": True},
+            {"find": "not in the script at all", "replace": "x"}]) + "\n```"
+    real = web_gui._anthropic_complete
+    web_gui._anthropic_complete = fake
+    try:
+        out, used, note = web_gui._refine_script(script, "Rename Free Agents to Developer Mindshare")
+        assert out.endswith("Until next time.") and out.count(blk) == 700 and "Free Agents" not in out
+        assert len(out) > len(script) - 2000 and "1 of 2 edits could not be matched" in note, note
+        assert "JSON array of edits" in calls[0][0] and calls[0][1] == 16000 and calls[0][2] is True
+
+        # A short script goes whole; a cut-off whole reply falls back to edits.
+        short = "Title: T\n\nHost: Free Agents rule.\n\nUntil next time."
+        seq = []
+        def cut_then_edits(system, user, max_tokens=4000, **kw):
+            seq.append(max_tokens)
+            if max_tokens == 32000:
+                raise web_gui.ClaudeReplyCutOff("cut")
+            return '[{"find": "Free Agents rule.", "replace": "Developer Mindshare rules."}]'
+        web_gui._anthropic_complete = cut_then_edits
+        out, _, note = web_gui._refine_script(short, "rename")
+        assert seq == [32000, 16000] and out == "Title: T\n\nHost: Developer Mindshare rules.\n\nUntil next time." and not note
+
+        web_gui._anthropic_complete = lambda *a, **k: '[{"find": "nowhere", "replace": "x"}]'
+        try:
+            web_gui._refine_script(script, "rename"); raise AssertionError("expected refusal")
+        except RuntimeError as e:
+            assert "nothing was changed" in str(e)
+    finally:
+        web_gui._anthropic_complete = real
+
+    # The helper refuses a max_tokens reply when asked to.
+    class _Resp:
+        stop_reason, usage = "max_tokens", None
+        content = [type("B", (), {"type": "text", "text": "half a scri"})()]
+    class _Client:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                return _Resp()
+    real_c = web_gui._get_anthropic_client
+    web_gui._get_anthropic_client = lambda timeout=60.0: _Client()
+    try:
+        assert web_gui._anthropic_complete("s", "u", use_web_search=False) == "half a scri"
+        try:
+            web_gui._anthropic_complete("s", "u", use_web_search=False, max_tokens=32000, require_complete=True)
+            raise AssertionError("expected ClaudeReplyCutOff")
+        except web_gui.ClaudeReplyCutOff as e:
+            assert "32,000-token reply limit" in str(e)
+    finally:
+        web_gui._get_anthropic_client = real_c
+    src = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    assert src.count("require_complete=True") >= 2 and "except ClaudeReplyCutOff as e:" in src
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert "(data.note ? '<br>⚠️ '" in html
+    return "700-chapter script refined by edits (blocks + ending intact, skipped edit reported); short script cut off → edits; no placeable edit → unchanged; max_tokens reply refused"
 
 if __name__ == "__main__":
     width = max(len(n) for n, _, _ in RESULTS)

@@ -483,6 +483,18 @@
             color: #ffffff;
         }
         .script-hdr-btn:disabled { opacity: 0.6; cursor: default; }
+        /* Hand-edit mode: the editor replaces the rendered script, and the
+           other header actions hide so none of them acts on the old text. */
+        #mainScriptTab.script-editing h3 .script-hdr-btn,
+        #mainScriptTab.script-editing h3 > div,
+        #mainScriptTab.script-editing #refinePanel { display: none !important; }
+        #mainScriptEditor {
+            display: none; width: 100%; box-sizing: border-box; min-height: 65vh;
+            padding: 14px 16px; background: #0f172a; color: #e2e8f0;
+            border: 1px solid #334155; border-radius: 8px; resize: vertical;
+            font-family: inherit; font-size: 15px; line-height: 1.6;
+        }
+        #mainScriptEditor:focus { outline: none; border-color: #0ea5e9; }
 
         /* Mobile-only short label letter; hidden on desktop. */
         .label-mobile-voice { display: none; }
@@ -1213,6 +1225,10 @@
         .an-video a { color: #e2e8f0; text-decoration: none; font-weight: 600; line-height: 1.3; }
         .an-video a:hover { text-decoration: underline; }
         .an-muted { color: #64748b; }
+        .an-reach-help { background: #111827; border: 1px solid #334155; border-left: 3px solid #fbbf24; border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px; color: #cbd5e1; }
+        .an-reach-help ul { margin: 6px 0 0; padding-left: 18px; }
+        .an-reach-help li { margin: 7px 0; line-height: 1.55; }
+        .an-reach-help .tg-btn { height: 30px; padding: 0 10px; font-size: 12px; margin: 0 4px; }
         .an-panel { margin-top: 14px; background: #0b1220; border: 1px solid #1f2937; border-radius: 10px; padding: 12px 14px; }
         .an-panel h3 { margin: 0 0 4px; font-size: 1em; }
         .an-panel .sub { font-size: 12px; color: #94a3b8; margin-bottom: 8px; }
@@ -1605,11 +1621,12 @@
                     window._prePolishScript = script;
                     window.currentScript = data.polished_script || script;
                     try { renderMarkdownContent(window.currentScript, null, null, null); } catch (_e) {}
+                    _openScriptChanged();
                     const revertBtn = document.getElementById('revertPolishBtn');
                     if (revertBtn) revertBtn.style.display = '';
                     statusEl.innerHTML = '✅ Polished with <strong>' + (data.model || 'Claude')
                         + '</strong>. Exports and downloads now use the polished version. '
-                        + 'Use “Undo Polish” to revert.';
+                        + 'Use “Undo last edit” to revert.';
                 } catch (e) {
                     statusEl.textContent = '❌ ' + e;
                 } finally {
@@ -1622,6 +1639,7 @@
                 window.currentScript = window._prePolishScript;
                 window._prePolishScript = null;
                 try { renderMarkdownContent(window.currentScript, null, null, null); } catch (_e) {}
+                _openScriptChanged();
                 const revertBtn = document.getElementById('revertPolishBtn');
                 if (revertBtn) revertBtn.style.display = 'none';
                 const statusEl = document.getElementById('polishScriptStatus');
@@ -1758,11 +1776,12 @@
                     });
                     const data = await r.json();
                     if (!data.success) { statusEl.textContent = '❌ ' + (data.error || 'Refine failed'); return; }
-                    // Stash the pre-edit version so "Undo last AI edit" can revert
-                    // (shared with Polish — one undo step for the last AI change).
+                    // Stash the pre-edit version so "Undo last edit" can revert
+                    // (shared with Polish and hand edits: one undo step).
                     window._prePolishScript = script;
                     window.currentScript = data.updated_script || script;
                     try { renderMarkdownContent(window.currentScript, null, null, null); } catch (_e) {}
+                    _openScriptChanged();
                     const revertBtn = document.getElementById('revertPolishBtn');
                     if (revertBtn) revertBtn.style.display = '';
                     // Auto-save the refined script to the cloud as a new version
@@ -1781,13 +1800,149 @@
                     }
                     statusEl.innerHTML = '✅ Updated with <strong>' + (data.model || label)
                         + '</strong>. Exports/downloads now use the new version.' + cloudNote
-                        + ' Refine again to keep iterating, or “Undo last AI edit”.';
+                        + ' Refine again to keep iterating, or “Undo last edit”.'
+                        + (data.note ? '<br>⚠️ ' + String(data.note).replace(/&/g, '&amp;').replace(/</g, '&lt;') : '');
                 } catch (e) {
                     statusEl.textContent = '❌ ' + e;
                 } finally {
                     _stopBtnTimer(btn, timer);
                 }
             }
+
+            // ---- Edit the script by hand, then apply it or save it to the cloud ----
+            // The editor holds the full text, production blocks included even
+            // when the viewer hides them. "Save to cloud" adds a new version of
+            // this script (like a Refine); "Undo last edit" reverts either way.
+            window._scriptEditOrig = null;
+            function _scriptEditOpen() {
+                const ta = document.getElementById('mainScriptEditor');
+                return !!(ta && ta.style.display === 'block' && window._scriptEditOrig !== null);
+            }
+            function _refreshMainScriptBadge() {
+                const old = document.querySelector('#mainScriptTab h3 > div');
+                if (old) old.outerHTML = heygenDurationBadge(window.currentScript || '', '#10b981');
+            }
+            // After Polish / Refine / a hand edit / Undo, every other copy of
+            // the open script follows it. Process Script runs on #scriptInput
+            // and result redraws (each new Grok clip, a batch ending) re-show
+            // currentResultPayload.mainScript; either one still holding the old
+            // text brought the pre-edit script back and lost the edits.
+            function _openScriptChanged() {
+                _refreshMainScriptBadge();
+                const text = window.currentScript || '';
+                if (window.currentResultPayload) window.currentResultPayload.mainScript = text;
+                const contentDiv = document.getElementById('mainScriptContent');
+                if (contentDiv) contentDiv.setAttribute('data-original-markdown', text);
+                const ta = document.getElementById('scriptInput');
+                if (ta && ta.value !== text) {
+                    ta.value = text;
+                    if (typeof updateScriptInputDurationBadge === 'function') { try { updateScriptInputDurationBadge(); } catch (_) {} }
+                    if (typeof renderScriptInputPreview === 'function') { try { renderScriptInputPreview(); } catch (_) {} }
+                }
+            }
+            function _updateScriptEditBadge() {
+                const ta = document.getElementById('mainScriptEditor');
+                const b = document.getElementById('scriptEditBadge');
+                if (ta && b) b.textContent = estimateHeyGenDuration(ta.value).label;
+            }
+            function startScriptEdit() {
+                const ta = document.getElementById('mainScriptEditor');
+                const statusEl = document.getElementById('polishScriptStatus');
+                const script = window.currentScript || '';
+                if (!ta) return;
+                if (!script.trim()) {
+                    if (statusEl) { statusEl.style.display = 'block'; statusEl.textContent = '❌ No script yet — create or load one first.'; }
+                    return;
+                }
+                window._scriptEditOrig = script;
+                ta.value = script;
+                ta.oninput = _updateScriptEditBadge;
+                ta.onkeydown = (e) => {
+                    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveScriptEdit(true); }
+                };
+                document.getElementById('mainScriptTab').classList.add('script-editing');
+                document.getElementById('mainScriptContent').style.display = 'none';
+                document.getElementById('scriptEditBar').style.display = 'flex';
+                ta.style.display = 'block';
+                if (statusEl) statusEl.style.display = 'none';
+                _updateScriptEditBadge();
+                ta.focus();
+                ta.setSelectionRange(0, 0);
+                ta.scrollTop = 0;
+            }
+            function _endScriptEdit() {
+                window._scriptEditOrig = null;
+                document.getElementById('mainScriptTab')?.classList.remove('script-editing');
+                const ta = document.getElementById('mainScriptEditor');
+                if (ta) ta.style.display = 'none';
+                const bar = document.getElementById('scriptEditBar');
+                if (bar) bar.style.display = 'none';
+                const content = document.getElementById('mainScriptContent');
+                if (content) content.style.display = '';
+            }
+            function cancelScriptEdit() {
+                const ta = document.getElementById('mainScriptEditor');
+                if (ta && ta.value !== window._scriptEditOrig && !confirm('Discard your edits?')) return;
+                _endScriptEdit();
+            }
+            async function saveScriptEdit(toCloud) {
+                const ta = document.getElementById('mainScriptEditor');
+                const editStatus = document.getElementById('scriptEditStatus');
+                const statusEl = document.getElementById('polishScriptStatus');
+                const show = (m) => { if (statusEl) { statusEl.style.display = 'block'; statusEl.innerHTML = m; } };
+                if (!_scriptEditOpen()) return;
+                const text = ta.value;
+                if (!text.trim()) { editStatus.textContent = '❌ The script is empty. Cancel keeps the old one.'; return; }
+                const before = window.currentScript || '';
+                const changed = text !== before;
+                const finish = () => {
+                    if (changed) {
+                        window._prePolishScript = before;
+                        const revertBtn = document.getElementById('revertPolishBtn');
+                        if (revertBtn) revertBtn.style.display = '';
+                    }
+                    _endScriptEdit();
+                    try { renderMarkdownContent(window.currentScript, null, null, null); } catch (_e) {}
+                    _openScriptChanged();
+                };
+                if (!toCloud || !changed) {
+                    window.currentScript = text;
+                    finish();
+                    show(!changed ? 'No changes.'
+                        : '✅ Edits applied. Exports and downloads use them; they are not in the cloud yet.');
+                    return;
+                }
+                const btn = document.getElementById('scriptEditSaveBtn');
+                const timer = _startBtnTimer(btn, 'Saving to cloud');
+                const others = ['scriptEditApplyBtn', 'scriptEditCancelBtn'].map(id => document.getElementById(id));
+                others.forEach(b => { if (b) b.disabled = true; });
+                ta.readOnly = true;
+                const hadId = !!window.currentScriptId;
+                window.currentScript = text;
+                try {
+                    const d = await _saveScriptCopyToCloud({
+                        title: window.currentScriptTitle || '',
+                        newCopy: false,
+                        scriptId: window.currentScriptId || ''
+                    });
+                    finish();
+                    show('☁️ Saved your edits to the cloud as '
+                        + (hadId ? 'a new version' : 'a new script') + ' (' + (d.version_id || '') + '). '
+                        + 'Pull it later via <strong>Open Script → From Cloud</strong>, or “Undo last edit”.');
+                } catch (e) {
+                    // Keep the editor open with the text so the save can be retried.
+                    window.currentScript = before;
+                    editStatus.textContent = '❌ Not saved: ' + (e.message || e);
+                } finally {
+                    _stopBtnTimer(btn, timer);
+                    others.forEach(b => { if (b) b.disabled = false; });
+                    ta.readOnly = false;
+                }
+            }
+            window.addEventListener('beforeunload', (e) => {
+                const ta = document.getElementById('mainScriptEditor');
+                if (_scriptEditOpen() && ta.value !== window._scriptEditOrig) { e.preventDefault(); e.returnValue = ''; }
+            });
 
             function toggleWorkflowDocs() {
                 const body = document.getElementById('mobileWorkflowDocs');
@@ -3886,15 +4041,21 @@ Time management content here...`;
                         // the previously generated videos instead of replacing
                         // them). Falls back to this run's list if unavailable.
                         _restoreGrokVideos(window.currentScriptId, finalList).then(list => {
-                            window.currentGrokVideos = list;
-                            try { rerenderCurrentResultWithGrokVideos(list); } catch (_) {}
+                            window.currentGrokVideos = _withoutDeletedGrok(list);
+                            try { rerenderCurrentResultWithGrokVideos(window.currentGrokVideos); } catch (_) {}
                         });
-                        addProgressMessage(
-                            cancelled
-                                ? `🛑 Grok generation stopped — kept ${payload.generated_count}/${payload.total_requested} videos`
-                                : `✅ Grok videos complete: ${payload.generated_count}/${payload.total_requested} (failed: ${payload.failed_count})`,
-                            cancelled ? 'info' : 'success'
-                        );
+                        if (payload.stopped_reason) {
+                            // xAI refused the account (credits / spending limit / key):
+                            // every later clip would fail too, so the server stopped.
+                            addProgressMessage(payload.message, 'error');
+                        } else {
+                            addProgressMessage(
+                                cancelled
+                                    ? `🛑 Grok generation stopped — kept ${payload.generated_count}/${payload.total_requested} videos`
+                                    : `✅ Grok videos complete: ${payload.generated_count}/${payload.total_requested} (failed: ${payload.failed_count})`,
+                                cancelled ? 'info' : 'success'
+                            );
+                        }
                         if (payload.output_dir) {
                             addProgressMessage(`📁 Saved to: ${payload.output_dir}`, 'info');
                         }
@@ -4452,18 +4613,35 @@ Time management content here...`;
             _downloadMediaZip({ title: title, videos: videos }, 'grok-videos.zip');
         }
 
+        // Deleted Grok clips, by filename. A running batch, its final Azure
+        // refresh and every re-render draw from lists that may still hold a
+        // clip deleted moments ago, so all of them are filtered through this.
+        window._deletedGrokVideos = window._deletedGrokVideos || new Set();
+        function _grokVideoName(v) {
+            return v && v.filename ? String(v.filename).split('/').pop() : '';
+        }
+        function _withoutDeletedGrok(list) {
+            return (list || []).filter(v => !window._deletedGrokVideos.has(_grokVideoName(v)));
+        }
+
         async function deleteGrokVideo(filename, cardId) {
             if (!filename) return;
-            if (!confirm(`Delete "${filename}"?\n\nThe video file will be removed from disk (B-roll directory) and from this gallery. This cannot be undone.`)) {
+            if (!confirm(`Delete "${filename}"?\n\nThe video file will be removed from disk (B-roll directory), from the cloud copy, and from this gallery. This cannot be undone.`)) {
                 return;
             }
+            const entry = (window.grokVideosData || []).find(v => _grokVideoName(v) === filename) || {};
+            const recordedPath = entry.local_path
+                || (entry.filename && String(entry.filename).startsWith('/') ? entry.filename : '');
             try {
                 const res = await fetch('/api/grok-videos/delete', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         filename: filename,
-                        script_id: window.currentScriptId || '',
+                        path: recordedPath,
+                        // The Script-ID the clip was saved under, which can
+                        // differ from the open script's after a copy is made.
+                        script_id: entry.script_id || window.currentScriptId || '',
                     }),
                 });
                 const data = await res.json().catch(() => ({}));
@@ -4471,18 +4649,18 @@ Time management content here...`;
                     alert('❌ Delete failed: ' + (data.error || `HTTP ${res.status}`));
                     return;
                 }
-                // Remove from in-memory list
-                if (Array.isArray(window.grokVideosData)) {
-                    window.grokVideosData = window.grokVideosData.filter(v => {
-                        const f = v && v.filename ? v.filename.split('/').pop() : '';
-                        return f !== filename;
-                    });
+                window._deletedGrokVideos.add(filename);
+                window.grokVideosData = _withoutDeletedGrok(window.grokVideosData);
+                window.currentGrokVideos = _withoutDeletedGrok(window.currentGrokVideos);
+                if (window.currentResultPayload) {
+                    window.currentResultPayload.grokVideos = _withoutDeletedGrok(window.currentResultPayload.grokVideos);
                 }
-                // Remove the card from the DOM
                 const card = document.getElementById(cardId);
                 if (card && card.parentNode) {
                     card.parentNode.removeChild(card);
                 }
+                const count = document.getElementById('grokVideoCount');
+                if (count) count.textContent = String(window.grokVideosData.length);
             } catch (err) {
                 alert('❌ Delete failed: ' + err.message);
             }
@@ -4490,11 +4668,12 @@ Time management content here...`;
         
         // Function to render Grok AI-generated video gallery
         function renderGrokVideosGallery(grokVideos) {
-            if (!grokVideos || grokVideos.length === 0) return '';
-            
+            grokVideos = _withoutDeletedGrok(grokVideos);
+            if (grokVideos.length === 0) return '';
+
             window.grokVideosData = grokVideos;
             let html = `<div class="thumbnail-gallery">
-                <h3><img src="/static/grok_icon.png" alt="Grok" style="height:24px; width:auto; vertical-align:middle; margin-right:6px;"> Grok AI Generated Videos (${grokVideos.length} videos)
+                <h3><img src="/static/grok_icon.png" alt="Grok" style="height:24px; width:auto; vertical-align:middle; margin-right:6px;"> Grok AI Generated Videos (<span id="grokVideoCount">${grokVideos.length}</span> videos)
                     <button onclick="downloadAllGrokVideos()" style="margin-left:12px;padding:6px 12px;background:#2563eb;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;" title="Download all Grok videos as a ZIP">⬇️ Download All</button>
                     <button onclick="upscaleSelectedGrokVideos()" style="margin-left:8px;padding:6px 12px;background:#7c3aed;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;" title="Upscale the checked videos to 1080p, one at a time">⬆️ Upscale Selected → 1080p</button>
                 </h3>
@@ -4509,8 +4688,12 @@ Time management content here...`;
                 html += `<div id="${cardId}" data-filename="${escapeHtml(fname || '')}" style="background: #1e293b; border: 1px solid #334155; border-radius: 8px; overflow: hidden;">
                     <div style="position: relative; padding-top: 56.25%; background: #0f172a;">`;
                 if (videoSrc) {
+                    // The local file first; the cloud copy when the local one is
+                    // in another output folder (the browser tries the next source).
+                    const cloudSrc = (fname && /^https?:/.test(vid.url || '')) ? vid.url : '';
                     html += `<video controls style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover;" preload="metadata">
                         <source src="${videoSrc}" type="video/mp4">
+                        ${cloudSrc ? `<source src="${escapeHtml(cloudSrc)}" type="video/mp4">` : ''}
                         Your browser does not support video playback.
                     </video>`;
                 } else {
@@ -4585,9 +4768,11 @@ Time management content here...`;
                             : data.url;
                         if (srcEl) { srcEl.setAttribute('src', newSrc); if (vEl) vEl.load(); }
                     }
-                    if (window.grokVideosData && window.grokVideosData[index]) {
-                        window.grokVideosData[index].resolution = data.resolution || '1080p';
-                        if (data.url) window.grokVideosData[index].url = data.url;
+                    // By filename: a delete shortens the list, so card indexes drift.
+                    const entry = (window.grokVideosData || []).find(v => _grokVideoName(v) === fname);
+                    if (entry) {
+                        entry.resolution = data.resolution || '1080p';
+                        if (data.url) entry.url = data.url;
                     }
                     cb.checked = false;
                     if (statusEl) statusEl.innerHTML = data.already
@@ -4691,7 +4876,7 @@ Time management content here...`;
             if (!window.currentResultPayload) return;
 
             const p = window.currentResultPayload;
-            p.grokVideos = grokVideos;
+            p.grokVideos = _withoutDeletedGrok(grokVideos);
             if (p.brollRows) window._currentBrollRows = p.brollRows;
 
             const tabbedHTML = createTabbedInterface(
@@ -5420,24 +5605,63 @@ Time management content here...`;
         // script (the normal Process flow skips the agent when a table already
         // exists, which can leave a partial/stale table). Replaces the table +
         // rows in place so Shutterstock and Grok use the new one.
-        async function regenerateBrollTable() {
+        // fromDialog: the Process Script dialog's button. It regenerates from
+        // the script that dialog will process (#scriptInput, which can be a
+        // different file than the open one) and reports in its B-Roll stage.
+        async function regenerateBrollTable(fromDialog) {
             const statusEl = document.getElementById('brollRegenStatus');
-            const show = (m) => { if (statusEl) { statusEl.style.display = 'block'; statusEl.innerHTML = m; } };
-            const script = (window.currentScript || '').trim();
-            if (!script) { show('❌ No script loaded — open or create a script first.'); return; }
-            const btn = document.getElementById('brollRegenBtn');
-            const timer = btn ? _startBtnTimer(btn, 'Regenerating B-roll') : null;
+            const spsRes = fromDialog ? document.querySelector('[data-sps-result="broll_table"]') : null;
+            const show = (m, color) => {
+                if (statusEl) { statusEl.style.display = 'block'; statusEl.innerHTML = m; }
+                if (spsRes) { spsRes.style.display = 'block'; spsRes.style.color = color || '#93c5fd'; spsRes.innerHTML = m; }
+            };
+            // Execution Log: the live Progress Log while a run is going (its
+            // log is copied over the Execution Log when the run ends), else
+            // the Execution Log itself, like the other standalone buttons.
+            const log = (m, type) => {
+                const prog = document.getElementById('progress');
+                if (prog && prog.style.display === 'block' && typeof addProgressMessage === 'function') addProgressMessage(m, type || 'info');
+                else if (typeof addToDebugLog === 'function') addToDebugLog(m.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'));
+            };
+            const ta = document.getElementById('scriptInput');
+            const script = ((fromDialog && ta && ta.value.trim()) ? ta.value : (window.currentScript || '')).trim();
+            if (!script) { show('❌ No script loaded — open or create a script first.', '#ef4444'); return; }
+            const btns = ['brollRegenBtn', 'spsBrollRegenBtn'].map(id => document.getElementById(id)).filter(Boolean);
+            if (btns.some(b => b.disabled)) return;  // already regenerating
+            const timers = btns.map(b => _startBtnTimer(b, 'Regenerating B-roll'));
+            const title = (fromDialog && typeof _parseScriptTitleFromText === 'function' && _parseScriptTitleFromText(script))
+                || window.currentScriptTitle || '';
+            const t0 = Date.now();
+            const secs = () => Math.round((Date.now() - t0) / 1000);
             document.body.style.cursor = 'wait';
+            if (typeof spsSetStageStatus === 'function') spsSetStageStatus('broll_table', 'active');
             show('🔄 Calling the B-roll agent on the current script… (can take ~30-90s)');
+            const words = (typeof estimateHeyGenDuration === 'function') ? estimateHeyGenDuration(script).words : 0;
+            log('🔄 Regenerating the B-roll table' + (title ? ' for “' + title + '”' : '')
+                + (words ? ' (' + words.toLocaleString() + ' spoken words)' : '')
+                + ' — the B-roll agent usually takes 30-90 s…');
+            const beat = setInterval(() => log('⏳ Still waiting on the B-roll agent… (' + secs() + 's)'), 15000);
             try {
                 const r = await fetch('/api/broll/regenerate', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ script: script, title: window.currentScriptTitle || '' })
+                    body: JSON.stringify({ script: script, title: title })
                 });
                 const d = await r.json();
-                if (!d.success) { show('❌ ' + (d.error || 'Regeneration failed')); return; }
+                if (!d.success) {
+                    show('❌ ' + (d.error || 'Regeneration failed'), '#ef4444');
+                    log('❌ B-roll table regeneration failed after ' + secs() + 's: ' + (d.error || 'unknown error'), 'error');
+                    if (typeof spsSetStageStatus === 'function') spsSetStageStatus('broll_table', 'error');
+                    return;
+                }
                 window._currentBrollTable = d.broll_table || '';
                 window._currentBrollRows = d.broll_rows || [];
+                // Result redraws (e.g. each new Grok clip) rebuild the tabs from
+                // the payload, so it must carry the new table too.
+                if (window.currentResultPayload) {
+                    window.currentResultPayload.brollTable = window._currentBrollTable;
+                    window.currentResultPayload.brollRows = window._currentBrollRows;
+                }
+                if (!document.getElementById('brollTableContent')) _ensureTabsForLoad();
                 const div = document.getElementById('brollTableContent');
                 if (div) { try { div.innerHTML = renderBrollTableMarkdown(window._currentBrollTable, window._currentBrollRows); } catch (_e) {} }
                 // Best-effort: refresh the Shutterstock tab from the new table.
@@ -5449,11 +5673,20 @@ Time management content here...`;
                 } catch (_e) {}
                 const n = (window._currentBrollRows || []).length;
                 show('✅ B-roll table regenerated' + (n ? ' (' + n + ' rows)' : '')
-                    + '. Shutterstock &amp; Grok video generation now use this table.');
-            } catch (e) { show('❌ ' + (e.message || e)); }
+                    + '. Shutterstock &amp; Grok video generation now use this table.', '#10b981');
+                log('✅ B-roll table regenerated in ' + secs() + 's' + (n ? ': ' + n + ' rows' : '')
+                    + '. Shutterstock & Grok videos now use it (see the B-Roll Table tab).', 'success');
+                if (typeof spsSetStageStatus === 'function') spsSetStageStatus('broll_table', 'done');
+            } catch (e) {
+                show('❌ ' + (e.message || e), '#ef4444');
+                log('❌ B-roll table regeneration failed after ' + secs() + 's: ' + (e.message || e), 'error');
+                if (typeof spsSetStageStatus === 'function') spsSetStageStatus('broll_table', 'error');
+            }
             finally {
+                clearInterval(beat);
                 document.body.style.cursor = '';
-                if (btn && timer) _stopBtnTimer(btn, timer);
+                btns.forEach((b, i) => _stopBtnTimer(b, timers[i]));
+                if (typeof spsRefreshBrollInfo === 'function') spsRefreshBrollInfo();
             }
         }
 
@@ -5470,6 +5703,11 @@ Time management content here...`;
                     // (which carries its own "Grok Imagine Prompt" column if it
                     // has one) is never mixed with stale prompts.
                     window._currentBrollRows = null;
+                    if (window.currentResultPayload) {
+                        window.currentResultPayload.brollTable = text;
+                        window.currentResultPayload.brollRows = null;
+                    }
+                    if (typeof spsRefreshBrollInfo === 'function') spsRefreshBrollInfo();
                     _ensureTabsForLoad();
                     const div = document.getElementById('brollTableContent');
                     if (div) {
@@ -6104,8 +6342,12 @@ Time management content here...`;
                   + '<span>Main Script</span>'
                   + heygenDurationBadge(mainScript, '#10b981')
                   + '<button id="revertPolishBtn" class="script-hdr-btn" onclick="revertPolishedScript()" '
-                  + 'style="display:none;" title="Revert to the script before the last AI edit (polish or refine).">'
-                  + '<span>Undo last AI edit</span>'
+                  + 'style="display:none;" title="Revert to the script before the last edit (yours, a polish, or a refine).">'
+                  + '<span>Undo last edit</span>'
+                  + '</button>'
+                  + '<button id="editScriptBtn" class="script-hdr-btn" onclick="startScriptEdit()" '
+                  + 'title="Edit the script text yourself (cut lines, fix wording), then save it to the cloud as a new version.">'
+                  + '<span>✏️ Edit</span>'
                   + '</button>'
                   + '<button id="refineScriptBtn" class="script-hdr-btn" onclick="toggleRefinePanel()" '
                   + 'title="Give Claude or Grok a specific change (swap an example, add a more recent one from X, tighten a line) and get the updated script back.">'
@@ -6140,6 +6382,18 @@ Time management content here...`;
                   + '<span id="refineScriptStatus" style="font-size:13px; color:#94a3b8;"></span>'
                   + '</div>'
                   + '</div>';
+            html += '<div id="scriptEditBar" style="display:none; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 10px;">'
+                  + '<button id="scriptEditSaveBtn" class="script-hdr-btn" onclick="saveScriptEdit(true)" '
+                  + 'title="Apply your edits and save them to the cloud as a new version of this script (⌘S / Ctrl+S).">'
+                  + '<span>☁️ Save to cloud</span></button>'
+                  + '<button id="scriptEditApplyBtn" class="script-hdr-btn" onclick="saveScriptEdit(false)" '
+                  + 'title="Apply your edits here (exports and downloads use them) without saving to the cloud yet.">'
+                  + '<span>✓ Apply without saving</span></button>'
+                  + '<button id="scriptEditCancelBtn" class="script-hdr-btn" onclick="cancelScriptEdit()"><span>Cancel</span></button>'
+                  + '<span id="scriptEditBadge" style="font-size:12px; color:#10b981; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;"></span>'
+                  + '<span id="scriptEditStatus" style="font-size:13px; color:#94a3b8;">Production blocks are shown here too; leave them in unless you mean to cut them.</span>'
+                  + '</div>'
+                  + '<textarea id="mainScriptEditor" spellcheck="true" aria-label="Edit script"></textarea>';
             html += `<div class="markdown-content" id="mainScriptContent"></div>`;
             html += '</div>';
             
@@ -10890,6 +11144,7 @@ Thank you for watching!`;
                 if (typeof updateScriptInputDurationBadge === 'function') { try { updateScriptInputDurationBadge(); } catch (_) {} }
                 if (typeof renderScriptInputPreview === 'function') { try { renderScriptInputPreview(); } catch (_) {} }
             }
+            if (window.currentResultPayload) window.currentResultPayload.mainScript = updated;
             const contentDiv = document.getElementById('mainScriptContent');
             if (contentDiv) {
                 contentDiv.setAttribute('data-original-markdown', updated);
@@ -12709,7 +12964,9 @@ Thank you for watching!`;
             </div>
             <div class="sps-stage-body" data-sps-body="broll_table" style="display:none; padding:12px 14px; border-top:1px solid #0f172a;">
               <p style="margin:0 0 10px 0; color:#94a3b8; font-size:0.85em;">Build the B-Roll scene table with Shutterstock search links, or load an existing one.</p>
+              <div data-sps-current="broll_table" style="margin:0 0 10px 0; padding:8px 12px; background:#0b1220; border:1px solid #334155; border-radius:6px; color:#cbd5e1; font-size:0.82em;"></div>
               <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button type="button" id="spsBrollRegenBtn" onclick="regenerateBrollTable(true)" title="Call the B-roll agent now on the script this dialog processes and replace the current table. Runs right away; the dialog stays open." style="background:#0ea5e9; color:#fff; border:none; padding:8px 14px; border-radius:5px; cursor:pointer; font-weight:600;">🔄 Regenerate now</button>
                 <button type="button" onclick="loadBrollTableFromFile()" style="background:#334155; color:#e2e8f0; border:none; padding:8px 14px; border-radius:5px; cursor:pointer;">📂 Load Existing…</button>
               </div>
               <div data-sps-result="broll_table" style="margin-top:10px; font-size:0.85em; color:#10b981; display:none;"></div>
@@ -13277,11 +13534,32 @@ Thank you for watching!`;
       if (typeof spsUpdateRunFooter === 'function') spsUpdateRunFooter();
     }
 
+    // B-Roll stage: say whether a table is already loaded, since Run reuses
+    // it (sent as broll_table_override) instead of calling the agent again.
+    function spsRefreshBrollInfo() {
+      const el = document.querySelector('[data-sps-current="broll_table"]');
+      if (!el) return;
+      const md = (window._currentBrollTable || '').trim();
+      if (!md) {
+        el.innerHTML = 'No B-roll table yet. <strong>Run</strong> builds one, or <strong>🔄 Regenerate now</strong> builds it right away.';
+        return;
+      }
+      let n = (window._currentBrollRows || []).length;
+      if (!n) {
+        const lines = md.split('\n').filter(l => /^\s*\|/.test(l));
+        const seps = lines.filter(l => /^\s*\|[\s:|-]+\|?\s*$/.test(l)).length;
+        n = Math.max(0, lines.length - 2 * seps);
+      }
+      el.innerHTML = '📋 A B-roll table is loaded' + (n ? ' (' + n + ' rows)' : '')
+        + '. <strong>Run</strong> reuses it; <strong>🔄 Regenerate now</strong> replaces it with a fresh one from this script.';
+    }
+
     function openScriptProcessingModal() {
       const m = document.getElementById('scriptProcessingModal');
       if (!m) return;
       m.style.display = 'flex';
       spsRefreshLoadStatus();
+      spsRefreshBrollInfo();
       spsRenderStepper();
       // Populate the Output Directory override with the current default
       // (from the main GUI). User can change it here; on Run we POST the
@@ -14725,6 +15003,30 @@ Thank you for watching!`;
         }
       }
 
+      // Set the thumbnail again on the video just published, without a
+      // re-upload (files over 2 MB go as a JPEG copy under 2 MB).
+      async function retryYouTubeThumbnail(videoId) {
+        const btn = document.getElementById('ytRetryThumbBtn');
+        const st = document.getElementById('ytRetryThumbStatus');
+        const path = (document.getElementById('ytThumbnailPath')?.value || '').trim();
+        if (!path) { if (st) st.textContent = 'Pick a thumbnail above first.'; return; }
+        if (btn) btn.disabled = true;
+        if (st) st.textContent = '⏳ Setting the thumbnail…';
+        try {
+          const r = await fetch('/api/youtube/set-thumbnail', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ video_id: videoId, thumbnail_path: path })
+          });
+          const d = await r.json();
+          if (!d.success) throw new Error(d.error || ('HTTP ' + r.status));
+          if (st) st.innerHTML = '<strong style="color:#86efac;">✅ Thumbnail set</strong>';
+          if (btn) btn.style.display = 'none';
+        } catch (e) {
+          if (st) st.textContent = '❌ ' + e.message;
+          if (btn) btn.disabled = false;
+        }
+      }
+
       async function submitPublishToYouTube() {
         const videoPath = document.getElementById('ytVideoPath').value.trim();
         if (!videoPath) {
@@ -14835,6 +15137,7 @@ Thank you for watching!`;
                         + 'One-time fix: go to <a href="https://www.youtube.com/verify" target="_blank" style="color:#fcd34d; text-decoration:underline;">youtube.com/verify</a> '
                         + 'and complete phone verification. Then re-set the thumbnail directly in YouTube Studio for this video.'
                       : 'Error: ' + String(s.thumbnail_error).replace(/</g, '&lt;'))
+                  + (s.video_id ? '<div style="margin-top:8px;"><button type="button" id="ytRetryThumbBtn" onclick="retryYouTubeThumbnail(\'' + s.video_id + '\')" style="padding:6px 12px; background:#0ea5e9; color:#fff; border:none; border-radius:5px; font-weight:600; cursor:pointer;">🔁 Retry thumbnail</button> <span id="ytRetryThumbStatus" style="color:#cbd5e1;"></span></div>' : '')
                   + '</div>';
                 // No modal alert — the inline notice above is clearer and
                 // doesn't hide the "Published!" link underneath.
@@ -14921,7 +15224,10 @@ Thank you for watching!`;
     // Per-video views, watch time, average view duration, and retention from the
     // YouTube Analytics API; impressions and CTR from an imported Studio export.
     (function () {
-        let an = { range: '28', data: null, sortKey: 'views', sortDesc: true, selected: null };
+        // Lifetime by default: in a short window a small channel's averages can rest on a few
+        // search clicks that left at once (5 views, 0:00), which reads like a bug.
+        let an = { range: 'lifetime', data: null, sortKey: 'views', sortDesc: true, selected: null };
+        const FEW_VIEWS = 10;
         const fmtInt = (n) => (n === null || n === undefined) ? '—' : Number(n).toLocaleString();
         const fmtTime = (sec) => { sec = Math.round(sec || 0); return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0'); };
         const fmtPct = (n) => (n === null || n === undefined) ? '—' : Number(n).toFixed(1) + '%';
@@ -14947,10 +15253,10 @@ Thank you for watching!`;
                         <h2>📊 Channel analytics</h2>
                         <select class="an-range" title="Report window">
                             <option value="7">Last 7 days</option>
-                            <option value="28" selected>Last 28 days</option>
+                            <option value="28">Last 28 days</option>
                             <option value="90">Last 90 days</option>
                             <option value="365">Last 365 days</option>
-                            <option value="lifetime">Lifetime</option>
+                            <option value="lifetime" selected>Lifetime</option>
                         </select>
                         <button type="button" class="tg-btn tg-btn-secondary an-connect" style="display:none;">🔗 Connect YouTube Analytics</button>
                         <button type="button" class="tg-btn tg-btn-secondary an-import" title="Impressions and click-through rate: in YouTube Studio open Analytics > Advanced mode, then Export current view > CSV, and choose that file here">⬆ Import Studio export</button>
@@ -14961,6 +15267,7 @@ Thank you for watching!`;
                     </div>
                     <div class="an-status"></div>
                     <div class="an-tiles"></div>
+                    <div class="an-reach-help" style="display:none;"></div>
                     <div class="an-table-wrap"><table class="an-table"><thead></thead><tbody></tbody></table></div>
                     <div class="an-panel an-retention" style="display:none;"></div>
                     <div class="an-panel an-insights-panel" style="display:none;"></div>
@@ -15015,11 +15322,17 @@ Thank you for watching!`;
                     throw new Error(d.error || ('HTTP ' + r.status));
                 }
                 an.data = d;
-                const reach = d.reach_imported_at
-                    ? `Impressions and CTR from the Studio export imported ${new Date(d.reach_imported_at).toLocaleString()} (they cover that export's date range).`
-                    : 'Impressions and CTR are empty until you import a Studio export (⬆).';
-                setStatus('#94a3b8', `${d.videos.length} videos, ${d.start} to ${d.end}. ${reach} Click a video to see where viewers drop off.`);
-                renderTiles(); renderTable();
+                const rc = d.reach || {};
+                const reach = rc.source === 'daily'
+                    ? `Impressions and CTR from YouTube's daily reach reports, ${rc.first} to ${rc.last}${rc.covers_window ? '' : ' (they start later than this window)'}.`
+                    : rc.source === 'studio'
+                    ? `Impressions and CTR from the Studio export ${rc.first ? `covering ${rc.first} to ${rc.last}` : '(its own date range)'}, imported ${new Date(rc.imported_at).toLocaleString()}${an.range === 'lifetime' ? '' : '; not this window'}.`
+                    : 'No impressions or CTR yet (see below).';
+                const few = d.videos.some(v => v.views < FEW_VIEWS)
+                    ? ` Grey averages rest on fewer than ${FEW_VIEWS} views${an.range === 'lifetime' ? '' : '; hover one for its lifetime average'}.` : '';
+                const span = an.range === 'lifetime' ? 'lifetime' : `${d.start} to ${d.end}`;
+                setStatus('#94a3b8', `${d.videos.length} videos, ${span}. ${reach}${few} Click a video to see where viewers drop off.`);
+                renderTiles(); renderReachHelp(rc); renderTable();
             } catch (e) {
                 setStatus('#f87171', '❌ ' + e.message);
             }
@@ -15029,12 +15342,21 @@ Thank you for watching!`;
             const t = an.data.totals;
             const tile = (v, l, n) => `<div class="an-tile"><div class="v">${v}</div><div class="l">${l}</div>${n ? `<div class="n">${n}</div>` : ''}</div>`;
             $('.an-tiles').innerHTML =
-                tile(fmtInt(t.impressions), 'Impressions', t.impressions ? 'from the Studio export' : 'import a Studio export') +
+                tile(fmtInt(t.impressions), 'Impressions', { daily: 'daily reach reports', studio: 'from the Studio export' }[(an.data.reach || {}).source] || 'see below') +
                 tile(fmtPct(t.ctr), 'Click-through rate', t.ctr ? 'impression-weighted' : '') +
                 tile(fmtInt(t.views), 'Views') +
                 tile(fmtTime(t.avg_view_duration), 'Avg view duration', 'watch time ÷ views') +
                 tile(Number(t.watch_hours).toLocaleString(), 'Watch hours') +
                 tile(fmtInt(t.subscribers_gained), 'Subscribers gained');
+        }
+
+        // An average from a handful of views is greyed out, with the lifetime average on hover.
+        function fewViews(v, text) {
+            if (v.views >= FEW_VIEWS) return text;
+            const life = v.lifetime && v.lifetime.views > v.views
+                ? ` Lifetime: ${fmtTime(v.lifetime.avg_view_duration)} (${fmtPct(v.lifetime.avg_view_percentage)}) over ${fmtInt(v.lifetime.views)} views.` : '';
+            const span = an.range === 'lifetime' ? 'so far' : `from ${an.data.start} to ${an.data.end}`;
+            return `<span class="an-muted" title="Only ${fmtInt(v.views)} views ${span}, too few for a reliable average.${life}">${text}</span>`;
         }
 
         function renderTable() {
@@ -15062,8 +15384,8 @@ Thank you for watching!`;
                     <td>${v.impressions == null ? '<span class="an-muted">—</span>' : fmtInt(v.impressions)}</td>
                     <td>${v.ctr == null ? '<span class="an-muted">—</span>' : fmtPct(v.ctr)}</td>
                     <td>${fmtInt(v.views)}</td>
-                    <td>${fmtTime(v.avg_view_duration)}</td>
-                    <td>${fmtPct(v.avg_view_percentage)}</td>
+                    <td>${fewViews(v, fmtTime(v.avg_view_duration))}</td>
+                    <td>${fewViews(v, fmtPct(v.avg_view_percentage))}</td>
                     <td>${Number(v.watch_hours).toLocaleString()}</td>
                     <td>${fmtInt(v.likes)}</td>
                     <td>${fmtInt(v.subscribers_gained)}</td>
@@ -15087,11 +15409,14 @@ Thank you for watching!`;
                 if (!r.ok || !d.success) throw new Error(d.error || ('HTTP ' + r.status));
                 if (!d.points.length) { panel.querySelector('.sub').textContent = 'YouTube has no retention data for this video yet.'; return; }
                 const dur = video.duration_seconds || 0;
+                // The curve is lifetime, so its average is too, whatever window the table shows.
+                const avd = d.avg_view_duration ?? video.avg_view_duration;
+                const avp = d.avg_view_percentage ?? video.avg_view_percentage;
                 const drops = d.drops.map(x => `${fmtTime(x.t * dur)} (−${(x.drop * 100).toFixed(1)} pts)`).join(', ');
                 panel.innerHTML = `<h3>Audience retention · ${esc(video.title)}</h3>
-                    <div class="sub">Share of viewers still watching at each point, lifetime. Average view ${fmtTime(video.avg_view_duration)} of ${fmtTime(dur)} (${fmtPct(video.avg_view_percentage)}).${drops ? ' Steepest drops: ' + drops + '.' : ''} Hover for each point.</div>
+                    <div class="sub">Share of viewers still watching at each point, lifetime. Average view ${fmtTime(avd)} of ${fmtTime(dur)} (${fmtPct(avp)}).${drops ? ' Steepest drops: ' + drops + '.' : ''} Hover for each point.</div>
                     <div class="an-chart"></div>`;
-                drawRetention(panel.querySelector('.an-chart'), d.points, d.drops, dur, video.avg_view_duration);
+                drawRetention(panel.querySelector('.an-chart'), d.points, d.drops, dur, avd);
             } catch (e) {
                 panel.querySelector('.sub').textContent = '❌ ' + e.message;
             }
@@ -15161,6 +15486,43 @@ Thank you for watching!`;
             });
         }
 
+        // Where impressions and CTR come from, and the steps for whichever is missing:
+        // a Studio export now (the only lifetime source) and YouTube's daily reach reports.
+        function renderReachHelp(rc) {
+            const box = $('.an-reach-help');
+            const items = [];
+            if (rc.source !== 'studio' && (an.range === 'lifetime' || !rc.source)) {
+                items.push(`<li><b>${an.range === 'lifetime' ? 'Lifetime' : 'Right now'}:</b> in YouTube Studio open Analytics, then <b>Advanced mode</b>. Set the date range (for example Lifetime), then <b>Export current view → Comma-separated values (.csv)</b>. Choose the downloaded .zip with <button type="button" class="tg-btn tg-btn-secondary an-import-2">⬆ Import Studio export</button></li>`);
+            }
+            if (!rc.daily_job) {
+                items.push(`<li><b>Every day from now on:</b> <button type="button" class="tg-btn tg-btn-secondary an-daily-on">📡 Turn on daily reach reports</button> YouTube then makes a read-only daily impressions and CTR report for the channel. The first reports arrive within 48 hours and cover the 30 days before today, then one a day. This dialog downloads them when it opens.</li>`);
+            } else if (!rc.daily_last) {
+                items.push(`<li><b>Daily reach reports are on</b>${rc.daily_since ? ' since ' + esc(new Date(rc.daily_since).toLocaleString()) : ''}. YouTube posts the first ones within 48 hours, covering the 30 days before that.</li>`);
+            }
+            box.style.display = items.length ? 'block' : 'none';
+            box.innerHTML = items.length ? `<div>YouTube's Analytics API has no impressions or click-through rate.</div><ul>${items.join('')}</ul>` : '';
+            box.querySelector('.an-import-2')?.addEventListener('click', () => $('.an-import-file').click());
+            box.querySelector('.an-daily-on')?.addEventListener('click', startDailyReach);
+        }
+
+        async function startDailyReach(ev) {
+            const btn = ev.currentTarget;
+            btn.disabled = true;
+            try {
+                const r = await fetch('/api/analytics/daily-reach/start', { method: 'POST' });
+                const d = await r.json();
+                if (!r.ok || !d.success) throw new Error(d.error || ('HTTP ' + r.status));
+                setStatus('#34d399', '✅ Daily reach reports are on. YouTube posts the first ones within 48 hours; this dialog downloads them when it opens.');
+                if (an.data) {
+                    an.data.reach = Object.assign({}, an.data.reach, { daily_job: true, daily_since: d.daily_since });
+                    renderReachHelp(an.data.reach);
+                }
+            } catch (e) {
+                setStatus('#f87171', '❌ ' + e.message);
+                btn.disabled = false;
+            }
+        }
+
         async function importReach(ev) {
             const f = ev.target.files && ev.target.files[0];
             ev.target.value = '';
@@ -15171,7 +15533,7 @@ Thank you for watching!`;
                 const r = await fetch('/api/analytics/import-reach', { method: 'POST', body: fd });
                 const d = await r.json();
                 if (!r.ok || !d.success) throw new Error(d.error || ('HTTP ' + r.status));
-                setStatus('#34d399', `✅ Imported impressions and CTR for ${d.videos} videos.`);
+                setStatus('#34d399', `✅ Imported impressions and CTR for ${d.videos} videos${d.first ? ` (${d.first} to ${d.last})` : ''}.`);
                 if (an.data) loadReport();
             } catch (e) { setStatus('#f87171', '❌ ' + e.message); }
         }
