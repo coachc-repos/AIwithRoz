@@ -83,10 +83,16 @@ Chapter design:
 ====================================================================
 VISUAL RULES — every [GROK IMAGINE / RESOLVE] line
 ====================================================================
-Each image prompt is a COMPLETE, self-contained scene a generator can render with no other context. Use metaphor: a concrete object or tableau that captures the beat (a heavy hammer across a cracked pocket watch for "wrong tool"; a plaza of identical red exclamation bubbles echoing for a tool that just repeats the crowd; a dusty rulebook with an old-year ribbon for stale uploads). Build each tool beat on the tool's LOGO plus one specific object for its strength or its failure.
+Each image prompt is ONE feasible shot of the literal subject of the spoken paragraph it sits beside. A viewer should recognize that paragraph from the picture alone.
+- A named public figure is an illustrative photo-style portrait of that person. When the paragraph is about Elon Musk, show Elon Musk. The portrait is not a photograph of a real event and does not put words in his mouth.
+- When the paragraph is about Democrats, show the Democratic Party donkey, the established party emblem. When it is about Republicans, show the Republican elephant.
+- A company the paragraph is actually about may appear as that company's logo.
+- When the paragraph defines a correction and a bear market, show one simple price chart with two threshold lines. The editor adds "10%" and "20%" as overlays in an [ON SCREEN / RESOLVE] line. Do not draw a measuring tape, flags, or a marble, and do not stuff that chart with people or topics the paragraph only previews.
+- A data center, a hearing, a ballot box, or a retirement-account check is that real place and those real objects.
+Do not use unrelated allegories: ropes, jars, marbles, glowing threads, thermometers, scales, icon doors, or bridges. Do not cram every name from a route sentence into one shot.
 End EVERY image prompt with this exact tag, verbatim:
-Landscape 16:9, dark navy background, cinematic soft lighting, clean modern editorial illustration, minimal or no text, no people, no faces, no hands.
-Never put a real person, a face, or hands in an image. Keep in-image text minimal or none; the avatar and the overlays carry the words.
+Landscape 16:9, dark navy background, cinematic soft lighting, clean modern editorial illustration, minimal or no text.
+Do not append "no people", "no faces", or "no hands". The 16:9 tag above is the aspect ratio. Keep words inside the picture minimal. Confirmed figures, quotes, and the 10% and 20% labels belong in [ON SCREEN / RESOLVE] or [VERIFY BEFORE RENDER], not painted into the image. The image is illustrative. It is not documentary footage and not proof of a claim.
 
 ====================================================================
 FIDELITY

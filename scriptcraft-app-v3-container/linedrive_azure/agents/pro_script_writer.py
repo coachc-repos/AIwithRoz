@@ -25,10 +25,11 @@ PRO_WRITER_MODEL = "claude-opus-5-5"
 PRO_WRITER_EFFORT = "high"
 
 # The exact visual style tag that ends every image prompt (voice/parser-safe).
+# 16:9 stays. People are allowed: a blanket "no faces" ban is what pushed prompts
+# into unrelated object metaphors.
 GROK_IMAGINE_STYLE_TAG = (
     "Landscape 16:9, dark navy background, cinematic soft lighting, clean "
-    "modern editorial illustration, minimal or no text, no people, no faces, "
-    "no hands."
+    "modern editorial illustration, minimal or no text."
 )
 
 # The user's approved "this is what a good script looks like" example.
@@ -138,10 +139,16 @@ Chapter design:
 ====================================================================
 VISUAL RULES — every [GROK IMAGINE / RESOLVE] line
 ====================================================================
-Each image prompt is a COMPLETE, self-contained scene a generator can render with no other context. Use metaphor: a concrete object or tableau that captures the beat (a heavy hammer across a cracked pocket watch for "wrong tool"; a plaza of identical red exclamation bubbles echoing for a tool that just repeats the crowd; a dusty rulebook with an old-year ribbon for stale uploads). Build each tool beat on the tool's LOGO plus one specific object for its strength or its failure.
+Each image prompt is ONE feasible shot of the literal subject of the spoken paragraph it sits beside. A viewer should recognize that paragraph from the picture alone.
+- A named public figure is an illustrative photo-style portrait of that person. When the paragraph is about Elon Musk, show Elon Musk. The portrait is not a photograph of a real event and does not put words in his mouth.
+- When the paragraph is about Democrats, show the Democratic Party donkey, the established party emblem. When it is about Republicans, show the Republican elephant.
+- A company the paragraph is actually about may appear as that company's logo.
+- When the paragraph defines a correction and a bear market, show one simple price chart with two threshold lines. The editor adds "10%" and "20%" as overlays in an [ON SCREEN / RESOLVE] line. Do not draw a measuring tape, flags, or a marble, and do not stuff that chart with people or topics the paragraph only previews.
+- A data center, a hearing, a ballot box, or a retirement-account check is that real place and those real objects.
+Do not use unrelated allegories: ropes, jars, marbles, glowing threads, thermometers, scales, icon doors, or bridges. Do not cram every name from a route sentence into one shot.
 End EVERY image prompt with this exact tag, verbatim:
 """ + GROK_IMAGINE_STYLE_TAG + r"""
-Never put a real person, a face, or hands in an image. Keep in-image text minimal or none; the avatar and the overlays carry the words.
+Do not append "no people", "no faces", or "no hands". The 16:9 tag above is the aspect ratio. Keep words inside the picture minimal. Confirmed figures, quotes, and the 10% and 20% labels belong in [ON SCREEN / RESOLVE] or [VERIFY BEFORE RENDER], not painted into the image. The image is illustrative. It is not documentary footage and not proof of a claim.
 
 ====================================================================
 FIDELITY
@@ -173,7 +180,11 @@ def build_pro_user_message(title: str, brief: str = "") -> str:
             "VERIFY notes for any legal or numeric claim, the [PROMPT OVERLAY] "
             "in the final chapter, and the trailing '=== …===' sections. Do NOT "
             "copy its topic, its people, or its wording — only its structure, "
-            "conventions, energy, and voice.\n\n"
+            "conventions, energy, and voice. If that reference shows symbolic "
+            "image prompts or a line ending in 'no people, no faces, no hands', "
+            "do not copy them. Follow VISUAL RULES: the literal subject, a "
+            "portrait when the paragraph is about a named person, and the party "
+            "emblem when the paragraph is about that party.\n\n"
             f"<golden_reference>\n{golden}\n</golden_reference>"
         )
     playbook = load_channel_playbook()
@@ -200,6 +211,21 @@ def build_pro_user_message(title: str, brief: str = "") -> str:
         "matching the GOLDEN REFERENCE structure and voice exactly."
     )
     return user
+
+
+def _literalize_grok_prompts(text: Optional[str]) -> Optional[str]:
+    """Replace symbolic [GROK IMAGINE] lines with the literal subject of the
+    adjacent spoken paragraph. Spoken narration is not rewritten."""
+    if not text:
+        return text
+    try:
+        from linedrive_azure.agents.grok_imagine_literals import (
+            rewrite_production_image_prompts,
+        )
+        return rewrite_production_image_prompts(text)
+    except Exception as e:
+        print(f"   ⚠️ Grok Imagine literalize failed: {e}")
+        return text
 
 
 def write_pro_script(title: str, brief: str = "",
@@ -268,6 +294,7 @@ def write_pro_script(title: str, brief: str = "",
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
         text = re.sub(r"\s*```$", "", text).strip()
+    text = _literalize_grok_prompts(text)
     _report_chapter_count(text)
     return text or None
 
@@ -373,6 +400,7 @@ def write_pro_script_agent(title: str, brief: str = "",
         if not text:
             raise RuntimeError("empty reply")
         print(f"   ✅ [maf] {PRO_AGENT_NAME} finished in {_time.time() - t0:.0f}s")
+        text = _literalize_grok_prompts(text)
         _report_chapter_count(text)
         return text
     except Exception as e:

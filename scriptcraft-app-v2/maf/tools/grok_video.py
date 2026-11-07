@@ -46,7 +46,10 @@ def generate_grok_video(
 
     Args:
         prompt: A complete, self-contained cinematic visual description of the
-            clip (no audio, no on-screen text, no people/faces/hands).
+            clip (no audio, no on-screen text). A named public figure may be shown
+            as themselves, and a party may be shown by its established emblem
+            (the Democratic donkey). Do not invent an event or a quote, and do
+            not substitute ropes, jars, or other unrelated allegories.
         aspect_ratio: "16:9" (default) or "9:16".
         duration_seconds: Clip length in seconds, 1-15 (default 6).
         resolution: "480p" (default) or "720p".
@@ -123,7 +126,10 @@ def build_broll_director() -> Agent:
         instructions=(
             "You create b-roll for video scripts. When the user describes a beat, "
             "call generate_grok_video with a single complete cinematic prompt "
-            "(silent, no on-screen text, no people/faces/hands). After the tool "
+            "(silent, no on-screen text). If the beat names a person, show that "
+            "person; if it is about a party, show that party's emblem, such as "
+            "the Democratic donkey. Do not invent an event or a quote, and do "
+            "not use unrelated allegories. After the tool "
             "returns, confirm in one sentence what was generated."
         ),
         tools=[generate_grok_video],
