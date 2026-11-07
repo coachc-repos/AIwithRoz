@@ -6358,83 +6358,28 @@ def _restore_or_keep(rewritten: str, blocks, original: str) -> str:
     return restored
 
 
-# ---- Grok Imagine still-image prompts (editorial-illustration house style) ----
+# ---- Grok Imagine still-image prompts (literal subject of the spoken beat) ----
 # A Script Processing stage that injects [GROK IMAGINE / RESOLVE] production blocks
 # so the user can copy-paste them into Grok Imagine: one for the hook and 3-4 per
-# chapter. Prompts are symbolic editorial illustrations (no people/faces/hands) in
-# the channel's dark-navy house style. When a beat cites a quotable source (a
+# chapter. Each prompt is a literal shot of the paragraph beside it. A named
+# public figure may be an illustrative portrait, and a party may be its established
+# emblem (the Democratic donkey). When a beat cites a quotable source (a
 # social media post, statement, testimony, or a named study/stat), the same block
 # also carries a [QUOTE CARD / RESOLVE] overlay line.
-GROK_IMAGINE_STYLE_SUFFIX = (
-    "Landscape 16:9, dark navy background, cinematic soft lighting, clean "
-    "modern editorial illustration, minimal or no text, no people, no faces, "
-    "no hands."
+from linedrive_azure.agents.grok_imagine_literals import (
+    GROK_IMAGINE_SYSTEM,
+    ensure_literal_image_prompt,
+    grok_imagine_beat_instruction,
+    scene_for_beat,
+)
+from linedrive_azure.agents.pro_script_writer import (
+    GROK_IMAGINE_STYLE_TAG as GROK_IMAGINE_STYLE_SUFFIX,
 )
 
 # Model used to author Grok Imagine prompts. Opus 5.5 (the newest Opus on this
 # account) writes noticeably more concrete, entity-grounded editorial scenes than
 # 4.8 for this task. Scoped to this feature so it doesn't change every other call.
 GROK_IMAGINE_MODEL = "claude-opus-5-5"
-
-GROK_IMAGINE_SYSTEM = (
-    "You are the art director for a YouTube channel about AI and technology. For "
-    "ONE beat of the spoken script, produce production overlays as a JSON object "
-    'with exactly two keys: "image_prompt" and "quote_card".\n'
-    "\n"
-    "IMAGE PROMPT — one still image for Grok Imagine, in the channel's house "
-    "style (match the reference prompts below in quality and specificity):\n"
-    "- Build ONE clear editorial-illustration scene from CONCRETE, recognizable "
-    "objects: desks, microphones, rulebooks, checkbooks, ballot boxes, gate keys, "
-    "moats, towers, maps, servers, documents, kill switches, timelines, coins.\n"
-    "- NAME the specific real entities the beat mentions and show them as labeled "
-    "logos, nameplates, or map locations — companies (OpenAI, Anthropic, xAI, "
-    "Meta, DeepSeek) as logos on towers or servers; a named law or bill as a "
-    "labeled folder; a person by their organization, NEVER a face (Sam Altman -> "
-    "an OpenAI nameplate at a Senate table); a place (California, Washington, the "
-    "EU) as that map or capitol lit.\n"
-    "- Arrange the objects so the COMPOSITION itself makes the point (a moat with "
-    "a raised drawbridge = a barrier only the big can cross; a kill switch wired "
-    "to empty boxes = a control that no longer works).\n"
-    "- Stay grounded and editorial — NOT ornate, surreal, or fantastical. Do not "
-    "cram several metaphors into one scene or invent baroque objects. Roughly "
-    "35-60 words.\n"
-    "- Hard rules: NO people, NO faces, NO hands, NO crowds, NO on-screen text or "
-    "captions. Do NOT add camera, aspect-ratio, lighting, or style notes — those "
-    "are appended automatically.\n"
-    "\n"
-    "REFERENCE PROMPTS (match this exact quality and grounded, entity-specific "
-    "style):\n"
-    "- Frontier labs building a moat: 'Three glowing corporate towers on a dark "
-    "plain bearing the OpenAI, Anthropic, and xAI logos, and around them a wide "
-    "moat filling with water, a single drawbridge raised, tiny dark startup tents "
-    "and an open source campfire stranded on the far bank.'\n"
-    "- Who profits from the panic: 'A dark boardroom table with an antique brass "
-    "microphone at its center, and around it five empty chairs, each with a small "
-    "object on the seat: a play button, a rulebook stamped with a seal, a "
-    "foundation checkbook, a campaign button, and a locked gate key, a world map "
-    "dim on the back wall.'\n"
-    "- A licensing ask before the Senate: 'A wooden Senate hearing table with a "
-    "single microphone and a nameplate bearing only the OpenAI logo, a framed "
-    "license certificate with a glowing threshold line propped on the table, an "
-    "EU flag beside a document with red strike-through lines behind it.'\n"
-    "- Open models spreading beyond control: 'A large red industrial kill switch "
-    "on a wall, its cable running to a stack of open cardboard boxes, but the "
-    "boxes are empty because hundreds of small glowing copies of the same file "
-    "are already flying out of a warehouse door into a dark sky.'\n"
-    "\n"
-    '2. "quote_card": a QUOTE CARD overlay ONLY when the beat cites a quotable '
-    "source — a social media post or tweet, an official statement, testimony, a "
-    "named study or statistic, or a public announcement. Otherwise null. NEVER "
-    "invent a quote, number, handle, or date. If the beat states the exact "
-    "quote/stat and its source, format as '<Source, context and date>: <exact "
-    "quote or statistic>'. If the beat references a social media post or "
-    "statement whose verbatim text is NOT given in the beat, instead return an "
-    "editor instruction to source it, e.g. 'Source and paste the exact post from "
-    "<person/handle> (<date/where>): screenshot or transcribe verbatim — verify "
-    "before render.'\n"
-    "\n"
-    "Output ONLY the JSON object, nothing else."
-)
 
 _GROK_IMAGINE_TAG = "[GROK IMAGINE"
 
@@ -6670,9 +6615,13 @@ def _gi_beat_text(p: str) -> str:
 
 def _grok_imagine_assets_for_beat(beat_text: str, section_title: str = "",
                                   video_title: str = "") -> tuple:
-    """Return (image_prompt_with_suffix, quote_card_or_None) for a script beat.
-    The image prompt is always present on success; the quote card only when the
-    beat cites a quotable source. Returns ('', None) on failure so callers skip."""
+    """Return (image_prompt, quote_card_or_None, on_screen_or_None).
+
+    The prompt is a literal shot of this beat. A named person can be a portrait
+    and a party can be its emblem. A failed model call still returns a
+    deterministic prompt so the paragraph keeps a picture. on_screen is the
+    editor overlay for a correction / bear-market definition, otherwise None.
+    """
     base = (beat_text or "").strip()
     if not base:
         return "", None
@@ -6681,15 +6630,15 @@ def _grok_imagine_assets_for_beat(beat_text: str, section_title: str = "",
         parts.append(f"VIDEO TITLE: {video_title}")
     if section_title:
         parts.append(f"SECTION: {section_title}")
-    parts.append("SCRIPT BEAT (depict its meaning as symbolic objects; add a "
-                 f"quote card only if it cites a quotable source): \"{base[:600]}\"")
+    parts.append(grok_imagine_beat_instruction(base[:600]))
+    out = ""
     try:
         out = _anthropic_complete(
             GROK_IMAGINE_SYSTEM, "\n".join(parts), max_tokens=1000,
             use_web_search=False, timeout=60.0, model=GROK_IMAGINE_MODEL)
     except Exception as e:
         logger.warning(f"⚠️ Grok Imagine assets failed: {e}")
-        return "", None
+        out = ""
     raw = (out or "").strip()
     raw = re.sub(r'^```[a-zA-Z]*\n', '', raw)
     raw = re.sub(r'\n```\s*$', '', raw).strip()
@@ -6715,18 +6664,23 @@ def _grok_imagine_assets_for_beat(beat_text: str, section_title: str = "",
                     quote = qv
         else:
             img = raw.strip('"').strip()  # non-JSON reply: treat as the prompt
-    img = img.strip().strip('"').strip()
-    if not img:
-        return "", None
-    if not img.endswith((".", "!", "?")):
+    img = (img or "").strip().strip('"').strip()
+    if img and not img.endswith((".", "!", "?")):
         img += "."
-    return f"{img} {GROK_IMAGINE_STYLE_SUFFIX}", quote
+    # Literal subject of THIS beat. A symbolic model reply is replaced here,
+    # and a failed model call still gets a prompt so the paragraph stays aligned.
+    _scene, on_screen = scene_for_beat(base)
+    return ensure_literal_image_prompt(img, base), quote, on_screen
 
 
-def _new_grok_imagine_block(image_prompt: str, quote_card: str = None) -> str:
-    """Format the copy-paste production block: a GROK IMAGINE line, plus a QUOTE
-    CARD line when the beat cited a quotable source."""
+def _new_grok_imagine_block(image_prompt: str, quote_card: str = None,
+                            on_screen: str = None) -> str:
+    """Format the copy-paste production block: a GROK IMAGINE line, plus an
+    editor overlay when the beat is a market definition, plus a QUOTE CARD line
+    when the beat cited a quotable source."""
     out = ["[PRODUCTION BEGIN]", f"[GROK IMAGINE / RESOLVE] {image_prompt}"]
+    if on_screen:
+        out.append(on_screen)
     if quote_card:
         out.append(f"[QUOTE CARD / RESOLVE] {quote_card}")
     out.append("[PRODUCTION END]")
@@ -6792,11 +6746,11 @@ def _gi_inject_hook(preamble_lines: list, video_title: str) -> tuple:
                      if _gi_is_spoken(ln)), None)
     if hook_idx is None:
         return list(preamble_lines), 0
-    img, quote = _grok_imagine_assets_for_beat(
+    img, quote, on_screen = _grok_imagine_assets_for_beat(
         _gi_beat_text(preamble_lines[hook_idx]), "Hook", video_title)
     if not img:
         return list(preamble_lines), 0
-    block = _new_grok_imagine_block(img, quote).split("\n")
+    block = _new_grok_imagine_block(img, quote, on_screen).split("\n")
     new = (list(preamble_lines[:hook_idx]) + block + [""]
            + list(preamble_lines[hook_idx:]))
     return new, 1
@@ -6864,7 +6818,7 @@ def _gi_process_chapter(body: str, chap_title: str, video_title: str,
     for i, (k, t) in enumerate(items):
         pair = results.get(i)
         if pair and pair[0]:
-            out_items.append(("prod", _new_grok_imagine_block(pair[0], pair[1])))
+            out_items.append(("prod", _new_grok_imagine_block(pair[0], pair[1], pair[2])))
             added += 1
         out_items.append((k, t))
     if not added:
