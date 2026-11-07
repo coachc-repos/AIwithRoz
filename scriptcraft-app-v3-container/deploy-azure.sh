@@ -96,10 +96,10 @@ if [ -z "$AI_PROJECT_API_KEY" ] || [ -z "$GOOGLE_API_KEY" ]; then
 fi
 echo "✅ API keys resolved"
 
-# --- ANTHROPIC_API_KEY: required for the Idea Generator (Claude Opus 4.8) --
+# --- ANTHROPIC_API_KEY: Claude's half of the Idea Generator -----------------
 # Prefer this dir's .env, then the repo-root .env, then the key already set on
-# the running container app. Pass it through so /api/ideas/* works in the cloud
-# (unlike the Grok prompts, the Idea Generator has no non-Claude fallback).
+# the running container app. The Grok half is resolved further down
+# (XAI_API_KEY, or GROK_API_KEY when that is the name already in use).
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
 if [ -z "$ANTHROPIC_API_KEY" ] && [ -f ".env" ]; then
     ANTHROPIC_API_KEY=$(grep '^ANTHROPIC_API_KEY=' .env | cut -d= -f2-)
@@ -157,8 +157,25 @@ else
     echo "⚠️  LinkedIn token not set — Post to LinkedIn will be disabled in the cloud until LINKEDIN_ACCESS_TOKEN is set."
 fi
 
+# --- Grok / xAI key for the Idea Generator --------------------------------
+# The desktop app reads XAI_API_KEY from the repo-root .env. Older container
+# deploys stored that same credential as GROK_API_KEY and never copied
+# XAI_API_KEY, so the Idea Generator's Grok pass reported the key missing
+# (or, with a quoted value, rejected) in the cloud while the local app worked.
+# Accept either name. Set both on the app: the process reads XAI_API_KEY, and
+# GROK_API_KEY keeps an older image working. Values are not printed.
+XAI_API_KEY=$(_resolve_key XAI_API_KEY)
+if [ -z "$XAI_API_KEY" ]; then
+    XAI_API_KEY=$(_resolve_key GROK_API_KEY)
+fi
+GROK_API_KEY="$XAI_API_KEY"
+if [ -n "$XAI_API_KEY" ]; then
+    echo "✅ Grok/xAI key resolved (Idea Generator Grok pass enabled)"
+else
+    echo "⚠️  XAI_API_KEY / GROK_API_KEY not found — Idea Generator will skip Grok."
+fi
+
 # --- Optional extra keys (passed through if present) ---------------------
-GROK_API_KEY="${GROK_API_KEY:-}"
 HEYGEN_API_KEY="${HEYGEN_API_KEY:-}"
 AI_PROJECT_ENDPOINT="${AI_PROJECT_ENDPOINT:-}"
 FINISHED_VIDEOS_BLOB_ACCOUNT="${FINISHED_VIDEOS_BLOB_ACCOUNT:-linedrivestorage}"
@@ -174,6 +191,7 @@ ENV_VARS_ARGS=("PYTHONPATH=/app" "AI_PROJECT_API_KEY=$AI_PROJECT_API_KEY" "GOOGL
 [ -n "$LINKEDIN_ACCESS_TOKEN" ] && ENV_VARS_ARGS+=("LINKEDIN_ACCESS_TOKEN=$LINKEDIN_ACCESS_TOKEN")
 [ -n "$LINKEDIN_AUTHOR_URN" ] && ENV_VARS_ARGS+=("LINKEDIN_AUTHOR_URN=$LINKEDIN_AUTHOR_URN")
 [ -n "$LINKEDIN_API_VERSION" ] && ENV_VARS_ARGS+=("LINKEDIN_API_VERSION=$LINKEDIN_API_VERSION")
+[ -n "$XAI_API_KEY" ] && ENV_VARS_ARGS+=("XAI_API_KEY=$XAI_API_KEY")
 [ -n "$GROK_API_KEY" ] && ENV_VARS_ARGS+=("GROK_API_KEY=$GROK_API_KEY")
 [ -n "$HEYGEN_API_KEY" ] && ENV_VARS_ARGS+=("HEYGEN_API_KEY=$HEYGEN_API_KEY")
 [ -n "$AI_PROJECT_ENDPOINT" ] && ENV_VARS_ARGS+=("AI_PROJECT_ENDPOINT=$AI_PROJECT_ENDPOINT")

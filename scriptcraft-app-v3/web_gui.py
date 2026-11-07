@@ -119,7 +119,13 @@ def _hydrate_env_from_settings() -> None:
         }
         for setting_key, env_var in mapping.items():
             val = (s.get(setting_key) or "").strip()
-            if val:
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+                val = val[1:-1].strip()
+            # A masked hint or the documented placeholder must not replace a
+            # real environment key. The container restores this file from blob
+            # storage on every boot, so a hint saved by mistake would otherwise
+            # hide the deployed key.
+            if val and not val.startswith("\u2022") and val != "your-xai-api-key-here":
                 os.environ[env_var] = val
     except Exception as e:
         logger.warning(f"⚠️ Could not hydrate env from saved settings: {e}")
@@ -146,20 +152,87 @@ def _is_masked_key(val: str) -> bool:
     return (val or "").strip().startswith(_KEY_MASK_PREFIX)
 
 
+_XAI_KEY_PLACEHOLDER = "your-xai-api-key-here"
+
+
+def _usable_api_key(val: str) -> str:
+    """Return a key safe to send to a provider, or "" if it is not one.
+
+    Drops blanks, the documented xAI placeholder, and masked hints (the page
+    only ever holds those). Strips one pair of surrounding quotes: python-dotenv
+    does that for the desktop .env, but a Container App env value can keep them,
+    and xAI then rejects the key.
+    """
+    val = (val or "").strip()
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+        val = val[1:-1].strip()
+    if not val or _is_masked_key(val) or val == _XAI_KEY_PLACEHOLDER:
+        return ""
+    return val
+
+
+def _redact_secret(text: str, secret: str) -> str:
+    """Remove a resolved key from an error string before it is logged or shown."""
+    secret = _usable_api_key(secret)
+    if secret and secret in (text or ""):
+        return text.replace(secret, _mask_key(secret))
+    return text or ""
+
+
+def _env_key(env_var: str) -> str:
+    """Environment key. XAI_API_KEY also accepts GROK_API_KEY.
+
+    The desktop app loads XAI_API_KEY from the repo-root .env. The container
+    deploy stores that same credential as GROK_API_KEY (the v2 container env
+    name) and does not set XAI_API_KEY, so a reader that only checks
+    XAI_API_KEY reports the key missing in the cloud. XAI_API_KEY wins when
+    both are set, which keeps a local .env unchanged.
+    """
+    names = (env_var, "GROK_API_KEY") if env_var == "XAI_API_KEY" else (env_var,)
+    for name in names:
+        key = _usable_api_key(os.getenv(name) or "")
+        if key:
+            return key
+    return ""
+
+
+def _alias_grok_env_key() -> None:
+    """Point XAI_API_KEY at a usable Grok credential.
+
+    Keeps a real XAI_API_KEY (desktop .env or a saved dialog key). If that
+    value is only usable once surrounding quotes are removed, store the
+    unquoted key: the container env can keep the quotes that python-dotenv
+    strips locally, and xAI rejects the quoted string. Otherwise copy
+    GROK_API_KEY, the name older container deploys used.
+    """
+    raw = os.getenv("XAI_API_KEY") or ""
+    cleaned = _usable_api_key(raw)
+    if cleaned:
+        if cleaned != raw.strip():
+            os.environ["XAI_API_KEY"] = cleaned
+        return
+    grok = _usable_api_key(os.getenv("GROK_API_KEY") or "")
+    if grok:
+        os.environ["XAI_API_KEY"] = grok
+
+
 def _saved_or_env_key(setting_key: str, env_var: str) -> str:
     try:
-        saved = (_load_scriptcraft_settings().get(setting_key) or "").strip()
+        saved = _usable_api_key(_load_scriptcraft_settings().get(setting_key) or "")
     except Exception:
         saved = ""
-    return saved or os.getenv(env_var, "").strip()
+    return saved or _env_key(env_var)
 
 
 def _effective_key(provided, setting_key: str, env_var: str) -> str:
     """Key the browser sent, unless blank or masked; then the saved/env key."""
-    val = (provided or "").strip()
-    if not val or _is_masked_key(val):
+    val = _usable_api_key(provided or "")
+    if not val:
         return _saved_or_env_key(setting_key, env_var)
     return val
+
+
+_alias_grok_env_key()
 
 
 def _get_output_parent_dir() -> Path:
@@ -4650,6 +4723,10 @@ def index():
         logger.warning(f"⚠️ Could not preload settings for template: {e}")
 
     def _resolve(setting_key: str, env_var: str) -> str:
+        # Grok accepts the container's GROK_API_KEY as well as XAI_API_KEY,
+        # and ignores a masked hint saved in settings.
+        if setting_key == "grok_api_key":
+            return _saved_or_env_key(setting_key, env_var)
         return (
             (settings.get(setting_key) or "").strip()
             or os.getenv(env_var, "").strip()
@@ -5456,8 +5533,8 @@ def _grok_complete(system: str, user: str, model: str = None,
     api_key = _resolve_xai_api_key()
     if not api_key:
         raise RuntimeError(
-            "xAI/Grok is not configured. Set XAI_API_KEY (or GROK_API_KEY) in "
-            "the root .env.")
+            "xAI/Grok is not configured. Add the Grok key in API Keys, or set "
+            "XAI_API_KEY (desktop .env) or GROK_API_KEY (container).")
     try:
         import xai_sdk
         from xai_sdk.chat import system as _xai_system, user as _xai_user
@@ -5465,38 +5542,44 @@ def _grok_complete(system: str, user: str, model: str = None,
         raise RuntimeError(f"xai_sdk is not installed: {e}")
     _model = model or IDEA_GROK_MODEL
     logger.info("🤖 Grok %s | calling…", _model)
-    client = xai_sdk.Client(api_key=api_key)
-    tools = None
-    if search_days > 0:
-        try:
-            import datetime as _dt
-            from xai_sdk.tools import web_search as _xai_web_search
-            from xai_sdk.tools import x_search as _xai_x_search
-            since = _dt.datetime.now() - _dt.timedelta(days=search_days)
-            tools = [_xai_web_search(), _xai_x_search(from_date=since)]
-        except ImportError as e:
-            logger.warning("Grok search tools unavailable (%s); brainstorming without search", e)
-
-    def _sample(with_tools: bool):
-        kwargs = {"tools": tools, "max_turns": 4} if with_tools else {}
-        chat = client.chat.create(model=_model, temperature=temperature, **kwargs)
-        chat.append(_xai_system(system))
-        chat.append(_xai_user(user))
-        return chat.sample()
-
     try:
-        resp = _sample(bool(tools))
+        client = xai_sdk.Client(api_key=api_key)
+        tools = None
+        if search_days > 0:
+            try:
+                import datetime as _dt
+                from xai_sdk.tools import web_search as _xai_web_search
+                from xai_sdk.tools import x_search as _xai_x_search
+                since = _dt.datetime.now() - _dt.timedelta(days=search_days)
+                tools = [_xai_web_search(), _xai_x_search(from_date=since)]
+            except ImportError as e:
+                logger.warning("Grok search tools unavailable (%s); brainstorming without search", e)
+
+        def _sample(with_tools: bool):
+            kwargs = {"tools": tools, "max_turns": 4} if with_tools else {}
+            chat = client.chat.create(model=_model, temperature=temperature, **kwargs)
+            chat.append(_xai_system(system))
+            chat.append(_xai_user(user))
+            return chat.sample()
+
+        try:
+            resp = _sample(bool(tools))
+        except Exception as e:
+            if not tools:
+                raise
+            logger.warning(
+                "Grok search failed (%s); retrying without search",
+                _redact_secret(str(e), api_key)[:160])
+            resp = _sample(False)
+        usage = getattr(resp, "server_side_tool_usage", None)
+        if usage:
+            logger.info("   🔎 Grok searches: %s", usage)
+        out = (getattr(resp, "content", "") or "").strip()
+        logger.info("✅ Grok %s returned %d chars", _model, len(out))
+        return out
     except Exception as e:
-        if not tools:
-            raise
-        logger.warning("Grok search failed (%s); retrying without search", str(e)[:160])
-        resp = _sample(False)
-    usage = getattr(resp, "server_side_tool_usage", None)
-    if usage:
-        logger.info("   🔎 Grok searches: %s", usage)
-    out = (getattr(resp, "content", "") or "").strip()
-    logger.info("✅ Grok %s returned %d chars", _model, len(out))
-    return out
+        # Provider errors sometimes echo the credential. Never pass it through.
+        raise RuntimeError(_redact_secret(str(e), api_key)) from None
 
 
 @app.route("/api/ideas/generate", methods=["POST"])
@@ -5781,8 +5864,9 @@ def api_ideas_generate():
         try:
             grok_ideas, grok_raw = _fut_g.result()
         except Exception as e:
-            logger.error(f"❌ Grok idea generation failed: {e}")
-            warnings.append(f"Grok failed: {e}")
+            _msg = _redact_secret(str(e), _resolve_xai_api_key())
+            logger.error("Grok idea generation failed: %s", _msg)
+            warnings.append(f"Grok failed: {_msg}")
 
     # Claude group first, then Grok — the UI groups by source in this order.
     clean = claude_ideas + grok_ideas
@@ -9600,13 +9684,14 @@ def api_keys_get():
         settings = _load_scriptcraft_settings()
 
         def _v(key, env):
-            return (settings.get(key) or "").strip() or os.getenv(env, "").strip()
+            return _saved_or_env_key(key, env)
 
         def _src(key, env):
             # Where the effective value comes from, for the dialog's source tag.
-            if (settings.get(key) or "").strip():
+            # A masked hint in the settings file is not a saved key.
+            if _usable_api_key(settings.get(key) or ""):
                 return "saved"
-            if os.getenv(env, "").strip():
+            if _env_key(env):
                 return "env"
             return "none"
 
@@ -10499,18 +10584,13 @@ def _grok_prompt_via_claude(
 
 
 def _resolve_xai_api_key() -> str:
-    """Resolve the xAI/Grok API key from saved server settings first, then the
-    XAI_API_KEY env var. Returns "" when neither is set (or is the placeholder)."""
-    key = ""
-    try:
-        key = (_load_scriptcraft_settings().get("grok_api_key") or "").strip()
-    except Exception:
-        key = ""
-    if not key:
-        key = (os.getenv("XAI_API_KEY") or "").strip()
-    if key == "your-xai-api-key-here":
-        return ""
-    return key
+    """xAI key for Grok calls.
+
+    Saved dialog key, then XAI_API_KEY (desktop .env), then GROK_API_KEY (the
+    name the container deploy injects). Blank, masked, and placeholder values
+    are skipped so they cannot shadow a real key.
+    """
+    return _saved_or_env_key("grok_api_key", "XAI_API_KEY")
 
 
 def _grok_prompt_via_xai(
