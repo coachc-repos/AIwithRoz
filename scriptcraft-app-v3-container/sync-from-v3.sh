@@ -10,7 +10,7 @@ SRC=../scriptcraft-app-v3
 V2C=../scriptcraft-app-v2-container
 
 rm -rf templates static console_ui linedrive_azure agent_instructions tools
-cp "$SRC/web_gui.py" .
+cp "$SRC/web_gui.py" "$SRC/explainer_video.py" .
 cp -R "$SRC/templates" "$SRC/static" "$SRC/console_ui" "$SRC/linedrive_azure" "$SRC/agent_instructions" .
 
 # tools/: the subset the v2 container ships (identical to the repo's tools/),
@@ -21,4 +21,4 @@ cp ../tools/media/emotional_thumbnail_generator.py tools/media/
 cp ../tools/media/grok_thumbnail_generator.py tools/media/
 
 find . -name __pycache__ -type d -prune -exec rm -rf {} +
-echo "✅ Synced from $SRC: web_gui.py, templates/, static/, console_ui/, linedrive_azure/, agent_instructions/, tools/"
+echo "✅ Synced from $SRC: web_gui.py, explainer_video.py, templates/, static/, console_ui/, linedrive_azure/, agent_instructions/, tools/"

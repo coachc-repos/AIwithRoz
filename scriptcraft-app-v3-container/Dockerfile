@@ -30,7 +30,9 @@ COPY requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
 # App source
-COPY container_app.py web_gui.py ./
+# explainer_video.py: the explainer pipeline web_gui imports (plan, build and
+# preview work here; rendering needs Chrome, which the image does not ship).
+COPY container_app.py web_gui.py explainer_video.py ./
 COPY templates/ ./templates/
 COPY static/ ./static/
 COPY console_ui/ ./console_ui/

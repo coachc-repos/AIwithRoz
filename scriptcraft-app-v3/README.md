@@ -315,13 +315,147 @@ and traces).
   the spoken text the way the HeyGen stage does. The key goes in the API Keys
   dialog (`ELEVENLABS_API_KEY`), masked like the others. The dialog lists
   your own voices first, with ▶ Sample, and offers Eleven v4 (the default),
-  Multilingual v2, and Flash v2.5; it remembers the last voice and model.
+  Multilingual v2, and Flash v2.5. Similarity (75% by default) and, on
+  Eleven v4, Clone Strength (professional voices; higher follows the training
+  recordings more closely) are sent with the voice's other saved settings
+  unchanged. It remembers the last voice, model, and sliders.
   Long scripts go in requests of about 3,000 characters, each passing the
   previous three request IDs (ElevenLabs request stitching) so the joins
   keep one delivery, and ffmpeg joins the parts. The Execution Log shows the
   start, each finished part, and the saved file. The key needs the Text to
   Speech and Voices (read) permissions; with User (read) the dialog also
   shows the credit balance.
+- **🎬 HeyGen clips from the ElevenLabs audio.** Under the audio in the same
+  dialog: pick one of the script's MP3s, one of your HeyGen templates, a
+  **Max frames per clip** (default 9,000, the upscaler's limit), and the
+  frame rate the limit is **Counted at** (default 30 fps, the upscaler's
+  rate). HeyGen renders at 25 fps, as long as the audio rounded up to a
+  whole frame, and the upscaler counts that length at its own rate. At
+  30 fps, 9,000 frames is 5:00, so a clip HeyGen made with 7,855 frames
+  (5:14) counts as 9,426. The app cuts the MP3 into the fewest clips whose
+  frames, counted that way, stay under the limit with 3 frames to spare. A
+  14:58 voiceover becomes 3 clips; anything over 15:00 needs 4. Every cut
+  lands in a silence found with ffmpeg `silencedetect` (−40 dB, 0.12 s or
+  longer). When there's room, that's the longest pause within 15 seconds of
+  an even split. When the limit is tight, it can be a short gap between
+  words, as near the gap's middle as the limit allows. If no silences line
+  up, the app adds a clip. The cut clips are measured before anything is
+  uploaded. The frames are copied, not re-encoded. Before you start, the
+  dialog asks the server for the plan and shows each clip's frames. The app reads the
+  template's avatar look, engine (Avatar V), background, and aspect ratio
+  from its composition and uploads every clip's audio as a HeyGen asset. It
+  then starts one audio-to-video render per clip (`POST /v3/videos` with
+  `audio_asset_id`), all at once. If HeyGen holds a render back because too
+  many are running, it starts on a later round. The app polls every 20
+  seconds and streams each finished clip into the script's output folder
+  under `heygen/` as `<title>_ElevenLabs_<time>_part1of3.mp4` and so on, then
+  counts its frames with ffprobe at the upscaler's rate and flags any over
+  the limit. The audio clips are kept in
+  `voiceover/clips/`. The videos stay out of `aRoll/`, which can already hold
+  chapter clips that Create DaVinci Project would put on the same timeline.
+  If one clip fails, the others are still saved and the error names the
+  clip. HeyGen takes up to 32 MB and 30 minutes of audio per video. The
+  dialog lists each clip with its span, frames, status, and a ▶ Play button.
+  The Execution Log shows the split, each clip's HeyGen video ID, a
+  heartbeat every 5 minutes, and each saved file with its frame count.
+- **🎞️ Explainer Video.** A toolbar button. Claude Opus 5.5 at high effort
+  turns the open script (its Host: lines and production notes) and one of
+  its ElevenLabs MP3s into an explainer: presentation slides plus
+  illustrated vector scenes drawn from the GROK IMAGINE briefs, synced word
+  by word to the narration, with the HeyGen presenter cut in where it
+  helps. `explainer_video.py` holds the pipeline; each video is a project
+  folder under the script's output folder in `explainer/<id>/`.
+  You can start with a **test clip** (from any point, 1 to 5 minutes, ending
+  on a sentence). Claude plans and writes only that stretch, and the
+  preview and renders stay inside it. Once you like the look, **Build the
+  rest of the video** plans and writes everything around it. Claude sees
+  the refined test slides as the approved look and your revision notes,
+  and the test slides are kept as they are.
+  1. *Prepare.* The narration is normalized to -14 LUFS (two-pass
+     loudnorm, true peak -1.5 dBTP). Every word is timed with ElevenLabs
+     forced alignment against the exact text the MP3 was read from. New MP3s
+     save it as a `.txt` next to them; older ones use the page's HeyGen
+     text. Without an ElevenLabs key, times are estimated from the pauses.
+     The ticked logo files from the folder's `images/` are cropped, and their
+     dark neutral marks are recolored off-white for the dark background.
+     Files without transparency, often photos, start unticked.
+     *Presenter.* HeyGen clips made from the same MP3 (the `_partNofM` set in
+     `heygen/`, or one long video) are listed when their length matches the
+     narration. A larger copy of the same length anywhere in the script folder
+     (a 4K upscale) is used in its place, after a check of its audio, or of
+     its frames when it has no audio. Each clip is placed on the narration
+     by matching its audio, anywhere in it: a coarse match, then a fine one,
+     about 0.3 s a clip. Clips made from another voiceover, or chapter clips
+     in HeyGen's own voice, are refused. A 640x360 copy of the footage plays
+     in the preview, and Claude gets one still of it.
+  2. *Plan.* One call returns the slides, sections, figures to confirm
+     ([VERIFY BEFORE RENDER]), [insert] values, the logos used, and any
+     questions. With a presenter, it also marks which slides show it, aiming
+     for the share you chose (about 15, 30 or 50% of the runtime): full
+     frame, an 800 px side panel, or a corner window.
+  3. *Build.* The slides are written as HTML and inline SVG in parallel
+     batches, 6 at a time, after the first call has cached the shared
+     script, transcript and plan. Rate limits and dropped streams are
+     retried. If a batch still fails, the other slides are saved as a
+     version.
+  4. *Compile.* Each slide starts on spoken words and each element appears
+     on its cue phrase. The compiler finds those phrases in the timed
+     transcript, flags cues it can't find or that fall after their slide,
+     and strips scripts, event handlers, external URLs, gradients, shadows,
+     filters and CSS animation.
+
+  The dialog plays a live preview: a sandboxed page that draws any moment
+  from its time, driven by the audio. It lists every slide with its words,
+  checks the layout (overlapping text, text off the frame or under the HUD),
+  and sends notes on ticked slides, or the one on screen, back to Claude.
+  Claude sees a still of each slide, and every revision is a new version
+  with Claude's one-line summary of what changed. "Whole video" rewrites
+  every slide, optionally after a new plan. **Needs you** lists what blocks
+  the 4K render: logos with no file (upload one, pick one from `images/`,
+  or keep the text badge), figures to confirm or correct, and [insert]
+  values to fill or leave out. Values are swapped in without another Claude
+  call.
+  The **Presenter** tab shows the clips, how well each matched and the
+  stretches of narration they cover.
+  - **Add clips from HeyGen** lists the videos in your HeyGen account,
+    searched by title, with thumbnails. Clips already in the script folder
+    are marked; the others are downloaded into `heygen/` (recorded in
+    `heygen/heygen_videos.json`) and placed by their audio.
+  - **Sections you place**: play or scrub, set In and Out at the playhead,
+    pick full frame, left or right panel, or corner window, and add. A small
+    copy of the presenter follows the playhead. Sections show as gold marks
+    under the scrubber (slides with the presenter are blue). They can be
+    edited or removed, fade in and out over 0.3 s, and win over a slide's
+    own presenter layout. A section with no footage under it gets a warning.
+  - It also has a framing slider for the side panels, "rescan for upscales"
+    (after your upscaler finishes), and remove.
+
+  Setup's "only where I put it" stops Claude from placing the presenter
+  itself. Each slide in the Slides
+  tab has a presenter dropdown that makes a new version without a Claude
+  call. The layout check flags text, illustrations or backgrounds that
+  cover the presenter, on presenter slides and halfway through each
+  section. **Fix flagged** sends them to Claude, and the brief names the
+  sections on each slide.
+  Renders run in headless Chrome over the DevTools protocol, which captures
+  each frame. On presenter slides the page leaves the presenter's area
+  see-through, and each worker's ffmpeg decodes just that stretch of the
+  footage, crops it to the layout and lays the frame on top. ffmpeg encodes
+  chunks in 6 parallel worker processes, joins them without re-encoding, and
+  adds the normalized narration, padded to the video's length:
+  - a sample clip from the playhead;
+  - the 1080p review cut;
+  - contact sheets of every slide;
+  - after you approve the version, the 4K final (3840x2160, 30 fps, H.264
+    video and AAC audio, faststart), with a 720p phone copy, a 4K PNG of
+    each asset slide, and the audio levels.
+
+  On this Mac, 4K renders at about 60 frames a second (a 15-minute video
+  in roughly 8 minutes). A 1:37 excerpt of a real script took 8 minutes
+  and $1.39 to plan and build. Budget about $1.50 of Claude usage per
+  minute of narration. A one-slide revision with its still took 40 s and
+  $0.22. Calls ask for a server-side refusal fallback, and the request
+  falls back to a plain call if the account does not accept it.
 
 ## Test results
 

@@ -1384,6 +1384,10 @@
                     <span class="toolbar-icon" style="display:inline-flex; align-items:center;"><img src="{{ url_for('static', filename='icons8-elevenlabs-500.png') }}" alt="ElevenLabs" onerror="this.replaceWith(document.createTextNode('🎙️'))" style="height:28px; width:auto; vertical-align:middle; display:inline-block; filter:invert(1);"></span>
                     <span class="toolbar-text">ElevenLabs Audio</span>
                 </button>
+                <button class="toolbar-btn" onclick="openExplainerModal()" title="Claude Opus 5.5 builds a headless explainer video (slides + illustrated scenes) on your ElevenLabs narration: preview and revise it, then render 4K">
+                    <span class="toolbar-icon">🎞️</span>
+                    <span class="toolbar-text">Explainer Video</span>
+                </button>
                 <button class="toolbar-btn" onclick="openYouTubePipelineModal()" title="Render audio → transcribe → generate YouTube details → publish" style="background:#7f1d1d; border-color:#b91c1c; color:#fff;">
                     <span class="toolbar-icon" style="display:inline-flex; align-items:center;"><img src="{{ url_for('static', filename='youtube_icon.png') }}" alt="YouTube" style="height:28px; width:auto; vertical-align:middle; display:inline-block;"></span>
                     <span class="toolbar-text">Publish to YouTube</span>
@@ -3527,12 +3531,19 @@
                         <button type="button" onclick="previewElevenLabsVoice()" title="Play ElevenLabs' sample of this voice (free)" style="padding:7px 12px; background:#334155; color:#e2e8f0; border:none; border-radius:4px; cursor:pointer; font-size:0.8em; font-weight:600;">▶ Sample</button>
                     </div>
                     <label for="elModel" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;">Model</label>
-                    <select id="elModel" style="display:block; width:100%; height:38px; box-sizing:border-box; line-height:normal; padding:0 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-size:0.9em;"></select>
+                    <select id="elModel" onchange="_elToggleClone()" style="display:block; width:100%; height:38px; box-sizing:border-box; line-height:normal; padding:0 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-size:0.9em;"></select>
                     <label for="elSimilarity" style="display:flex; justify-content:space-between; margin:12px 0 4px 0; font-size:0.85em; color:#94a3b8; font-weight:600;" title="ElevenLabs' Clarity + Similarity Enhancement: higher stays closer to the cloned voice. The voice's other saved settings are kept.">
                         <span>Similarity <span style="color:#64748b; font-weight:normal;">(closer to the cloned voice)</span></span>
                         <span id="elSimilarityValue" style="color:#e2e8f0;">75%</span>
                     </label>
                     <input type="range" id="elSimilarity" min="0" max="100" step="5" value="75" oninput="document.getElementById('elSimilarityValue').textContent = this.value + '%'" style="display:block; width:100%; margin:0; padding:0; height:auto; accent-color:#8b5cf6; background:transparent; border:none;">
+                    <div id="elCloneWrap" style="display:none;">
+                        <label for="elCloneStrength" style="display:flex; justify-content:space-between; margin:12px 0 4px 0; font-size:0.85em; color:#94a3b8; font-weight:600;" title="Professional voice clones on Eleven v4: higher follows your training recordings (delivery, accent) more closely; lower is smoother. ElevenLabs suggests starting at 0%.">
+                            <span>Clone strength <span style="color:#64748b; font-weight:normal;">(Eleven v4, professional voices: higher follows your recordings)</span></span>
+                            <span id="elCloneStrengthValue" style="color:#e2e8f0;">0%</span>
+                        </label>
+                        <input type="range" id="elCloneStrength" min="0" max="100" step="5" value="0" oninput="document.getElementById('elCloneStrengthValue').textContent = this.value + '%'" style="display:block; width:100%; margin:0; padding:0; height:auto; accent-color:#8b5cf6; background:transparent; border:none;">
+                    </div>
                 </div>
                 <div id="elBalance" style="font-size:0.78em; color:#64748b; margin-top:8px; min-height:1.1em;"></div>
                 <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px;">
@@ -3542,6 +3553,190 @@
                 <div id="elProgress" style="display:none; height:6px; background:#1e293b; border-radius:3px; margin-top:12px; overflow:hidden;"><div id="elProgressFill" style="height:100%; width:0; background:linear-gradient(90deg, #8b5cf6, #0ea5e9); transition:width 0.4s;"></div></div>
                 <div id="elStatus" style="margin-top:8px; font-size:0.82em; color:#94a3b8; min-height:1.1em;"></div>
                 <div id="elResult"></div>
+                <div id="hgaSection" style="margin-top:18px; padding:14px; background:#0b1220; border:1px solid #1e293b; border-radius:6px;">
+                    <div style="display:flex; align-items:center; gap:8px; font-size:0.9em; color:#e2e8f0; font-weight:700; margin-bottom:4px;"><img src="{{ url_for('static', filename='heygen_icon.png') }}" alt="HeyGen" onerror="this.replaceWith(document.createTextNode('🎬'))" style="height:16px; width:auto;"> HeyGen video from this audio</div>
+                    <p style="margin:0 0 10px 0; color:#64748b; font-size:0.78em; line-height:1.5;">Cuts the MP3 in pauses into the fewest clips that stay under the frame limit, counted at your upscaler's frame rate (at 30 fps, 9,000 frames is 5:00; HeyGen itself renders at 25 fps), then has a template's avatar speak each clip (audio-to-video), all rendering at once. The plan below shows each clip's frames before you spend credits. The clips are saved in this script's output folder under <code style="color:#60a5fa;">heygen/</code> as <code style="color:#60a5fa;">…_part1of3.mp4</code> and so on (not <code style="color:#60a5fa;">aRoll/</code>, so they aren't mixed with chapter clips); the audio for each is kept in <code style="color:#60a5fa;">voiceover/clips/</code>. HeyGen charges API credits for the total length; a 15-minute video can take 40 minutes or more to render.</p>
+                    <label for="hgaAudio" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;">Audio</label>
+                    <select id="hgaAudio" onchange="hgaPlanClips()" style="display:block; width:100%; height:38px; box-sizing:border-box; line-height:normal; padding:0 10px; margin-bottom:12px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-size:0.9em;"><option value="">Loading…</option></select>
+                    <label for="hgaTemplate" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;">Template <span style="color:#64748b; font-weight:normal;">(its avatar, background and aspect ratio are used)</span></label>
+                    <select id="hgaTemplate" onchange="hgaLoadAvatar()" style="display:block; width:100%; height:38px; box-sizing:border-box; line-height:normal; padding:0 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-size:0.9em;"><option value="">Loading…</option></select>
+                    <div id="hgaAvatar" style="display:flex; align-items:center; gap:10px; min-height:1.2em; margin:8px 0 12px 0; font-size:0.8em; color:#94a3b8;"></div>
+                    <div style="display:flex; align-items:flex-end; gap:10px; flex-wrap:wrap;">
+                        <div style="flex:1; min-width:140px;">
+                            <label for="hgaResolution" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;">Resolution</label>
+                            <select id="hgaResolution" style="display:block; width:100%; height:38px; box-sizing:border-box; line-height:normal; padding:0 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-size:0.9em;"><option value="1080p">1080p</option><option value="720p">720p</option></select>
+                        </div>
+                        <div style="flex:1; min-width:140px;">
+                            <label for="hgaMaxFrames" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;">Max frames per clip</label>
+                            <input type="number" id="hgaMaxFrames" min="250" max="108000" step="50" value="9000" oninput="hgaPlanClips()" style="display:block; width:100%; height:38px; box-sizing:border-box; padding:0 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-size:0.9em;">
+                        </div>
+                        <div style="flex:1; min-width:110px;">
+                            <label for="hgaCountFps" style="display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600;">Counted at</label>
+                            <select id="hgaCountFps" onchange="hgaPlanClips()" title="The frame rate your upscaler counts frames at" style="display:block; width:100%; height:38px; box-sizing:border-box; line-height:normal; padding:0 10px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-size:0.9em;"><option value="30">30 fps</option></select>
+                        </div>
+                        <button id="hgaGenerateBtn" onclick="startHeyGenAudioVideo()" disabled style="height:38px; padding:0 14px; background:linear-gradient(135deg, #0ea5e9, #0284c7); color:white; border:none; border-radius:4px; cursor:pointer; font-size:0.85em; font-weight:600; opacity:0.5;">🎬 Generate HeyGen video</button>
+                    </div>
+                    <div id="hgaPlan" style="margin-top:8px; font-size:0.8em; color:#94a3b8; min-height:1.1em;"></div>
+                    <div id="hgaProgress" style="display:none; height:6px; background:#1e293b; border-radius:3px; margin-top:12px; overflow:hidden;"><div id="hgaProgressFill" style="height:100%; width:0; background:linear-gradient(90deg, #0ea5e9, #8b5cf6); transition:width 0.4s;"></div></div>
+                    <div id="hgaStatus" style="margin-top:8px; font-size:0.82em; color:#94a3b8; min-height:1.1em;"></div>
+                    <div id="hgaClips"></div>
+                    <div id="hgaResult"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Explainer Video Modal: Claude Opus 5.5 builds slides + scenes on the ElevenLabs narration -->
+        <div id="explainerModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:10045; align-items:center; justify-content:center;">
+            <style>
+                #explainerModal .xv-btn { padding:7px 12px; background:#334155; color:#e2e8f0; border:none; border-radius:4px; cursor:pointer; font-size:0.8em; font-weight:600; white-space:nowrap; }
+                #explainerModal .xv-btn:disabled { opacity:0.45; cursor:default; }
+                #explainerModal .xv-btn.primary { background:linear-gradient(135deg, #f59e0b, #d97706); color:#111827; }
+                #explainerModal .xv-btn.go { background:linear-gradient(135deg, #10b981, #047857); color:#fff; }
+                #explainerModal .xv-btn.small { padding:4px 9px; font-size:0.75em; }
+                #explainerModal .xv-label { display:block; margin-bottom:6px; font-size:0.85em; color:#94a3b8; font-weight:600; }
+                #explainerModal .xv-input { width:100%; box-sizing:border-box; padding:7px 9px; background:#1e293b; border:1px solid #334155; border-radius:4px; color:#e2e8f0; font-size:0.85em; }
+                #explainerModal .xv-tabs { display:flex; gap:4px; border-bottom:1px solid #1e293b; margin-bottom:8px; flex-wrap:wrap; }
+                #explainerModal .xv-tab { padding:6px 10px; background:transparent; color:#94a3b8; border:none; border-bottom:2px solid transparent; cursor:pointer; font-size:0.8em; font-weight:600; }
+                #explainerModal .xv-tab.on { color:#f8fafc; border-bottom-color:#f59e0b; }
+                #explainerModal .xv-pane { display:none; overflow-y:auto; flex:1; min-height:0; }
+                #explainerModal .xv-pane.on { display:block; }
+                #explainerModal .xv-item { padding:9px 10px; background:#0b1220; border:1px solid #1e293b; border-radius:6px; margin-bottom:8px; font-size:0.8em; color:#cbd5e1; }
+                #explainerModal .xv-item.need { border-color:#b45309; }
+                #explainerModal .xv-slide { display:flex; gap:8px; align-items:flex-start; padding:6px 8px; border-radius:5px; cursor:pointer; font-size:0.78em; color:#cbd5e1; border:1px solid transparent; }
+                #explainerModal .xv-slide:hover { background:#111b2e; }
+                #explainerModal .xv-slide.cur { border-color:#f59e0b; background:#1a1608; }
+                #explainerModal .xv-logo-tile { display:flex; flex-direction:column; gap:5px; padding:8px; background:#0b1220; border:1px solid #1e293b; border-radius:6px; font-size:0.75em; color:#94a3b8; }
+                #explainerModal .xv-logo-img { height:54px; display:flex; align-items:center; justify-content:center; background:#090c12; border-radius:4px; }
+                #explainerModal .xv-logo-img img { max-height:44px; max-width:100%; object-fit:contain; }
+                #explainerModal a { color:#60a5fa; }
+                #explainerModal .xv-hg-row { display:flex; gap:8px; align-items:center; padding:5px; border-radius:5px; cursor:pointer; font-size:0.78em; color:#cbd5e1; }
+                #explainerModal .xv-hg-row:hover { background:#111b2e; }
+                #explainerModal .xv-hg-row img { width:88px; height:50px; object-fit:cover; border-radius:3px; background:#000; flex:0 0 88px; }
+                #explainerModal .xv-badge { display:inline-block; font-size:0.85em; padding:0 6px; border-radius:999px; border:1px solid #334155; color:#94a3b8; }
+                #explainerModal .xv-sec { display:flex; gap:5px; align-items:center; margin-bottom:5px; font-size:0.78em; }
+                #explainerModal .xv-sec input { width:72px; padding:3px 5px; }
+            </style>
+            <div style="background:#0f172a; border:1px solid #334155; border-radius:10px; width:min(1500px, 97vw); height:95vh; display:flex; flex-direction:column; padding:14px 18px; box-sizing:border-box; box-shadow:0 20px 50px rgba(0,0,0,0.6);">
+                <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px;">
+                    <h2 style="margin:0; color:#e2e8f0; font-size:1.15em; white-space:nowrap;">🎞️ Explainer Video</h2>
+                    <span id="xvModel" style="font-size:0.75em; color:#fbbf24; background:#1f1a0b; border:1px solid #713f12; border-radius:999px; padding:2px 9px; white-space:nowrap;">Claude Opus 5.5 · high effort</span>
+                    <select id="xvProject" onchange="xvPickProject(this.value)" class="xv-input" style="max-width:420px; height:32px; padding:0 8px;"></select>
+                    <span id="xvCost" style="font-size:0.75em; color:#64748b; white-space:nowrap;"></span>
+                    <span style="flex:1;"></span>
+                    <button onclick="closeExplainerModal()" style="background:transparent; color:#94a3b8; border:none; font-size:1.4em; cursor:pointer;">×</button>
+                </div>
+
+                <!-- Setup: narration, script, logos -->
+                <div id="xvSetup" style="display:none; flex:1; min-height:0; overflow-y:auto;">
+                    <p style="margin:0 0 12px 0; color:#94a3b8; font-size:0.85em; line-height:1.55; max-width:980px;">
+                        Claude Opus 5.5 (high effort) reads the open script with its production notes and your ElevenLabs narration, plans an explainer that blends presentation slides with illustrated vector scenes (from the GROK IMAGINE briefs), and writes every slide synced word by word to the narration. It can cut in your HeyGen presenter clips (full frame, a side panel or a corner window). Start with a short test clip, refine it, then build the rest in the same look. You preview it live with the audio, send notes on any slides, fill in the logos and figures it flags, and only then render the 4K final (3840×2160, 30 fps, -14 LUFS) with a 720p phone copy. Brand logos come only from your files; it never shows photos of real people or mock posts and statements.
+                    </p>
+                    <div id="xvScriptInfo" style="font-size:0.85em; color:#94a3b8; margin-bottom:12px;"></div>
+                    <label for="xvAudioSel" class="xv-label">Narration (ElevenLabs audio for this script)</label>
+                    <select id="xvAudioSel" class="xv-input" style="max-width:760px; height:36px; margin-bottom:14px;" onchange="_xvFillPresenters(); _xvCostNote()"></select>
+                    <span class="xv-label">What to build first</span>
+                    <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:14px; font-size:0.84em; color:#cbd5e1;">
+                        <label style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;"><input type="radio" name="xvBuild" value="test" checked onchange="_xvCostNote()"> 🧪 A test clip from
+                            <input id="xvTestStart" class="xv-input" value="0:00" style="width:64px; height:28px; padding:0 6px;" oninput="_xvCostNote()"> for
+                            <select id="xvTestLen" class="xv-input" style="width:auto; height:28px; padding:0 6px;" onchange="_xvCostNote()"><option value="1">1 min</option><option value="2" selected>2 min</option><option value="3">3 min</option><option value="5">5 min</option></select>
+                            <span style="color:#64748b;">(ends on a sentence; refine it, then build the rest in the same look)</span></label>
+                        <label style="display:flex; align-items:center; gap:6px;"><input type="radio" name="xvBuild" value="all" onchange="_xvCostNote()"> 🎞️ The whole video</label>
+                    </div>
+                    <span class="xv-label">Presenter <span style="color:#64748b; font-weight:normal;">(HeyGen clips made from this narration, found in the script folder; 4K upscales of the same length are used automatically)</span></span>
+                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
+                        <select id="xvHostSel" class="xv-input" style="max-width:620px; height:34px;" onchange="_xvCostNote()"></select>
+                        <select id="xvHostShare" class="xv-input" style="width:auto; height:34px;" title="How much of the runtime Claude puts the presenter on screen"><option value="mine">only where I put it</option><option value="little">on screen a little (~15%)</option><option value="some" selected>on screen some (~30%)</option><option value="lots">on screen a lot (~50%)</option></select>
+                    </div>
+                    <div id="xvHostNote" style="font-size:0.75em; color:#64748b; margin-bottom:14px;"></div>
+                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+                        <span class="xv-label" style="margin:0;">Logos <span style="color:#64748b; font-weight:normal;">(from <code id="xvImagesDir" style="color:#60a5fa;"></code>; ticked files are offered to Claude by brand name)</span></span>
+                        <span style="flex:1;"></span>
+                        <label class="xv-btn small" style="display:inline-block;">⬆️ Add logo files<input type="file" multiple accept=".png,.svg,.webp,.jpg,.jpeg" onchange="xvUploadImages(this)" style="display:none;"></label>
+                    </div>
+                    <div style="font-size:0.75em; color:#64748b; margin-bottom:8px;">Images without transparency (often photos) start unticked. "Recolor" turns dark marks off-white so they show on the dark background; pick "Keep colors" for marks that rely on white or dark interiors.</div>
+                    <div id="xvLogoGrid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:8px; margin-bottom:16px;"></div>
+                    <div id="xvSetupWarn" style="font-size:0.82em; color:#fbbf24; margin-bottom:8px;"></div>
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        <button id="xvStartBtn" class="xv-btn primary" onclick="xvStart()" style="padding:9px 16px; font-size:0.88em;">🎬 Plan &amp; build with Claude</button>
+                        <span id="xvCostNote" style="font-size:0.78em; color:#64748b;">Times every word with ElevenLabs, plans, then writes the slides 6 batches at a time. At high effort that is about $1.50 of Claude usage per minute of narration (roughly $12–15 and 15–25 minutes for a 15-minute video), shown live above; notes on single slides later cost cents.</span>
+                    </div>
+                </div>
+
+                <!-- Workspace: live preview, notes, renders + side tabs -->
+                <div id="xvWork" style="display:none; flex:1; min-height:0; gap:14px; grid-template-columns:minmax(0, 1fr) 430px;">
+                    <div style="display:flex; flex-direction:column; min-height:0; min-width:0; gap:8px;">
+                        <div style="position:relative; width:100%; max-height:58vh; aspect-ratio:16/9; background:#000; border:1px solid #1e293b; border-radius:6px; overflow:hidden; align-self:center;">
+                            <iframe id="xvFrame" sandbox="allow-scripts" title="Explainer preview" style="position:absolute; inset:0; width:100%; height:100%; border:0;"></iframe>
+                            <div id="xvFrameNote" style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:30px; color:#64748b; font-size:0.9em;"></div>
+                        </div>
+                        <audio id="xvAudio" preload="auto" style="display:none;"></audio>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <button class="xv-btn" onclick="xvStep(-1)" title="Previous slide">⏮</button>
+                            <button id="xvPlayBtn" class="xv-btn" onclick="xvPlayPause()" style="min-width:64px;">▶ Play</button>
+                            <button class="xv-btn" onclick="xvStep(1)" title="Next slide">⏭</button>
+                            <div style="flex:1; position:relative; display:flex; align-items:center;">
+                                <input type="range" id="xvScrub" min="0" max="1" step="0.05" value="0" oninput="xvScrubTo(+this.value)" style="width:100%; accent-color:#f59e0b; background:transparent; border:none; padding:0;">
+                                <div id="xvMarks" title="Presenter: gold = sections you placed, blue = slides with the presenter" style="position:absolute; left:8px; right:8px; bottom:-5px; height:4px; pointer-events:none;"></div>
+                            </div>
+                            <span id="xvTime" style="font-size:0.78em; color:#94a3b8; font-variant-numeric:tabular-nums; white-space:nowrap;">0:00 / 0:00</span>
+                        </div>
+                        <div id="xvNow" style="font-size:0.78em; color:#94a3b8; min-height:1.2em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+                        <div id="xvSpanBar" style="display:none; align-items:center; gap:10px; background:#0b1a12; border:1px solid #14532d; border-radius:6px; padding:8px 10px; font-size:0.8em; color:#bbf7d0;"></div>
+                        <div style="background:#0b1220; border:1px solid #1e293b; border-radius:6px; padding:10px;">
+                            <textarea id="xvFeedback" rows="3" class="xv-input" placeholder="Notes for Claude: what to change. Tick slides on the right (or the one playing is used), e.g. “Make the 6.36% bigger and red, and show the three accounts as cards instead of a list.”" style="resize:vertical; min-height:58px; font-family:inherit;"></textarea>
+                            <div style="display:flex; align-items:center; gap:12px; margin-top:8px; flex-wrap:wrap; font-size:0.78em; color:#94a3b8;">
+                                <label><input type="radio" name="xvScope" value="slides" checked onchange="xvScopeChanged()"> <span id="xvScopeSlides">Selected slides</span></label>
+                                <label><input type="radio" name="xvScope" value="all" onchange="xvScopeChanged()"> Whole video (rewrite every slide)</label>
+                                <label id="xvReplanWrap" style="display:none;"><input type="checkbox" id="xvReplan"> Re-plan first</label>
+                                <label id="xvSeeWrap"><input type="checkbox" id="xvSee" checked> Let Claude see the slides</label>
+                                <span style="flex:1;"></span>
+                                <button class="xv-btn" onclick="xvFixLayout()" title="Send the slides with layout warnings back to Claude to fix">🛠 Fix flagged slides</button>
+                                <button id="xvReviseBtn" class="xv-btn primary" onclick="xvRevise()">✏️ Revise with Claude</button>
+                            </div>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <button class="xv-btn" onclick="xvRender('sample')" title="Render a 1080p clip with audio from the playhead">🎞️ Sample clip</button>
+                            <select id="xvSampleLen" class="xv-input" style="width:auto; height:30px; padding:0 6px;"><option value="20">20 s</option><option value="30" selected>30 s</option><option value="60">60 s</option><option value="120">2 min</option></select>
+                            <button class="xv-btn" onclick="xvRender('review')" title="Render the whole video at 1080p with audio">📼 1080p review cut</button>
+                            <button class="xv-btn" onclick="xvStills()" title="Stills of every slide, fully built, on contact sheets">📸 Contact sheets</button>
+                            <span style="flex:1;"></span>
+                            <button id="xvApproveBtn" class="xv-btn" onclick="xvApprove()">✅ Approve this version</button>
+                            <button id="xvFinalBtn" class="xv-btn go" onclick="xvRender('final')">🎬 Render 4K final</button>
+                        </div>
+                        <div id="xvFinalNote" style="font-size:0.76em; color:#94a3b8; min-height:1.1em;"></div>
+                    </div>
+                    <div style="display:flex; flex-direction:column; min-height:0; min-width:0;">
+                        <div class="xv-tabs">
+                            <button class="xv-tab on" data-pane="needs" onclick="xvTab('needs')">Needs you <span id="xvNeedsCount"></span></button>
+                            <button class="xv-tab" data-pane="slides" onclick="xvTab('slides')">Slides <span id="xvSlidesCount"></span></button>
+                            <button class="xv-tab" data-pane="presenter" onclick="xvTab('presenter')">Presenter <span id="xvHostCount"></span></button>
+                            <button class="xv-tab" data-pane="plan" onclick="xvTab('plan')">Plan</button>
+                            <button class="xv-tab" data-pane="versions" onclick="xvTab('versions')">Versions</button>
+                            <button class="xv-tab" data-pane="files" onclick="xvTab('files')">Files</button>
+                        </div>
+                        <div id="xvPane-needs" class="xv-pane on"></div>
+                        <div id="xvPane-slides" class="xv-pane">
+                            <div style="display:flex; gap:6px; margin-bottom:6px;">
+                                <button class="xv-btn small" onclick="xvSelectFlagged()">Tick flagged</button>
+                                <button class="xv-btn small" onclick="xvSelectNone()">Clear ticks</button>
+                                <span id="xvChecking" style="font-size:0.72em; color:#64748b; align-self:center;"></span>
+                            </div>
+                            <div id="xvSlideList"></div>
+                        </div>
+                        <div id="xvPane-presenter" class="xv-pane"></div>
+                        <div id="xvPane-plan" class="xv-pane"></div>
+                        <div id="xvPane-versions" class="xv-pane"></div>
+                        <div id="xvPane-files" class="xv-pane"></div>
+                    </div>
+                </div>
+
+                <div style="margin-top:8px;">
+                    <div id="xvProgress" style="display:none; height:6px; background:#1e293b; border-radius:3px; overflow:hidden;"><div id="xvProgressFill" style="height:100%; width:0; background:linear-gradient(90deg, #f59e0b, #8b5cf6); transition:width 0.4s;"></div></div>
+                    <div style="display:flex; align-items:center; gap:10px; margin-top:6px;">
+                        <div id="xvStatus" style="flex:1; font-size:0.82em; color:#94a3b8; min-height:1.1em;"></div>
+                        <button id="xvStopBtn" class="xv-btn small" onclick="xvCancel()" style="display:none;">⏹ Stop</button>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -11494,7 +11689,13 @@ Thank you for watching!`;
         // (Reuses the project-wide escapeHtml defined earlier in this file.)
 
         // ---- ElevenLabs Audio: the HeyGen script read by an ElevenLabs voice ----
-        let _elPrepared = null, _elPreview = null, _elPoll = null;
+        let _elPrepared = null, _elPreview = null, _elPoll = null, _elCloneModels = ['eleven_v4'];
+
+        // Clone Strength exists only on Eleven v4 (professional voices).
+        function _elToggleClone() {
+            const wrap = document.getElementById('elCloneWrap');
+            if (wrap) wrap.style.display = _elCloneModels.includes(document.getElementById('elModel').value) ? 'block' : 'none';
+        }
 
         // Execution Log, like the B-roll regenerate button: the live Progress
         // Log while a run is going, else the Execution Log itself.
@@ -11530,6 +11731,7 @@ Thank you for watching!`;
             if (!modal) return;
             modal.style.display = 'flex';
             if (_elPoll !== null) return;  // a job is running: keep showing it
+            hgaRefresh();
             const info = document.getElementById('elSourceInfo');
             const sel = document.getElementById('elVoice');
             const modelSel = document.getElementById('elModel');
@@ -11590,6 +11792,11 @@ Thank you for watching!`;
             const simEl = document.getElementById('elSimilarity');
             simEl.value = Math.round(100 * (typeof v.similarity === 'number' ? v.similarity : 0.75));
             document.getElementById('elSimilarityValue').textContent = simEl.value + '%';
+            if (Array.isArray(v.clone_strength_models)) _elCloneModels = v.clone_strength_models;
+            const csEl = document.getElementById('elCloneStrength');
+            csEl.value = Math.round(100 * (typeof v.clone_strength === 'number' ? v.clone_strength : 0));
+            document.getElementById('elCloneStrengthValue').textContent = csEl.value + '%';
+            _elToggleClone();
             if (v.balance) {
                 const short = _elPrepared && v.balance.remaining < _elPrepared.chars;
                 bal.innerHTML = (short ? '<span style="color:#fbbf24;">⚠️ ' : '<span>')
@@ -11624,6 +11831,8 @@ Thank you for watching!`;
             const voiceName = opt.dataset.name || opt.textContent;
             const model = document.getElementById('elModel').value;
             const similarity = Number(document.getElementById('elSimilarity').value) / 100;
+            const cloneStrength = Number(document.getElementById('elCloneStrength').value) / 100;
+            const usesClone = _elCloneModels.includes(model);
             if (_elPreview) { _elPreview.pause(); _elPreview = null; }
             _elSetGenerate(false);
             document.getElementById('elResult').innerHTML = '';
@@ -11635,7 +11844,7 @@ Thank you for watching!`;
                 const r = await fetch('/api/elevenlabs/tts', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(Object.assign({}, _elPrepared.body, {
-                        voice_id: opt.value, voice_name: voiceName, model_id: model, similarity: similarity, title: _elPrepared.title }))
+                        voice_id: opt.value, voice_name: voiceName, model_id: model, similarity: similarity, clone_strength: cloneStrength, title: _elPrepared.title }))
                 });
                 d = await r.json();
             } catch (e) { d = { success: false, error: e.message }; }
@@ -11647,7 +11856,8 @@ Thank you for watching!`;
             }
             _elLog('🎙️ ElevenLabs audio started: ' + d.chars.toLocaleString() + ' characters of the ' + d.source
                 + (_elPrepared.title ? ' for “' + _elPrepared.title + '”' : '') + ' in ' + d.parts
-                + (d.parts === 1 ? ' request' : ' requests') + ', voice “' + voiceName + '”, ' + model + ', similarity ' + Math.round(similarity * 100) + '%…');
+                + (d.parts === 1 ? ' request' : ' requests') + ', voice “' + voiceName + '”, ' + model + ', similarity ' + Math.round(similarity * 100) + '%'
+                + (usesClone ? ', clone strength ' + Math.round(cloneStrength * 100) + '%' : '') + '…');
             const bar = document.getElementById('elProgress'), fill = document.getElementById('elProgressFill');
             bar.style.display = 'block';
             fill.style.width = '3%';
@@ -11690,7 +11900,1217 @@ Thank you for watching!`;
                     + '<a href="' + src + '?download=1" style="padding:7px 12px; background:#0ea5e9; color:white; border-radius:4px; text-decoration:none; font-size:0.8em; font-weight:600;">💾 Download MP3</a>'
                     + '<span style="font-size:0.75em; color:#64748b; font-family:monospace; word-break:break-all;">Saved to ' + escapeHtml(s.path || '') + '</span></div>';
                 _elLog('✅ ElevenLabs audio saved in ' + secs() + 's (~' + len + ', ' + mb + ' MB): ' + (s.path || ''), 'success');
+                hgaRefresh((s.path || '').split('/').pop());
             }, 2000);
+        }
+
+        // ---- HeyGen video from an ElevenLabs MP3 (audio-to-video with a template's avatar) ----
+        let _hgaPoll = null, _hgaAvatarOk = false, _hgaFiles = [], _hgaParts = [];
+        let _hgaPlan = null, _hgaPlanSeq = 0, _hgaPlanTimer = null, _hgaRange = [250, 108000];
+
+        function _hgaStatus(html, color) {
+            const el = document.getElementById('hgaStatus');
+            if (el) { el.style.color = color || '#94a3b8'; el.innerHTML = html; }
+        }
+
+        function _hgaLen(secs) {
+            secs = Math.round(secs || 0);
+            return Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+        }
+
+        function _hgaMaxFrames() {
+            const v = Number(document.getElementById('hgaMaxFrames').value);
+            return Number.isInteger(v) && v >= _hgaRange[0] && v <= _hgaRange[1] ? v : 0;
+        }
+
+        function _hgaCountFps() { return Number(document.getElementById('hgaCountFps').value) || 30; }
+
+        // Ask the server how the chosen MP3 would be cut: each clip's frames at the
+        // upscaler's rate, the same plan the render uses. Waits for typing to pause.
+        function hgaPlanClips() {
+            clearTimeout(_hgaPlanTimer);
+            _hgaPlan = null;
+            hgaUpdateButton();
+            const plan = document.getElementById('hgaPlan');
+            const audio = document.getElementById('hgaAudio').value;
+            const maxFrames = _hgaMaxFrames();
+            const seq = ++_hgaPlanSeq;
+            if (!audio) { plan.textContent = ''; return; }
+            if (!maxFrames) { plan.innerHTML = '<span style="color:#f87171;">Max frames per clip must be ' + _hgaRange[0].toLocaleString() + '–' + _hgaRange[1].toLocaleString() + '.</span>'; return; }
+            plan.textContent = 'Planning the clips…';
+            _hgaPlanTimer = setTimeout(async () => {
+                const q = new URLSearchParams({ title: _elSource().title || '', voiceover: audio, max_frames: maxFrames, fps: _hgaCountFps() });
+                let d;
+                try { d = await (await fetch('/api/heygen/audio-video/plan?' + q)).json(); }
+                catch (e) { d = { success: false, error: e.message }; }
+                if (seq !== _hgaPlanSeq) return;  // the choice changed meanwhile
+                if (!d.success) { plan.innerHTML = '<span style="color:#f87171;">❌ ' + escapeHtml(d.error || 'Could not plan the clips.') + '</span>'; return; }
+                _hgaPlan = d;
+                const n = d.clips.length;
+                plan.innerHTML = escapeHtml(_hgaLen(d.audio_seconds) + ' → ' + (n === 1 ? 'one video' : n + ' clips') + ', frames counted at ' + d.fps + ' fps (limit ' + d.max_frames.toLocaleString() + '): '
+                    + d.clips.map(c => c.frames.toLocaleString()).join(' · ') + (n > 1 && d.in_pauses ? ', cut in pauses.' : '.'))
+                    + (n > 1 && !d.in_pauses ? ' <span style="color:#fbbf24;">⚠️ No pauses line up, so the cuts are even and may fall mid-word.</span>' : '');
+                hgaUpdateButton();
+            }, 300);
+        }
+
+        function hgaUpdateButton() {
+            const b = document.getElementById('hgaGenerateBtn');
+            const n = _hgaPlan ? _hgaPlan.clips.length : 0;
+            const ok = _hgaPoll === null && _hgaAvatarOk && n > 0 && !!document.getElementById('hgaTemplate').value;
+            if (b) {
+                b.disabled = !ok; b.style.opacity = ok ? '1' : '0.5'; b.style.cursor = ok ? 'pointer' : 'default';
+                if (_hgaPoll === null) b.textContent = n > 1 ? '🎬 Generate ' + n + ' HeyGen clips' : '🎬 Generate HeyGen video';
+            }
+        }
+
+        // Fill the audio, template, resolution, and frame-limit pickers. select:
+        // the MP3 to preselect (the one just generated).
+        async function hgaRefresh(select) {
+            if (_hgaPoll !== null) return;  // a video is rendering: keep showing it
+            const audioSel = document.getElementById('hgaAudio');
+            const tplSel = document.getElementById('hgaTemplate');
+            const title = _elSource().title || '';
+            let d;
+            try { d = await (await fetch('/api/heygen/audio-video/options?title=' + encodeURIComponent(title))).json(); }
+            catch (e) { d = { success: false, error: e.message, voiceovers: [] }; }
+            const files = _hgaFiles = d.voiceovers || [];
+            if (d.max_frames_range) _hgaRange = d.max_frames_range;
+            if (d.max_frames) document.getElementById('hgaMaxFrames').value = d.max_frames;
+            if (d.count_fps_choices) {
+                const fpsSel = document.getElementById('hgaCountFps');
+                fpsSel.innerHTML = d.count_fps_choices.map(f => '<option value="' + f + '">' + f + ' fps' + (f === 25 ? ' (HeyGen’s own)' : '') + '</option>').join('');
+                fpsSel.value = String(d.count_fps || 30);
+            }
+            audioSel.innerHTML = files.length
+                ? files.map(f => {
+                    const when = new Date(f.modified * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+                    return '<option value="' + escapeHtml(f.name) + '">' + escapeHtml(when + ' · ' + _hgaLen(f.seconds) + ' · ' + f.name) + '</option>';
+                }).join('')
+                : '<option value="">No ElevenLabs audio for this script yet — generate it above</option>';
+            if (select && files.some(f => f.name === select)) audioSel.value = select;
+            hgaPlanClips();
+            if (!d.success) {
+                tplSel.innerHTML = '<option value="">—</option>';
+                _hgaAvatarOk = false;
+                document.getElementById('hgaAvatar').innerHTML = d.needs_key
+                    ? '<span style="color:#fbbf24;">⚠️ No HeyGen API key yet.</span> <a href="#" onclick="closeElevenLabsModal(); openApiKeysModal(); return false;" style="color:#60a5fa;">🔑 Add it in API Keys</a>'
+                    : '<span style="color:#f87171;">❌ ' + escapeHtml(d.error || 'Could not load your HeyGen templates.') + '</span>';
+                hgaUpdateButton();
+                return;
+            }
+            tplSel.innerHTML = d.templates.map(t => '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name) + '</option>').join('');
+            const pageTpl = (document.getElementById('heygenTemplateId') || {}).value || '';
+            const want = [d.template_id, pageTpl].find(id => id && d.templates.some(t => t.id === id));
+            if (want) tplSel.value = want;
+            document.getElementById('hgaResolution').value = d.resolution || '1080p';
+            await hgaLoadAvatar();
+        }
+
+        async function hgaLoadAvatar() {
+            const id = document.getElementById('hgaTemplate').value;
+            const box = document.getElementById('hgaAvatar');
+            _hgaAvatarOk = false;
+            hgaUpdateButton();
+            if (!id) { box.innerHTML = ''; return; }
+            box.textContent = 'Reading the template’s avatar…';
+            let a;
+            try { a = await (await fetch('/api/heygen/template-avatar/' + encodeURIComponent(id))).json(); }
+            catch (e) { a = { success: false, error: e.message }; }
+            if (document.getElementById('hgaTemplate').value !== id) return;  // changed meanwhile
+            if (!a.success) { box.innerHTML = '<span style="color:#f87171;">❌ ' + escapeHtml(a.error || 'Could not read the template.') + '</span>'; return; }
+            const engine = { avatar_v: 'Avatar V', avatar_iv: 'Avatar IV', avatar_iii: 'Avatar III' }[a.engine] || 'HeyGen default engine';
+            const bg = a.background ? (a.background.type === 'color' ? 'background ' + a.background.value : 'image background') : 'no background set';
+            box.innerHTML = (a.preview_image_url ? '<img src="' + escapeHtml(a.preview_image_url) + '" alt="" style="height:44px; width:auto; border-radius:4px; border:1px solid #334155;">' : '')
+                + '<span>Avatar: <strong style="color:#e2e8f0;">' + escapeHtml(a.avatar_name) + '</strong> · ' + engine + ' · ' + escapeHtml(a.aspect_ratio) + ' · ' + escapeHtml(bg) + '</span>';
+            _hgaAvatarOk = true;
+            hgaUpdateButton();
+        }
+
+        // One row per clip: its span of the audio, frames, and HeyGen status; ▶ plays a saved clip.
+        function _hgaRenderClips(jobId, parts, maxFrames, fps) {
+            _hgaParts = parts;
+            const many = parts.length > 1;
+            document.getElementById('hgaClips').innerHTML = '<div style="margin-top:8px; display:flex; flex-direction:column; gap:4px;">' + parts.map(p => {
+                const st = { queued: '⏸ ' + (p.heygen_status === 'held back' ? 'HeyGen is busy; starts when a render slot frees up' : 'waiting to start'),
+                    rendering: '⏳ ' + (p.heygen_status || 'waiting'), downloading: '⬇️ downloading',
+                    done: '✅ saved', failed: '❌ ' + (p.error || 'failed') }[p.status] || p.status;
+                const frames = p.status === 'done' && p.video_frames ? p.video_frames : p.frames;
+                return '<div style="display:flex; align-items:center; gap:8px; font-size:0.78em; color:#94a3b8; padding:6px 8px; background:#111827; border:1px solid #1e293b; border-radius:4px;">'
+                    + '<strong style="color:#e2e8f0; white-space:nowrap;">' + (many ? 'Clip ' + p.index + ' of ' + parts.length : 'Video') + '</strong>'
+                    + '<span style="white-space:nowrap;">' + _hgaLen(p.start) + '–' + _hgaLen(p.end) + ' · ' + frames.toLocaleString() + ' frames at ' + fps + ' fps'
+                    + (frames > maxFrames ? ' <span style="color:#fbbf24;">⚠️ over ' + maxFrames.toLocaleString() + '</span>' : '') + '</span>'
+                    + '<span title="' + escapeHtml(p.error || '') + '" style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;' + (p.status === 'failed' ? ' color:#f87171;' : '') + '">' + escapeHtml(st) + '</span>'
+                    + (p.status === 'done' ? '<button onclick="hgaPlay(\'' + jobId + '\', ' + p.index + ')" style="height:26px; padding:0 10px; background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:4px; cursor:pointer; font-size:0.95em;">▶ Play</button>' : '')
+                    + '</div>';
+            }).join('') + '</div>';
+        }
+
+        function hgaPlay(jobId, index) {
+            const p = _hgaParts.find(x => x.index === index) || {};
+            const src = '/api/heygen/audio-video/' + encodeURIComponent(jobId) + '/file?part=' + index;
+            document.getElementById('hgaResult').innerHTML =
+                '<video controls preload="metadata" src="' + src + '" style="width:100%; margin-top:10px; border-radius:6px; background:#000;"></video>'
+                + '<div style="font-size:0.75em; color:#64748b; font-family:monospace; word-break:break-all; margin-top:6px;">' + escapeHtml(p.path || '') + '</div>';
+        }
+
+        async function startHeyGenAudioVideo() {
+            if (_hgaPoll !== null) return;
+            const audio = document.getElementById('hgaAudio').value;
+            const tplSel = document.getElementById('hgaTemplate');
+            const template = tplSel.value, templateName = tplSel.options[tplSel.selectedIndex] ? tplSel.options[tplSel.selectedIndex].textContent : '';
+            const resolution = document.getElementById('hgaResolution').value;
+            const maxFrames = _hgaMaxFrames(), fps = _hgaCountFps();
+            if (!audio || !template || !_hgaAvatarOk || !maxFrames || !_hgaPlan) return;
+            const title = _elSource().title || '';
+            const b = document.getElementById('hgaGenerateBtn');
+            b.disabled = true; b.style.opacity = '0.5';
+            document.getElementById('hgaResult').innerHTML = '';
+            document.getElementById('hgaClips').innerHTML = '';
+            const t0 = Date.now();
+            const mins = () => Math.floor((Date.now() - t0) / 60000);
+            _hgaStatus('Starting…');
+            let d;
+            try {
+                const r = await fetch('/api/heygen/audio-video', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: title, voiceover: audio, template_id: template, resolution: resolution, max_frames: maxFrames, fps: fps })
+                });
+                d = await r.json();
+            } catch (e) { d = { success: false, error: e.message }; }
+            if (!d.success) {
+                _hgaStatus('❌ ' + escapeHtml(d.error || 'Could not start.'), '#f87171');
+                _elLog('❌ HeyGen video could not start: ' + (d.error || 'unknown error'), 'error');
+                hgaUpdateButton();
+                return;
+            }
+            const many = d.clips > 1;
+            _elLog('🎬 HeyGen ' + (many ? d.clips + ' clips' : 'video') + ' from ' + audio + ' (' + _hgaLen(d.audio_seconds) + ') with “' + templateName + '” (avatar ' + d.avatar + '), ' + resolution
+                + (many ? ', up to ' + d.max_frames.toLocaleString() + ' frames per clip at ' + d.fps + ' fps' : '') + '. Rendering can take 15 minutes or more…');
+            const bar = document.getElementById('hgaProgress'), fill = document.getElementById('hgaProgressFill');
+            bar.style.display = 'block';
+            fill.style.width = '5%';
+            const seen = {};
+            let lastBeat = 0, busy = false, splitLogged = false;
+            _hgaPoll = setInterval(async () => {
+                if (busy) return;
+                busy = true;
+                let s;
+                try { s = await (await fetch('/api/heygen/audio-video/' + d.job_id)).json(); }
+                catch (e) { busy = false; return; }
+                busy = false;
+                const parts = s.parts || [];
+                const name = p => parts.length > 1 ? 'clip ' + p.index + ' of ' + parts.length : 'video';
+                if (parts.length) {
+                    if (!splitLogged && parts.length > 1) {
+                        splitLogged = true;
+                        _elLog('✂️ Split ' + (s.in_pauses === false ? 'evenly (no pauses line up)' : 'in pauses') + ': ' + parts.map(p => 'clip ' + p.index + ' ' + _hgaLen(p.start) + '–' + _hgaLen(p.end) + ' (' + p.frames.toLocaleString() + ' frames)').join(', ') + ', counted at ' + d.fps + ' fps');
+                    }
+                    parts.forEach(p => {
+                        if (seen[p.index] === p.status) return;
+                        seen[p.index] = p.status;
+                        if (p.status === 'rendering') _elLog('🎬 HeyGen ' + name(p) + ' is rendering (video ' + p.video_id + ')…');
+                        else if (p.status === 'done') _elLog((p.video_frames > d.max_frames ? '⚠️ ' : '✅ ') + 'HeyGen ' + name(p) + ' saved after ' + Math.max(1, mins()) + ' min ('
+                            + Math.round((p.size || 0) / 1048576) + ' MB' + (p.video_frames ? ', ' + p.video_frames.toLocaleString() + ' frames at ' + d.fps + ' fps' : '')
+                            + (p.video_frames > d.max_frames ? ', over the ' + d.max_frames.toLocaleString() + ' limit' : '') + '): ' + p.path,
+                            p.video_frames > d.max_frames ? 'error' : 'success');
+                        else if (p.status === 'failed') _elLog('❌ HeyGen ' + name(p) + ' failed: ' + p.error, 'error');
+                    });
+                    _hgaRenderClips(d.job_id, parts, d.max_frames, d.fps);
+                }
+                if (s.success && s.status === 'running') {
+                    const finished = parts.filter(p => p.status === 'done' || p.status === 'failed').length;
+                    fill.style.width = s.stage === 'splitting' ? '8%' : s.stage === 'uploading' ? '12%'
+                        : s.stage === 'rendering' ? (20 + 75 * finished / Math.max(1, parts.length)) + '%' : '5%';
+                    if (s.stage === 'rendering' && mins() - lastBeat >= 5) {
+                        lastBeat = mins();
+                        _elLog('⏳ HeyGen still rendering (' + mins() + ' min): ' + parts.map(p => (parts.length > 1 ? 'clip ' + p.index + ' ' : '')
+                            + (p.status === 'rendering' ? (p.heygen_status || 'waiting') : p.status)).join(', ') + '…');
+                    }
+                    _hgaStatus(escapeHtml(s.message || 'Working…'));
+                    return;
+                }
+                clearInterval(_hgaPoll);
+                _hgaPoll = null;
+                hgaUpdateButton();
+                if (!s.success || s.status !== 'done') {
+                    const err = s.error || 'unknown error';
+                    _hgaStatus('❌ ' + escapeHtml(err), '#f87171');
+                    _elLog('❌ HeyGen ' + (many ? 'clips' : 'video') + ' failed after ' + mins() + ' min: ' + err, 'error');
+                    return;
+                }
+                fill.style.width = '100%';
+                const mb = Math.round(parts.reduce((a, p) => a + (p.size || 0), 0) / 1048576);
+                _hgaStatus('✅ ' + (many ? parts.length + ' clips' : 'Video') + ' done in ' + Math.max(1, mins()) + ' min, ' + mb + ' MB.', '#34d399');
+                hgaPlay(d.job_id, 1);
+                _elLog('✅ HeyGen ' + (many ? parts.length + ' clips' : 'video') + ' finished after ' + Math.max(1, mins()) + ' min (' + mb + ' MB) in ' + (s.folder || ''), 'success');
+            }, 10000);
+        }
+
+        // ---- Explainer Video: Claude Opus 5.5 slides + scenes on the ElevenLabs narration ----
+        // The preview is a sandboxed iframe whose page draws any moment of the
+        // video from its time; this dialog plays the narration and sends the
+        // audio's time to it (postMessage), so what you see is what renders.
+        const _xv = { title: '', pid: '', opts: null, state: null, poll: null, t: 0, playing: false, dur: 0,
+                      start: 0, end: 0, slides: [], checks: {}, selected: new Set(), frameKey: '', audioPid: '',
+                      lastStage: '', images: [] };
+        const _XV_HOST_NAMES = { '': 'No presenter', full: 'Full frame', left: 'Left panel', right: 'Right panel', pip: 'Corner window' };
+
+        function _xvQ() { return 'title=' + encodeURIComponent(_xv.title); }
+        function _xvEsc(v) { return escapeHtml(String(v === undefined || v === null ? '' : v)); }
+        function _xvFmt(s) { s = Math.max(0, Math.round(s || 0)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+        function _xvWhen(ts) { return ts ? new Date(ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; }
+        function _xvStatus(html, color) { const el = document.getElementById('xvStatus'); el.style.color = color || '#94a3b8'; el.innerHTML = html; }
+        function _xvApi(rest) { return '/api/explainer/' + encodeURIComponent(_xv.pid) + rest; }
+        async function _xvPost(path, body) {
+            try {
+                const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(Object.assign({ title: _xv.title }, body || {})) });
+                return await r.json();
+            } catch (e) { return { success: false, error: e.message }; }
+        }
+        async function _xvForm(path, fields) {
+            const fd = new FormData();
+            fd.append('title', _xv.title);
+            Object.keys(fields).forEach(k => fd.append(k, fields[k]));
+            try { return await (await fetch(path, { method: 'POST', body: fd })).json(); }
+            catch (e) { return { success: false, error: e.message }; }
+        }
+        function _xvParseTime(v) {
+            const m = String(v || '').trim().match(/^(?:(\d+):)?(\d+(?:\.\d+)?)$/);
+            return m ? (+(m[1] || 0)) * 60 + (+m[2]) : NaN;
+        }
+        function _xvScript() {
+            const ta = document.getElementById('scriptInput');
+            return (window.currentScript || (ta && ta.value) || '').trim();
+        }
+
+        async function openExplainerModal() {
+            const modal = document.getElementById('explainerModal');
+            if (!modal) return;
+            modal.style.display = 'flex';
+            const src = _elSource();
+            if (src.empty || !src.title) {
+                _xv.title = ''; _xv.pid = '';
+                document.getElementById('xvProject').innerHTML = '';
+                _xvShow('setup');
+                document.getElementById('xvScriptInfo').innerHTML = '<span style="color:#f87171;">❌ No script is open. Open the script (with its Host: lines and production notes) first.</span>';
+                document.getElementById('xvStartBtn').disabled = true;
+                return;
+            }
+            if (_xv.title === src.title && _xv.pid && _xv.state) { xvRefresh(); return; }
+            _xv.title = src.title;
+            await xvLoadOptions();
+        }
+
+        function closeExplainerModal() {
+            xvPause();
+            document.getElementById('explainerModal').style.display = 'none';
+            if (_xv.poll) { clearInterval(_xv.poll); _xv.poll = null; }
+        }
+
+        function _xvShow(which) {
+            document.getElementById('xvSetup').style.display = which === 'setup' ? 'block' : 'none';
+            document.getElementById('xvWork').style.display = which === 'work' ? 'grid' : 'none';
+        }
+
+        async function xvLoadOptions(pick) {
+            let d;
+            try { d = await (await fetch('/api/explainer/options?' + _xvQ())).json(); }
+            catch (e) { d = { success: false, error: e.message }; }
+            _xv.opts = d;
+            const sel = document.getElementById('xvProject');
+            if (!d.success) {
+                sel.innerHTML = '';
+                _xvShow('setup');
+                _xvStatus('❌ ' + _xvEsc(d.error || 'Could not load.'), '#f87171');
+                return;
+            }
+            if (d.model) document.getElementById('xvModel').textContent = d.model;
+            sel.innerHTML = '<option value="">➕ New explainer video…</option>' + d.projects.map(p =>
+                '<option value="' + _xvEsc(p.id) + '">' + _xvEsc(_xvWhen(p.created) + ' · ' + (p.test ? '🧪 test · ' : '') + (p.presenter ? '🧑‍💼 · ' : '')
+                + (p.current ? 'v' + p.current + ' · ' + p.slides + ' slides' : (p.status || 'not built yet'))
+                + (p.voiceover ? ' · ' + p.voiceover.replace(/^.*_elevenlabs_/i, '') : '')) + '</option>').join('');
+            const want = pick !== undefined ? pick : (d.projects[0] ? d.projects[0].id : '');
+            sel.value = want;
+            await xvPickProject(want);
+        }
+
+        async function xvPickProject(pid) {
+            xvPause();
+            if (_xv.poll) { clearInterval(_xv.poll); _xv.poll = null; }
+            Object.assign(_xv, { pid: pid || '', state: null, frameKey: '', checks: {}, selected: new Set(), slides: [], t: 0, lastStage: '',
+                                 presKey: '', marks: null, hg: null });
+            document.getElementById('xvFrame').removeAttribute('src');
+            document.getElementById('xvCost').textContent = '';
+            _xvStatus('');
+            document.getElementById('xvProgress').style.display = 'none';
+            document.getElementById('xvStopBtn').style.display = 'none';
+            if (!_xv.pid) { _xvFillSetup(); _xvShow('setup'); return; }
+            _xvShow('work');
+            await xvRefresh();
+        }
+
+        function _xvFillSetup() {
+            const d = _xv.opts || {};
+            const script = _xvScript();
+            const count = re => (script.match(re) || []).length;
+            document.getElementById('xvScriptInfo').innerHTML = '📝 <strong style="color:#e2e8f0;">' + _xvEsc(_xv.title) + '</strong>: '
+                + count(/Host:/g) + ' Host: blocks · ' + count(/\[GROK IMAGINE/gi) + ' scene briefs · '
+                + count(/\[VERIFY BEFORE RENDER\]/gi) + ' VERIFY notes · ' + count(/\[ON SCREEN/gi) + ' ON SCREEN cards · '
+                + count(/\[insert\]/gi) + ' [insert] slots';
+            const aSel = document.getElementById('xvAudioSel');
+            const files = d.voiceovers || [];
+            aSel.innerHTML = files.length
+                ? files.map(f => '<option value="' + _xvEsc(f.name) + '">' + _xvEsc(_xvWhen(f.modified) + ' · ' + _xvFmt(f.seconds) + ' · ' + f.name) + '</option>').join('')
+                : '<option value="">No ElevenLabs audio for this script yet. Make it in 🎙️ ElevenLabs Audio first.</option>';
+            document.getElementById('xvImagesDir').textContent = d.images_dir || 'images/';
+            _xv.images = (d.images || []).map(i => Object.assign({ use: i.logo, recolor: 'auto' }, i));
+            _xvRenderLogoGrid();
+            const warn = [];
+            if (!d.claude) warn.push('⚠️ No Anthropic API key yet: <a href="#" onclick="closeExplainerModal(); openApiKeysModal(); return false;">🔑 add it in API Keys</a>.');
+            if (!d.elevenlabs) warn.push('⚠️ No ElevenLabs key: word timing will be estimated from pauses, so cues may drift.');
+            if (!d.chrome) warn.push('ℹ️ Chrome is not installed on this computer: you can build and preview, but rendering needs Chrome.');
+            document.getElementById('xvSetupWarn').innerHTML = warn.join('<br>');
+            document.getElementById('xvStartBtn').disabled = !(files.length && d.claude);
+            _xvFillPresenters();
+            _xvCostNote();
+        }
+
+        function _xvNarrationSeconds() {
+            const name = document.getElementById('xvAudioSel').value;
+            const f = ((_xv.opts || {}).voiceovers || []).find(v => v.name === name);
+            return f ? +f.seconds || 0 : 0;
+        }
+        // Presenter footage whose length matches the chosen narration (the
+        // server checks the audio itself when the clips are attached).
+        function _xvMatchingPresenters(seconds) {
+            return ((_xv.opts || {}).presenters || []).filter(x => seconds && Math.abs(x.seconds - seconds) <= 2.5);
+        }
+        function _xvPresenterLabel(x) {
+            const res = x.height >= 2000 ? '4K' : x.height + 'p';
+            return (x.kind === 'clips' ? 'HeyGen clips · ' + x.parts.length + ' parts' : x.label) + ' · ' + _xvFmt(x.seconds) + ' · '
+                + _xvWhen(x.mtime) + ' · ' + res + (x.upscaled && x.height < 2000 ? ' (' + x.upscaled + ' of ' + x.parts.length + ' upscaled)' : x.upscaled ? ' (upscaled)' : '');
+        }
+        function _xvFillPresenters() {
+            const sel = document.getElementById('xvHostSel');
+            if (!sel) return;
+            const secs = _xvNarrationSeconds();
+            const list = _xvMatchingPresenters(secs);
+            sel.innerHTML = '<option value="">No presenter (slides only)</option>' + list.map(x =>
+                '<option value="' + _xvEsc(x.id) + '">' + _xvEsc(_xvPresenterLabel(x)) + '</option>').join('');
+            sel.value = list.length ? list[0].id : '';
+            const note = document.getElementById('xvHostNote');
+            const low = list.length && list[0].height < 2000;
+            note.innerHTML = !secs ? '' : !list.length
+                ? 'No HeyGen clips in the script folder match this narration’s length (' + _xvFmt(secs) + '). Make them with 🎬 HeyGen clips from the ElevenLabs audio, or build with slides only; you can add the presenter later.'
+                : (low ? 'These clips are ' + list[0].height + 'p: the 4K render scales them up. Put 4K upscales (same length) anywhere in the script folder and use Presenter → Rescan before the final render.'
+                    : 'Claude sees a frame of the footage and picks the slides where the presenter talks to the viewer; you can change any slide’s layout afterwards.');
+        }
+        function _xvCostNote() {
+            const el = document.getElementById('xvCostNote');
+            if (!el) return;
+            const secs = _xvNarrationSeconds();
+            const test = (document.querySelector('input[name="xvBuild"]:checked') || {}).value !== 'all';
+            if (test) {
+                const mins = +document.getElementById('xvTestLen').value || 2;
+                el.textContent = 'Times every word with ElevenLabs, plans the test clip and writes its slides. About $' + Math.max(1, Math.round(mins * 1.5 + 0.5))
+                    + ' of Claude usage and ' + Math.round(2 + mins * 1.5) + '–' + Math.round(4 + mins * 2.5) + ' minutes for ' + mins + ' minute(s)'
+                    + (secs ? '; building the rest later is about $' + Math.round(Math.max(0, secs / 60 - mins) * 1.5) + ' more.' : '.');
+            } else {
+                const mins = secs / 60;
+                el.textContent = 'Times every word with ElevenLabs, plans, then writes every slide 6 batches at a time. At high effort that is about $1.50 of Claude usage per minute of narration'
+                    + (mins ? ' (about $' + Math.round(mins * 1.5) + ' and ' + Math.round(mins * 1.1) + '–' + Math.round(mins * 1.7) + ' minutes here)' : '') + ', shown live above; notes on single slides later cost cents.';
+            }
+        }
+
+        function _xvRenderLogoGrid() {
+            const q = _xvQ();
+            document.getElementById('xvLogoGrid').innerHTML = _xv.images.length ? _xv.images.map((im, i) =>
+                '<div class="xv-logo-tile" style="' + (im.use ? '' : 'opacity:0.55;') + '">'
+                + '<label style="display:flex; gap:6px; align-items:center; color:#cbd5e1;" title="' + _xvEsc(im.file) + '">'
+                + '<input type="checkbox" ' + (im.use ? 'checked ' : '') + 'onchange="_xv.images[' + i + '].use = this.checked; _xvRenderLogoGrid()">'
+                + '<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + _xvEsc(im.file) + '</span></label>'
+                + '<div class="xv-logo-img"><img src="' + _xvEsc('/api/explainer/image?' + q + '&file=' + encodeURIComponent(im.file)) + '" alt=""></div>'
+                + '<input class="xv-input" value="' + _xvEsc(im.name) + '" placeholder="Brand name" oninput="_xv.images[' + i + '].name = this.value">'
+                + '<select class="xv-input" onchange="_xv.images[' + i + '].recolor = this.value">'
+                + ['auto|Recolor dark marks', 'white|All off-white', 'original|Keep colors'].map(o => { const [v, l] = o.split('|'); return '<option value="' + v + '"' + (im.recolor === v ? ' selected' : '') + '>' + l + '</option>'; }).join('')
+                + '</select><span>' + im.kind + ' · ' + im.aspect + ':1' + (im.transparent ? '' : ' · no transparency') + '</span></div>').join('')
+                : '<div style="font-size:0.8em; color:#64748b;">No image files in this folder yet. Add your logo files (one per brand the script names).</div>';
+        }
+
+        async function xvUploadImages(input) {
+            if (!input.files || !input.files.length) return;
+            const fd = new FormData();
+            fd.append('title', _xv.title);
+            Array.from(input.files).forEach(f => fd.append('files', f));
+            let d;
+            try { d = await (await fetch('/api/explainer/images', { method: 'POST', body: fd })).json(); }
+            catch (e) { d = { success: false, error: e.message }; }
+            input.value = '';
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Upload failed.'), '#f87171'); return; }
+            const keep = {};
+            _xv.images.forEach(i => { keep[i.file] = i; });
+            _xv.images = d.images.map(i => keep[i.file] || Object.assign({ use: d.saved.includes(i.file) || i.logo, recolor: 'auto' }, i));
+            _xvRenderLogoGrid();
+            _xvStatus('✅ Added ' + d.saved.length + ' file(s).', '#34d399');
+        }
+
+        async function xvStart() {
+            const audio = document.getElementById('xvAudioSel').value;
+            if (!audio) { _xvStatus('Pick the ElevenLabs audio first.', '#f87171'); return; }
+            const script = _xvScript();
+            const btn = document.getElementById('xvStartBtn');
+            btn.disabled = true;
+            _xvStatus('Starting…');
+            const logos = _xv.images.filter(i => i.use).map(i => ({ file: i.file, name: (i.name || '').trim(), recolor: i.recolor }));
+            const isTest = (document.querySelector('input[name="xvBuild"]:checked') || {}).value !== 'all';
+            const startAt = _xvParseTime(document.getElementById('xvTestStart').value);
+            if (isTest && isNaN(startAt)) { btn.disabled = false; _xvStatus('Type the test clip start as m:ss, e.g. 0:00 or 4:30.', '#f87171'); return; }
+            const test = isTest ? { start: startAt, minutes: +document.getElementById('xvTestLen').value || 2 } : null;
+            const presenter = document.getElementById('xvHostSel').value;
+            const share = document.getElementById('xvHostShare').value;
+            const d = await _xvPost('/api/explainer/start', { voiceover: audio, script: script, text: extractHeyGenSection(script) || '', logos: logos,
+                test: test, presenter: presenter, share: share });
+            if (!d.success) {
+                btn.disabled = false;
+                _xvStatus('❌ ' + _xvEsc(d.error || 'Could not start.') + (d.needs_key ? ' <a href="#" onclick="closeExplainerModal(); openApiKeysModal(); return false;">🔑 API Keys</a>' : ''), '#f87171');
+                return;
+            }
+            _elLog('🎞️ Explainer video started for “' + _xv.title + '” on ' + audio + ' with ' + logos.length + ' logo(s)'
+                + (test ? ', a ' + test.minutes + '-minute test clip from ' + _xvFmt(test.start) : ', the whole video')
+                + (presenter ? ', with the presenter' : '') + ': ' + (_xv.opts.model || 'Claude') + ' plans, then writes the slides');
+            btn.disabled = false;
+            await xvLoadOptions(d.project);
+        }
+
+        async function xvRefresh() {
+            if (!_xv.pid) return;
+            const pid = _xv.pid;
+            let d;
+            try { d = await (await fetch(_xvApi('?' + _xvQ()))).json(); }
+            catch (e) { d = { success: false, error: e.message }; }
+            if (pid !== _xv.pid) return;
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Could not load the project.'), '#f87171'); return; }
+            const prev = _xv.state;
+            _xv.state = d;
+            _xvRenderState(prev);
+            const running = d.job && d.job.status === 'running';
+            if (running && !_xv.poll) _xv.poll = setInterval(xvRefresh, 2000);
+            if (!running && _xv.poll) { clearInterval(_xv.poll); _xv.poll = null; }
+        }
+
+        function _xvRenderState(prev) {
+            const s = _xv.state;
+            const job = s.job || {};
+            const running = job.status === 'running';
+            const cost = (s.usage || {}).cost;
+            document.getElementById('xvCost').textContent = cost ? 'Claude so far: $' + cost.toFixed(2) : '';
+            const opt = document.querySelector('#xvProject option[value="' + CSS.escape(s.id) + '"]');
+            if (opt && s.current) opt.textContent = opt.textContent.replace(/ · (running|not built yet|done|error|cancelled|v\d+ · \d+ slides)/, ' · v' + s.current + ' · ' + (s.slides || []).length + ' slides')
+                .replace(' · 🧪 test', s.span ? ' · 🧪 test' : '');
+            // Job progress and the Execution Log.
+            const bar = document.getElementById('xvProgress');
+            bar.style.display = running ? 'block' : 'none';
+            document.getElementById('xvProgressFill').style.width = Math.round((job.progress || 0) * 100) + '%';
+            document.getElementById('xvStopBtn').style.display = running ? 'inline-block' : 'none';
+            if (running) {
+                const secs = job.started ? Math.round(Date.now() / 1000 - job.started) : 0;
+                _xvStatus('⏳ ' + _xvEsc(job.message || 'Working…') + ' <span style="color:#64748b;">(' + _xvFmt(secs) + ')</span>');
+                if (job.stage && job.stage !== _xv.lastStage) { _xv.lastStage = job.stage; _elLog('🎞️ ' + job.message); }
+            } else if (prev && prev.job && prev.job.status === 'running') {
+                _xv.lastStage = '';
+                if (job.status === 'done') {
+                    _xvStatus('✅ ' + _xvEsc(job.message || 'Done') + (job.elapsed ? ' (' + _xvFmt(job.elapsed) + ')' : ''), '#34d399');
+                    _elLog('✅ Explainer: ' + (job.message || 'done'), 'success');
+                    if (/^render|stills/.test(job.kind || '')) xvTab('files');
+                } else if (job.status === 'error') {
+                    _xvStatus('❌ ' + _xvEsc(job.error || 'Failed'), '#f87171');
+                    _elLog('❌ Explainer ' + (job.kind || '') + ' failed: ' + (job.error || ''), 'error');
+                } else if (job.status === 'cancelled') _xvStatus('⏹ Stopped.', '#fbbf24');
+            } else if (!prev && job.status === 'error') {
+                _xvStatus('❌ Last run failed: ' + _xvEsc(job.error || ''), '#f87171');
+            }
+            // Preview: reload when the version, values or logos change.
+            const note = document.getElementById('xvFrameNote');
+            if (s.current) {
+                const key = s.current + '|' + JSON.stringify([s.values, s.logo_choices, s.logos, s.span, s.host && [s.host.created, s.host.focus, s.host.sections]]);
+                if (key !== _xv.frameKey) {
+                    _xv.frameKey = key;
+                    document.getElementById('xvFrame').src = _xvApi('/preview?' + _xvQ() + '&v=' + s.current + '&_=' + Date.now());
+                }
+                note.style.display = 'none';
+                if (_xv.audioPid !== _xv.pid) {
+                    _xv.audioPid = _xv.pid;
+                    document.getElementById('xvAudio').src = _xvApi('/audio?' + _xvQ());
+                }
+            } else {
+                note.style.display = 'flex';
+                note.textContent = running ? 'Claude is planning and writing the slides. The preview appears here when the first version is ready.'
+                    : (job.status === 'error' ? 'The build stopped before any slides were written. Start a new explainer video to try again.' : 'No slides yet.');
+            }
+            _xvRenderNeeds();
+            _xvRenderSlides();
+            _xvRenderPresenter();
+            _xvRenderSpan();
+            _xvRenderPlan();
+            _xvRenderVersions();
+            _xvRenderFiles();
+            // Approve + final render gate.
+            const approved = s.current && s.approved === s.current;
+            const ab = document.getElementById('xvApproveBtn');
+            ab.textContent = approved ? '✅ Approved (v' + s.current + ')' : '✅ Approve v' + (s.current || '');
+            ab.disabled = !s.current || running;
+            const left = (s.outstanding || []).length;
+            const fb = document.getElementById('xvFinalBtn');
+            fb.disabled = !(approved && !left && s.chrome && !running);
+            fb.textContent = s.span ? '🎬 Render 4K test' : '🎬 Render 4K final';
+            const hostLow = s.host && s.host.parts.some(x => x.h < 2000) && (s.host_windows || []).length;
+            const fn = document.getElementById('xvFinalNote');
+            fn.innerHTML = !s.current ? '' : left ? '⚠️ ' + left + ' item(s) under “Needs you” must be filled in before the 4K render.'
+                : !approved ? 'Watch the preview (or a sample clip / review cut), then approve this version to unlock the 4K render.'
+                : !s.chrome ? '⚠️ Rendering needs Google Chrome or Chromium on this computer.'
+                : (s.span ? '4K render of the test clip only (' + _xvFmt(s.start) + '–' + _xvFmt(s.end) + '). ' : '4K final: ')
+                  + '3840×2160, 30 fps, H.264 + AAC at -14 LUFS, plus a 720p phone copy and a 4K PNG of the asset slide.'
+                  + (hostLow ? ' ℹ️ The presenter clips are 1080p and will be scaled up: Presenter → Rescan picks up 4K upscales.' : '');
+            document.getElementById('xvNeedsCount').textContent = left ? '(' + left + ')' : '';
+            document.getElementById('xvSlidesCount').textContent = (s.slides || []).length ? '(' + s.slides.length + ')' : '';
+            document.getElementById('xvReviseBtn').disabled = running || !s.current;
+            xvScopeChanged();
+        }
+
+        function _xvRenderSpan() {
+            const s = _xv.state, el = document.getElementById('xvSpanBar');
+            if (!s.span || !s.current) { el.style.display = 'none'; el.innerHTML = ''; return; }
+            const running = s.job && s.job.status === 'running';
+            const rest = Math.max(0, (s.audio_seconds || 0) - (s.span[1] - s.span[0]));
+            el.style.display = 'flex';
+            el.innerHTML = '<div style="flex:1;">🧪 <strong>Test clip</strong> ' + _xvFmt(s.span[0]) + '–' + _xvFmt(s.span[1]) + ' of ' + _xvFmt(s.audio_seconds)
+                + '. Refine it until you like the look, then build the rest: Claude plans and writes the other ' + _xvFmt(rest)
+                + ' following these slides and your notes (about $' + Math.max(1, Math.round(rest / 60 * 1.5)) + ').</div>'
+                + '<button class="xv-btn go" onclick="xvExtend()"' + (running ? ' disabled' : '') + '>🧩 Build the rest of the video</button>';
+        }
+
+        function _xvFmtD(x) { x = Math.max(0, +x || 0); return Math.floor(x / 60) + ':' + (x % 60).toFixed(1).padStart(4, '0'); }
+        function _xvLayoutOpts(sel) {
+            return Object.keys(_XV_HOST_NAMES).filter(k => k).map(k => '<option value="' + k + '"' + (sel === k ? ' selected' : '') + '>' + _XV_HOST_NAMES[k] + '</option>').join('');
+        }
+        // Presenter tab: the clips in use, sections you place on the timeline,
+        // HeyGen clips to add, framing. Redrawn only when its data changes so a
+        // playing preview or half-typed times are not reset by the 2 s poll.
+        function _xvRenderPresenter(force) {
+            const s = _xv.state, el = document.getElementById('xvPane-presenter');
+            const h = s.host;
+            const running = !!(s.job && s.job.status === 'running');
+            const hosted = ((s.slides || []).filter(m => m.host)).length;
+            document.getElementById('xvHostCount').textContent = h ? '(' + ((h.sections || []).length + hosted) + ')' : '';
+            _xvRenderMarks();
+            const key = JSON.stringify([s.id, h, running, hosted, _xv.hg && [_xv.hg.open, _xv.hg.items.length, _xv.hg.loading, _xv.hg.error, Array.from(_xv.hg.ticked)]]);
+            if (!force && key === _xv.presKey) return;
+            _xv.presKey = key;
+            const list = _xvMatchingPresenters(s.audio_seconds);
+            const opts = '<option value="">Pick a clip set from the script folder…</option>' + list.map(x => '<option value="' + _xvEsc(x.id) + '"' + (h && h.source === x.id ? ' selected' : '') + '>' + _xvEsc(_xvPresenterLabel(x)) + '</option>').join('');
+            const dis = running ? ' disabled' : '';
+            let html = '';
+            if (!h) {
+                html += '<div class="xv-item">No presenter footage yet. Add HeyGen clips made from this narration (' + _xvFmt(s.audio_seconds) + ': the ElevenLabs MP3 you built on); each is placed on the narration by its audio.'
+                    + '<div style="display:flex; gap:6px; margin-top:8px;"><button class="xv-btn small primary" onclick="xvHgOpen()"' + dis + '>⬇️ Pick clips from HeyGen</button>'
+                    + (list.length ? '<select id="xvHostPick" class="xv-input" style="flex:1;">' + opts + '</select><button class="xv-btn small" onclick="xvHostSet(document.getElementById(\'xvHostPick\').value)"' + dis + '>Use set</button>' : '') + '</div></div>';
+            } else {
+                const still = h.still ? _xvApi('/file?' + _xvQ() + '&path=' + encodeURIComponent(h.still) + '&v=' + (h.created || 0)) : '';
+                const proxy = h.proxy ? _xvApi('/file?' + _xvQ() + '&path=' + encodeURIComponent(h.proxy) + '&v=' + (h.created || 0)) : '';
+                const m = _xv.marks || (_xv.marks = { t0: null, t1: null, layout: 'full' });
+                html += '<div class="xv-item"><div style="font-weight:700; color:#e2e8f0; margin-bottom:6px;">🎯 Sections you place <span style="color:#64748b; font-weight:normal;">(the presenter over that stretch of the narration)</span></div>'
+                    + (proxy ? '<video id="xvHostPeek" muted playsinline preload="auto" src="' + _xvEsc(proxy) + '"' + (still ? ' poster="' + _xvEsc(still) + '"' : '') + ' style="width:100%; border-radius:4px; background:#000; margin-bottom:6px;"></video>' : '')
+                    + '<div class="xv-sec"><span>In</span><input id="xvMarkIn" class="xv-input" value="' + (m.t0 === null ? '' : _xvFmtD(m.t0)) + '" placeholder="m:ss.s" onchange="xvMarkEdit()">'
+                    + '<button class="xv-btn small" onclick="xvMark(\'t0\')" title="Set to the playhead">⏺</button>'
+                    + '<span>Out</span><input id="xvMarkOut" class="xv-input" value="' + (m.t1 === null ? '' : _xvFmtD(m.t1)) + '" placeholder="m:ss.s" onchange="xvMarkEdit()">'
+                    + '<button class="xv-btn small" onclick="xvMark(\'t1\')" title="Set to the playhead">⏺</button></div>'
+                    + '<div class="xv-sec"><select id="xvMarkLayout" class="xv-input" style="width:auto;" onchange="_xv.marks.layout = this.value">' + _xvLayoutOpts(m.layout) + '</select>'
+                    + '<button class="xv-btn small primary" onclick="xvSecAdd()"' + dis + '>➕ Add section</button>'
+                    + '<span style="color:#64748b;">Play or scrub, set In and Out at the playhead, pick the layout.</span></div>'
+                    + ((h.sections || []).length ? (h.sections || []).map((x, i) =>
+                        '<div class="xv-sec" style="background:#111b2e; padding:4px; border-radius:4px;"><input class="xv-input" value="' + _xvFmtD(x.t0) + '" data-i="' + i + '" data-k="t0" onchange="xvSecEdit(this)"' + dis + '>–'
+                        + '<input class="xv-input" value="' + _xvFmtD(x.t1) + '" data-i="' + i + '" data-k="t1" onchange="xvSecEdit(this)"' + dis + '>'
+                        + '<select class="xv-input" style="width:auto;" data-i="' + i + '" data-k="layout" onchange="xvSecEdit(this)"' + dis + '>' + _xvLayoutOpts(x.layout) + '</select>'
+                        + '<span style="color:#64748b;">' + (x.t1 - x.t0).toFixed(1) + ' s</span><span style="flex:1;"></span>'
+                        + '<button class="xv-btn small" onclick="xvSecPlay(' + i + ')" title="Play it">▶</button>'
+                        + '<button class="xv-btn small" onclick="xvSecDelete(' + i + ')"' + dis + ' title="Remove">🗑</button></div>').join('')
+                        : '<div style="color:#64748b; font-size:0.78em;">No sections yet.' + (hosted ? ' Claude put the presenter on ' + hosted + ' slide(s) (Slides tab).' : '') + '</div>')
+                    + '</div>';
+                const cover = (h.coverage || []).map(c => _xvFmt(c[0]) + '–' + _xvFmt(c[1])).join(', ');
+                html += '<div class="xv-item"><div style="font-weight:700; color:#e2e8f0; margin-bottom:4px;">🧑‍💼 Presenter clips <span style="color:#64748b; font-weight:normal;">(footage for ' + _xvEsc(cover || 'none') + ')</span></div>'
+                    + h.parts.map(x => '<div style="display:flex; gap:6px; align-items:center; color:#94a3b8; margin-bottom:3px;"><span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + _xvEsc(x.name) + '">'
+                        + _xvFmt(x.offset) + '–' + _xvFmt(x.offset + x.seconds) + ' · ' + _xvEsc(x.name) + '</span><span>' + (x.h >= 2000 ? '4K' : x.h + 'p') + (x.upscaled ? ' ⬆' : '') + ' · ' + (x.score || 0).toFixed(2) + '</span>'
+                        + '<button class="xv-btn small" data-name="' + _xvEsc(x.orig) + '" onclick="xvClipRemove(this.dataset.name)"' + dis + ' title="Remove this clip">✕</button></div>').join('')
+                    + ((h.refused || []).length ? '<div style="color:#fbbf24; margin-top:4px;">' + h.refused.map(r => '⚠️ ' + _xvEsc(r)).join('<br>') + '</div>' : '')
+                    + '<div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;"><button class="xv-btn small primary" onclick="xvHgOpen()"' + dis + '>⬇️ Add clips from HeyGen</button>'
+                    + '<button class="xv-btn small" data-src="' + _xvEsc(h.source) + '" onclick="xvHostSet(this.dataset.src)"' + (running || !/^(set|file):/.test(h.source || '') ? ' disabled' : '') + ' title="Use 4K upscales of these clips put anywhere in the script folder">↻ Rescan for upscales</button>'
+                    + '<button class="xv-btn small" onclick="xvHostRemove()"' + dis + '>Remove presenter</button></div></div>'
+                    + '<div class="xv-item"><span class="xv-label">Framing in side panels</span>'
+                    + '<input type="range" min="0.1" max="0.9" step="0.01" value="' + (+h.focus || 0.45) + '" style="width:100%; accent-color:#f59e0b;" onchange="xvHostFocus(this.value)">'
+                    + '<div style="display:flex; justify-content:space-between; color:#64748b;"><span>◀ left of the frame</span><span>right ▶</span></div>'
+                    + '<span class="xv-label" style="margin-top:8px;">Where Claude puts the presenter (next plan or rebuild)</span>'
+                    + '<select class="xv-input" onchange="xvHostShare(this.value)">' + ['mine|Only where I put it', 'little|A little (~15%)', 'some|Some (~30%)', 'lots|A lot (~50%)'].map(o => { const [v, l] = o.split('|'); return '<option value="' + v + '"' + (h.share === v ? ' selected' : '') + '>' + l + '</option>'; }).join('') + '</select></div>';
+            }
+            html += _xvHgPanel(running);
+            el.innerHTML = html;
+            _xvPeekSync();
+        }
+
+        // ---- HeyGen clips browser (your HeyGen account)
+        function _xvHgPanel(running) {
+            const g = _xv.hg;
+            if (!g || !g.open) return '';
+            let h = '<div class="xv-item" id="xvHgBox"><div style="font-weight:700; color:#e2e8f0; margin-bottom:6px;">⬇️ Your HeyGen videos <span style="color:#64748b; font-weight:normal;">(use clips made from this narration\'s ElevenLabs MP3; others are refused)</span></div>'
+                + '<div style="display:flex; gap:6px; margin-bottom:6px;"><input id="xvHgQ" class="xv-input" value="' + _xvEsc(g.q) + '" placeholder="Search titles (empty: all)" onkeydown="if (event.key === \'Enter\') xvHgSearch()">'
+                + '<button class="xv-btn small" onclick="xvHgSearch()">Search</button><button class="xv-btn small" onclick="_xv.hg.open = false; _xvRenderPresenter(true)">Close</button></div>';
+            if (g.error) h += '<div style="color:#f87171;">❌ ' + _xvEsc(g.error) + (g.needsKey ? ' <a href="#" onclick="closeExplainerModal(); openApiKeysModal(); return false;">🔑 API Keys</a>' : '') + '</div>';
+            h += g.items.map(v => {
+                const can = v.status === 'completed' && !v.in_video;
+                const badge = v.in_video ? '<span class="xv-badge" style="color:#34d399;">in this video</span>'
+                    : v.local ? '<span class="xv-badge" title="' + _xvEsc(v.local) + '">in the folder</span>'
+                    : v.status !== 'completed' ? '<span class="xv-badge" style="color:#fbbf24;">' + _xvEsc(v.status || 'not ready') + '</span>' : '';
+                return '<label class="xv-hg-row" style="' + (can ? '' : 'opacity:0.6;') + '"><input type="checkbox" data-id="' + _xvEsc(v.id) + '"' + (g.ticked.has(v.id) ? ' checked' : '') + (can ? '' : ' disabled') + ' onchange="xvHgTick(this)">'
+                    + (v.thumb ? '<img src="' + _xvEsc(v.thumb) + '" alt="" loading="lazy" referrerpolicy="no-referrer">' : '<img alt="">')
+                    + '<span style="flex:1; min-width:0;"><span style="color:#e2e8f0;">' + _xvEsc(v.title) + '</span><br>' + _xvFmt(v.seconds) + ' · ' + _xvWhen(v.created) + ' ' + badge + '</span></label>';
+            }).join('') || (g.loading ? '' : '<div style="color:#64748b; font-size:0.78em;">No videos found.</div>');
+            h += '<div style="display:flex; gap:6px; margin-top:6px; align-items:center;">'
+                + (g.loading ? '<span style="color:#64748b; font-size:0.78em;">Loading…</span>' : g.next ? '<button class="xv-btn small" onclick="xvHgMore()">Load more</button>' : '')
+                + '<span style="flex:1;"></span><button class="xv-btn small go" onclick="xvHgAdd()"' + (running || !g.ticked.size ? ' disabled' : '') + '>Add ' + (g.ticked.size || '') + ' ticked clip(s)</button></div>'
+                + '<div style="color:#64748b; font-size:0.75em; margin-top:4px;">Clips not in the script folder are downloaded into heygen/ first. Each is placed on the narration by its audio.</div></div>';
+            return h;
+        }
+        async function _xvHgLoad(more) {
+            const g = _xv.hg;
+            g.loading = true; g.error = ''; _xvRenderPresenter(true);
+            let d;
+            try {
+                d = await (await fetch('/api/explainer/heygen-videos?' + _xvQ() + '&pid=' + encodeURIComponent(_xv.pid) + '&q=' + encodeURIComponent(g.q) + (more && g.next ? '&token=' + encodeURIComponent(g.next) : ''))).json();
+            } catch (e) { d = { success: false, error: e.message }; }
+            g.loading = false;
+            if (!d.success) { g.error = d.error || 'Could not load your HeyGen videos.'; g.needsKey = !!d.needs_key; }
+            else { g.items = (more ? g.items : []).concat(d.videos); g.next = d.has_more ? d.next_token : ''; }
+            _xvRenderPresenter(true);
+            const box = document.getElementById('xvHgBox');
+            if (box && !more) box.scrollIntoView({ block: 'nearest' });
+        }
+        function xvHgOpen() {
+            if (!_xv.hg) _xv.hg = { open: true, q: _xv.title, items: [], next: '', ticked: new Set(), loading: false, error: '' };
+            _xv.hg.open = true;
+            xvTab('presenter');
+            _xvHgLoad(false);
+        }
+        function xvHgSearch() { const q = document.getElementById('xvHgQ'); _xv.hg.q = q ? q.value.trim() : ''; _xvHgLoad(false); }
+        function xvHgMore() { _xvHgLoad(true); }
+        function xvHgTick(cb) { if (cb.checked) _xv.hg.ticked.add(cb.dataset.id); else _xv.hg.ticked.delete(cb.dataset.id); _xvRenderPresenter(true); }
+        async function xvHgAdd() {
+            const ids = Array.from(_xv.hg.ticked);
+            if (!ids.length) return;
+            xvPause();
+            const d = await _xvPost(_xvApi('/heygen-add'), { ids: ids });
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Could not add the clips.'), '#f87171'); return; }
+            _elLog('🧑‍💼 Explainer: adding ' + ids.length + ' HeyGen clip(s) to the presenter footage (downloading any not in the folder)');
+            _xv.hg.ticked.clear(); _xv.hg.open = false;
+            _xv.state = Object.assign(_xv.state || {}, d);
+            await xvRefresh();
+        }
+        async function xvClipRemove(name) {
+            if (!confirm('Take ' + name + ' out of the presenter footage? Sections over the stretch it covers will have no presenter.')) return;
+            const d = await _xvPost(_xvApi('/host'), { remove: name });
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Could not remove it.'), '#f87171'); return; }
+            _xv.state = Object.assign(_xv.state || {}, d);
+            await xvRefresh();
+        }
+
+        // ---- Sections you place (In/Out at the playhead + a layout)
+        function _xvSections() { return (((_xv.state || {}).host || {}).sections || []).map(x => Object.assign({}, x)); }
+        async function _xvSaveSections(list, note) {
+            const d = await _xvPost(_xvApi('/sections'), { sections: list });
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Could not save the sections.'), '#f87171'); return false; }
+            await _xvApply(d);
+            if (d.warning) _xvStatus('⚠️ ' + _xvEsc(d.warning), '#fbbf24');
+            else if (note) _xvStatus('✅ ' + _xvEsc(note), '#34d399');
+            return true;
+        }
+        function xvMark(k) { _xv.marks[k] = Math.round(_xv.t * 10) / 10; _xvRenderPresenter(true); }
+        function xvMarkEdit() {
+            ['t0', 't1'].forEach((k, i) => { const v = _xvParseTime(document.getElementById(i ? 'xvMarkOut' : 'xvMarkIn').value); _xv.marks[k] = isNaN(v) ? null : v; });
+        }
+        async function xvSecAdd() {
+            const m = _xv.marks;
+            if (m.t0 === null || m.t1 === null) { _xvStatus('Set In and Out first (⏺ sets them to the playhead).', '#f87171'); return; }
+            const t0 = Math.min(m.t0, m.t1), t1 = Math.max(m.t0, m.t1);
+            if (t1 - t0 < 0.5) { _xvStatus('A section needs at least half a second between In and Out.', '#f87171'); return; }
+            const list = _xvSections().concat([{ t0: t0, t1: t1, layout: m.layout }]);
+            if (await _xvSaveSections(list, 'Section ' + _xvFmtD(t0) + '–' + _xvFmtD(t1) + ' (' + _XV_HOST_NAMES[m.layout] + ') added. Slides that clash are flagged after the preview reloads.')) {
+                _elLog('🎯 Explainer: presenter section ' + _xvFmtD(t0) + '–' + _xvFmtD(t1) + ' · ' + _XV_HOST_NAMES[m.layout]);
+                _xv.marks = { t0: null, t1: null, layout: m.layout };
+                _xvRenderPresenter(true);
+            }
+        }
+        async function xvSecEdit(el) {
+            const list = _xvSections(), i = +el.dataset.i, k = el.dataset.k;
+            if (!list[i]) return;
+            if (k === 'layout') list[i].layout = el.value;
+            else { const v = _xvParseTime(el.value); if (isNaN(v)) { _xvStatus('Type the time as m:ss.s', '#f87171'); return; } list[i][k] = v; }
+            await _xvSaveSections(list);
+        }
+        async function xvSecDelete(i) { const list = _xvSections(); list.splice(i, 1); await _xvSaveSections(list, 'Section removed.'); }
+        function xvSecPlay(i) {
+            const x = _xvSections()[i];
+            if (!x) return;
+            xvScrubTo(Math.max(_xv.start || 0, x.t0 - 1));
+            const a = document.getElementById('xvAudio');
+            a.play().then(() => { _xv.playing = true; document.getElementById('xvPlayBtn').textContent = '⏸ Pause'; requestAnimationFrame(_xvTick); }).catch(() => {});
+        }
+        function _xvPeekSync() {
+            const v = document.getElementById('xvHostPeek');
+            if (!v || v.readyState < 1 || !document.getElementById('xvPane-presenter').classList.contains('on')) return;
+            const want = Math.min(_xv.t, v.duration || _xv.t);
+            if (_xv.playing) {
+                if (v.paused) { v.currentTime = want; v.play().catch(() => {}); }
+                else if (Math.abs(v.currentTime - want) > 0.3) v.currentTime = want;
+            } else {
+                if (!v.paused) v.pause();
+                if (Math.abs(v.currentTime - want) > 0.05) v.currentTime = want;
+            }
+        }
+        // Gold: sections you placed; blue: slides Claude (or you) gave the presenter.
+        function _xvRenderMarks() {
+            const el = document.getElementById('xvMarks');
+            const s = _xv.state || {};
+            if (!el) return;
+            const a = _xv.start || s.start || 0, b = _xv.end || s.end || s.duration || 0;
+            if (!(b > a)) { el.innerHTML = ''; return; }
+            const pct = t => (Math.max(0, Math.min(1, (t - a) / (b - a))) * 100).toFixed(3) + '%';
+            const bar = (t0, t1, color) => '<div style="position:absolute; top:0; height:4px; border-radius:2px; left:' + pct(t0) + '; width:calc(' + pct(t1) + ' - ' + pct(t0) + '); background:' + color + ';"></div>';
+            el.innerHTML = (s.slides || []).filter(m => m.host).map(m => bar(m.t0, m.t1, '#3b82f6')).join('')
+                + ((s.host || {}).sections || []).map(x => bar(x.t0, x.t1, '#f59e0b')).join('');
+        }
+
+        function xvTab(name) {
+            document.querySelectorAll('#explainerModal .xv-tab').forEach(b => b.classList.toggle('on', b.dataset.pane === name));
+            document.querySelectorAll('#explainerModal .xv-pane').forEach(p => p.classList.toggle('on', p.id === 'xvPane-' + name));
+            if (name === 'presenter') _xvPeekSync();
+        }
+
+        function _xvSlideLinks(ids) {
+            return (ids || []).map(id => '<a href="#" data-id="' + _xvEsc(id) + '" onclick="xvGoSlide(this.dataset.id); return false;">' + _xvEsc(id) + '</a>').join(', ');
+        }
+
+        function _xvRenderNeeds() {
+            const s = _xv.state;
+            const el = document.getElementById('xvPane-needs');
+            const plan = s.plan || {};
+            if (!s.current) {
+                el.innerHTML = '<div class="xv-item">' + (plan.slides
+                    ? 'Claude planned ' + plan.slides + ' slides with ' + (plan.figures || []).length + ' figure(s) to confirm and ' + (plan.inserts || []).length + ' insert(s). You can fill them in once the slides are written.'
+                    : 'What you need to provide (logos, figures to confirm, [insert] values) appears here after Claude plans the video.') + '</div>';
+                return;
+            }
+            const values = s.values || {}, out = s.outstanding || [];
+            const figs = {}, ins = {};
+            (plan.figures || []).forEach(f => { figs[f.key] = f; });
+            (plan.inserts || []).forEach(f => { ins[f.key] = f; });
+            let h = '<div style="font-size:0.82em; margin:2px 0 10px 0; color:' + (out.length ? '#fbbf24' : '#34d399') + ';">'
+                + (out.length ? '⚠️ ' + out.length + ' item(s) need your input before the 4K render.' : '✅ Nothing is blocking the 4K render.') + '</div>';
+            out.filter(o => o.type === 'logo').forEach(o => {
+                const opts = (_xv.opts && _xv.opts.images || []).map(i => '<option value="' + _xvEsc(i.file) + '">' + _xvEsc(i.file) + '</option>').join('');
+                h += '<div class="xv-item need"><div style="font-weight:700; color:#e2e8f0;">🖼️ Logo: ' + _xvEsc(o.label) + ' <span style="color:#64748b; font-weight:normal;">(' + _xvEsc(o.key) + ')</span></div>'
+                    + '<div style="margin:3px 0 6px 0;">No file yet, so a text badge stands in. Used on ' + _xvSlideLinks(o.slides) + '.</div>'
+                    + '<div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">'
+                    + '<label class="xv-btn small">⬆️ Upload file<input type="file" accept=".png,.svg,.webp,.jpg,.jpeg" style="display:none;" data-key="' + _xvEsc(o.key) + '" data-name="' + _xvEsc(o.label) + '" onchange="xvLogoUpload(this)"></label>'
+                    + (opts ? '<select class="xv-input" style="width:auto; max-width:170px; padding:3px 6px;" data-key="' + _xvEsc(o.key) + '" data-name="' + _xvEsc(o.label) + '" onchange="xvLogoPick(this)"><option value="">or pick from images…</option>' + opts + '</select>' : '')
+                    + '<button class="xv-btn small" data-key="' + _xvEsc(o.key) + '" onclick="xvLogoBadge(this.dataset.key)">Use text badge</button></div></div>';
+            });
+            const ph = s.ph || {};
+            Object.keys(ph).forEach(key => {
+                const rec = ph[key], v = values[key] || {}, st = v.status || '';
+                const meta = rec.insert ? (ins[key] || {}) : (figs[key] || {});
+                const need = out.some(o => o.key === key);
+                const shown = rec.insert ? (v.value || '') : (v.value || meta.value || rec.default || '');
+                const id = 'xvVal_' + key.replace(/[^A-Za-z0-9_]/g, '_');
+                h += '<div class="xv-item' + (need ? ' need' : '') + '"><div style="font-weight:700; color:#e2e8f0;">' + (rec.insert ? '✍️ Insert: ' : '🔢 Figure: ') + _xvEsc(meta.label || key)
+                    + (st ? ' <span style="color:#34d399; font-weight:normal;">· ' + _xvEsc(st) + '</span>' : '') + '</div>'
+                    + (meta.note ? '<div style="margin:3px 0; color:#94a3b8;">' + _xvEsc(meta.note) + '</div>' : '')
+                    + '<div style="margin:3px 0 6px 0; color:#64748b;">On ' + _xvSlideLinks(rec.slides) + (rec.insert ? '' : ' · script: ' + _xvEsc(meta.value || rec.default || '')) + '</div>'
+                    + '<div style="display:flex; gap:6px; align-items:center;"><input id="' + id + '" class="xv-input" value="' + _xvEsc(shown) + '" placeholder="' + (rec.insert ? 'The value to show' : 'As it should read on screen') + '">'
+                    + (rec.insert
+                        ? '<button class="xv-btn small" data-key="' + _xvEsc(key) + '" onclick="xvSetValue(this.dataset.key, \'filled\')">Save</button><button class="xv-btn small" data-key="' + _xvEsc(key) + '" onclick="xvSetValue(this.dataset.key, \'dropped\')">Leave out</button>'
+                        : '<button class="xv-btn small" data-key="' + _xvEsc(key) + '" onclick="xvSetValue(this.dataset.key, \'confirm\')">' + (st ? 'Update' : 'Confirm') + '</button>')
+                    + (st ? '<button class="xv-btn small" title="Mark as not confirmed" data-key="' + _xvEsc(key) + '" onclick="xvSetValue(this.dataset.key, \'\')">↺</button>' : '')
+                    + '</div></div>';
+            });
+            const used = s.used_logos || {}, logos = s.logos || {};
+            const withFiles = Object.keys(used).filter(k => used[k].has_file && logos[k]);
+            if (withFiles.length) {
+                h += '<div style="font-size:0.78em; color:#94a3b8; margin:12px 0 6px 0; font-weight:600;">Logos in the video</div>';
+                withFiles.forEach(k => {
+                    const L = logos[k];
+                    h += '<div class="xv-item" style="display:flex; gap:10px; align-items:center;"><div class="xv-logo-img" style="width:110px; flex:0 0 110px;"><img src="' + _xvEsc(_xvApi('/file?' + _xvQ() + '&path=' + encodeURIComponent(L.path)) + '&_=' + encodeURIComponent(L.recolor + (L.source || ''))) + '" alt=""></div>'
+                        + '<div style="flex:1; min-width:0;"><div style="color:#e2e8f0; font-weight:600;">' + _xvEsc(L.name) + ' <span style="color:#64748b; font-weight:normal;">' + _xvEsc(L.kind || '') + '</span></div>'
+                        + '<select class="xv-input" style="margin-top:4px; padding:3px 6px;" data-key="' + _xvEsc(k) + '" onchange="xvLogoRecolor(this.dataset.key, this.value)">'
+                        + ['auto|Recolor dark marks', 'white|All off-white', 'original|Keep colors'].map(o => { const [v, l] = o.split('|'); return '<option value="' + v + '"' + (L.recolor === v ? ' selected' : '') + '>' + l + '</option>'; }).join('')
+                        + '</select></div></div>';
+                });
+            }
+            const qs = plan.questions || [];
+            if (qs.length) {
+                h += '<div style="font-size:0.78em; color:#94a3b8; margin:12px 0 6px 0; font-weight:600;">Claude asks</div>';
+                qs.forEach((q, i) => {
+                    h += '<div class="xv-item"><div style="color:#e2e8f0; margin-bottom:5px;">' + _xvEsc(q) + '</div><textarea id="xvAns' + i + '" class="xv-input" rows="2" style="font-family:inherit;">' + _xvEsc((s.answers || {})[q] || '') + '</textarea></div>';
+                });
+                h += '<button class="xv-btn small" onclick="xvSaveAnswers()">Save answers</button> <span style="font-size:0.72em; color:#64748b;">Claude uses them on the next revision.</span>';
+            }
+            el.innerHTML = h;
+        }
+
+        function _xvAllWarnings(m) {
+            const server = (m.warnings || []).map(w => ({ msg: w.msg, minor: !!w.minor }));
+            const client = (_xv.checks[m.id] || []).map(x => ({ msg: x, minor: false }));
+            return server.concat(client);
+        }
+
+        function _xvRenderSlides() {
+            const list = (_xv.state && _xv.state.slides) || [];
+            const icon = { scene: '🌃', chapter: '📖', asset: '📋', slide: '🟦' };
+            const cur = _xvSlideAt(_xv.t);
+            const hostOn = !!(_xv.state && _xv.state.host);
+            const running = !!(_xv.state && _xv.state.job && _xv.state.job.status === 'running');
+            const hostSel = m => !hostOn ? '' : '<select class="xv-input" title="Presenter on this slide (no Claude call)" style="width:auto; padding:1px 4px; height:auto; font-size:0.95em; margin-left:4px;" data-id="' + _xvEsc(m.id) + '"'
+                + (running ? ' disabled' : '') + ' onclick="event.stopPropagation()" onchange="xvSlideHost(this.dataset.id, this.value)">'
+                + Object.keys(_XV_HOST_NAMES).map(k => '<option value="' + k + '"' + ((m.host || '') === k ? ' selected' : '') + '>' + (k ? '🧑‍💼 ' : '') + _XV_HOST_NAMES[k] + '</option>').join('') + '</select>';
+            document.getElementById('xvSlideList').innerHTML = list.length ? list.map(m => {
+                const ws = _xvAllWarnings(m);
+                const major = ws.filter(w => !w.minor);
+                return '<div class="xv-slide' + (cur && cur.id === m.id ? ' cur' : '') + '" data-id="' + _xvEsc(m.id) + '" onclick="xvGoSlide(this.dataset.id)">'
+                    + '<input type="checkbox" ' + (_xv.selected.has(m.id) ? 'checked ' : '') + 'onclick="event.stopPropagation(); xvToggleSlide(this.parentNode.dataset.id, this.checked)">'
+                    + '<div style="flex:1; min-width:0;"><div><strong style="color:#e2e8f0;">' + _xvEsc(m.id) + '</strong> · ' + _xvFmt(m.t0) + '–' + _xvFmt(m.t1)
+                    + ' · ' + (icon[m.kind] || '') + ' ' + _xvEsc(m.kind) + (m.section ? ' · <span style="color:#64748b;">' + _xvEsc(m.section) + '</span>' : '')
+                    + (major.length ? ' <span style="color:#fbbf24;">⚠️ ' + major.length + '</span>' : '') + hostSel(m) + '</div>'
+                    + '<div style="color:#94a3b8; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">' + _xvEsc(m.idea || '') + '</div>'
+                    + ws.map(w => '<div style="color:' + (w.minor ? '#64748b' : '#fbbf24') + '; font-size:0.95em;">• ' + _xvEsc(w.msg) + '</div>').join('')
+                    + '</div></div>';
+            }).join('') : '<div style="font-size:0.8em; color:#64748b;">No slides yet.</div>';
+            _xvScopeLabel();
+        }
+
+        function _xvRenderPlan() {
+            const s = _xv.state, plan = s.plan || {};
+            const t = s.timing || {}, L = s.loudness || {};
+            let h = '';
+            if (plan.summary) h += '<div class="xv-item"><div style="font-weight:700; color:#e2e8f0; margin-bottom:4px;">Approach</div>' + _xvEsc(plan.summary) + '</div>';
+            if ((plan.sections || []).length) h += '<div class="xv-item"><div style="font-weight:700; color:#e2e8f0; margin-bottom:4px;">Sections</div>' + plan.sections.map((x, i) => (i + 1) + '. ' + _xvEsc(x.label)).join('<br>') + '</div>';
+            if ((plan.dropped || []).length) h += '<div class="xv-item"><div style="font-weight:700; color:#e2e8f0; margin-bottom:4px;">Production notes not used</div>' + plan.dropped.map(x => '• ' + _xvEsc(x)).join('<br>') + '</div>';
+            if ((s.notes || []).length) h += '<div class="xv-item"><div style="font-weight:700; color:#e2e8f0; margin-bottom:4px;">Your notes for the whole video</div>' + s.notes.map(x => '• ' + _xvEsc(x)).join('<br>') + '</div>';
+            h += '<div class="xv-item" style="color:#94a3b8;">Narration: ' + _xvEsc(s.voiceover || '') + ' · ' + _xvFmt(s.audio_seconds)
+                + (L.input_lufs !== undefined ? ' · normalized ' + L.input_lufs.toFixed(1) + ' → -14 LUFS' : '')
+                + (t.words ? '<br>Word timing: ' + t.words.toLocaleString() + ' words, ' + (t.source === 'elevenlabs' ? 'ElevenLabs forced alignment' : '⚠️ estimated from pauses (cues may drift)') : '')
+                + (s.text_source ? '<br>Timed against ' + _xvEsc(s.text_source) : '')
+                + '<br>Project folder: <a href="#" onclick="xvReveal(\'\'); return false;">' + _xvEsc(s.dir) + '</a></div>';
+            document.getElementById('xvPane-plan').innerHTML = h;
+        }
+
+        function _xvRenderVersions() {
+            const s = _xv.state;
+            const vs = (s.versions || []).slice().reverse();
+            document.getElementById('xvPane-versions').innerHTML = vs.length ? vs.map(v =>
+                '<div class="xv-item" style="display:flex; gap:8px; align-items:flex-start;"><div style="flex:1;"><strong style="color:#e2e8f0;">v' + v.n + '</strong> · ' + _xvEsc(v.kind) + ' · ' + _xvWhen(v.created) + ' · ' + v.slides + ' slides'
+                + (v.n === s.current ? ' · <span style="color:#f59e0b;">● current</span>' : '') + (v.n === s.approved ? ' · <span style="color:#34d399;">✅ approved</span>' : '')
+                + (v.note ? '<div style="color:#94a3b8; margin-top:3px;">' + _xvEsc(v.note) + '</div>' : '') + '</div>'
+                + (v.n !== s.current ? '<button class="xv-btn small" onclick="xvUseVersion(' + v.n + ')">Use this</button>' : '') + '</div>').join('')
+                : '<div style="font-size:0.8em; color:#64748b;">No versions yet.</div>';
+        }
+
+        function _xvRenderFiles() {
+            const s = _xv.state;
+            const label = { sample: '🎞️ Sample clip', review: '📼 1080p review', final: '🎬 4K final', phone: '📱 720p phone copy', asset: '📋 Asset 4K PNG' };
+            let h = '';
+            (s.renders || []).slice().reverse().forEach((r, ri) => {
+                r.files.forEach((f, fi) => {
+                    const url = _xvApi('/file?' + _xvQ() + '&path=' + encodeURIComponent(f.path));
+                    const vid = 'xvVid_' + ri + '_' + fi;
+                    h += '<div class="xv-item"><div style="color:#e2e8f0; font-weight:600;">' + (label[f.kind] || f.kind) + ' · v' + r.version
+                        + ' <span style="color:#64748b; font-weight:normal;">' + _xvWhen(r.created) + (f.size ? ' · ' + (f.size / 1048576).toFixed(f.size > 1048576 * 10 ? 0 : 1) + ' MB' : '') + (f.seconds ? ' · ' + _xvFmt(f.seconds) : '') + '</span></div>'
+                        + '<div style="color:#64748b; word-break:break-all; margin:2px 0 6px 0;">' + _xvEsc(f.path) + '</div>'
+                        + '<div style="display:flex; gap:6px; flex-wrap:wrap;">'
+                        + (f.kind === 'asset' ? '<a class="xv-btn small" href="' + _xvEsc(url) + '" target="_blank" style="text-decoration:none;">🖼️ Open</a>'
+                            : '<button class="xv-btn small" data-vid="' + vid + '" data-url="' + _xvEsc(url) + '" onclick="xvToggleVideo(this)">▶ Play</button>')
+                        + '<a class="xv-btn small" href="' + _xvEsc(url + '&download=1') + '" style="text-decoration:none;">⬇️ Download</a>'
+                        + '<button class="xv-btn small" data-path="' + _xvEsc(f.path) + '" onclick="xvReveal(this.dataset.path)">📂 Show in Finder</button></div>'
+                        + (f.kind === 'asset' ? '' : '<video id="' + vid + '" controls preload="none" style="display:none; width:100%; margin-top:6px; background:#000; border-radius:4px;"></video>')
+                        + (r.levels && f.kind === 'final' ? '<div style="color:#94a3b8; margin-top:4px;">Audio: mean ' + r.levels.mean_db + ' dB, peak ' + r.levels.max_db + ' dB. No sound on a phone? Check the ring/silent switch and the player’s mute icon, or use the 720p copy.</div>' : '')
+                        + '</div>';
+                });
+            });
+            (s.stills || []).forEach(p => {
+                const url = _xvApi('/file?' + _xvQ() + '&path=' + encodeURIComponent(p));
+                h += '<div class="xv-item"><div style="color:#e2e8f0; font-weight:600; margin-bottom:5px;">📸 ' + _xvEsc(p.split('/').pop()) + '</div><a href="' + _xvEsc(url) + '" target="_blank"><img src="' + _xvEsc(url) + '" style="width:100%; border-radius:4px;" alt=""></a></div>';
+            });
+            document.getElementById('xvPane-files').innerHTML = h || '<div style="font-size:0.8em; color:#64748b;">Sample clips, review cuts, the 4K final and contact sheets appear here.</div>';
+        }
+
+        // ---- Player
+        function _xvSlideAt(t) {
+            const list = _xv.slides.length ? _xv.slides : ((_xv.state && _xv.state.slides) || []);
+            let cur = null;
+            for (const m of list) { if (m.t0 <= t + 1e-6) cur = m; else break; }
+            return cur;
+        }
+        function xvSeek(t) {
+            const end = _xv.end || _xv.dur;
+            _xv.t = Math.max(_xv.start || 0, Math.min(t, end || t));
+            const fr = document.getElementById('xvFrame');
+            if (fr.contentWindow) fr.contentWindow.postMessage({ xv: 'seek', t: _xv.t, playing: _xv.playing }, '*');
+            document.getElementById('xvScrub').value = _xv.t;
+            document.getElementById('xvTime').textContent = _xvFmt(_xv.t) + ' / ' + (_xv.start ? _xvFmt(_xv.start) + '–' : '') + _xvFmt(end);
+            _xvPeekSync();
+            const cur = _xvSlideAt(_xv.t);
+            const curId = cur ? cur.id : '';
+            if (curId !== _xv.curId) {
+                _xv.curId = curId;
+                const meta = ((_xv.state && _xv.state.slides) || []).find(m => m.id === curId);
+                document.getElementById('xvNow').innerHTML = meta ? '<strong style="color:#e2e8f0;">' + _xvEsc(meta.id) + '</strong> · ' + _xvEsc(meta.kind) + (meta.section ? ' · ' + _xvEsc(meta.section) : '') + ' · ' + _xvEsc(meta.idea || '') : '';
+                document.querySelectorAll('#xvSlideList .xv-slide').forEach(r => r.classList.toggle('cur', r.dataset.id === curId));
+                _xvScopeLabel();
+            }
+        }
+        function xvScrubTo(t) {
+            const a = document.getElementById('xvAudio');
+            if (a.src && a.readyState > 0) a.currentTime = Math.min(t, a.duration || t);
+            xvSeek(t);
+        }
+        function xvGoSlide(id) {
+            const m = ((_xv.state && _xv.state.slides) || []).find(x => x.id === id);
+            if (m) xvScrubTo(Math.min(m.t0 + 0.45, (m.t0 + m.t1) / 2));   // just past the 0.4 s transition
+        }
+        function xvStep(dir) {
+            const list = (_xv.state && _xv.state.slides) || [];
+            const cur = _xvSlideAt(_xv.t);
+            const i = cur ? list.findIndex(m => m.id === cur.id) : -1;
+            const next = list[Math.max(0, Math.min(list.length - 1, i + dir))];
+            if (next) xvScrubTo(Math.min(next.t0 + 0.45, (next.t0 + next.t1) / 2));
+        }
+        function xvPlayPause() { if (_xv.playing) xvPause(); else xvPlay(); }
+        function xvPlay() {
+            const a = document.getElementById('xvAudio');
+            if (!a.src) return;
+            if (_xv.end && _xv.t >= _xv.end - 0.1) _xv.t = _xv.start || 0;
+            if (Math.abs((a.currentTime || 0) - _xv.t) > 0.25) a.currentTime = _xv.t;
+            a.play().then(() => {
+                _xv.playing = true;
+                document.getElementById('xvPlayBtn').textContent = '⏸ Pause';
+                requestAnimationFrame(_xvTick);
+            }).catch(e => _xvStatus('Could not play the audio: ' + _xvEsc(e.message), '#f87171'));
+        }
+        function xvPause() {
+            const a = document.getElementById('xvAudio');
+            const was = _xv.playing;
+            if (a) a.pause();
+            _xv.playing = false;
+            const b = document.getElementById('xvPlayBtn');
+            if (b) b.textContent = '▶ Play';
+            const fr = document.getElementById('xvFrame');
+            if (was && fr && fr.contentWindow) fr.contentWindow.postMessage({ xv: 'seek', t: _xv.t, playing: false }, '*');
+        }
+        function _xvTick() {
+            if (!_xv.playing) return;
+            const a = document.getElementById('xvAudio');
+            if (_xv.end && a.currentTime >= _xv.end) { xvPause(); xvSeek(_xv.end); return; }   // end of the test clip
+            xvSeek(a.currentTime);
+            if (a.ended || a.paused) { xvPause(); return; }
+            requestAnimationFrame(_xvTick);
+        }
+        window.addEventListener('message', ev => {
+            const fr = document.getElementById('xvFrame');
+            if (!fr || ev.source !== fr.contentWindow) return;
+            const d = ev.data || {};
+            if (d.xv === 'ready') {
+                _xv.dur = +d.duration || 0;
+                _xv.start = +d.start || 0;
+                _xv.end = d.end !== undefined ? +d.end : _xv.dur;
+                _xv.slides = d.slides || [];
+                document.getElementById('xvScrub').min = _xv.start;
+                document.getElementById('xvScrub').max = _xv.end;
+                _xvRenderMarks();
+                if (_xv.t < _xv.start || _xv.t > _xv.end) {
+                    _xv.t = _xv.start;
+                    const a = document.getElementById('xvAudio');
+                    if (a.src && a.readyState > 0) a.currentTime = _xv.t;
+                }
+                _xv.curId = null;
+                xvSeek(_xv.t);
+                document.getElementById('xvChecking').textContent = 'Checking the layout…';
+                fr.contentWindow.postMessage({ xv: 'check' }, '*');
+            } else if (d.xv === 'checks') {
+                _xv.checks = {};
+                (d.issues || []).forEach(x => { _xv.checks[x.id] = x.issues; });
+                const n = Object.keys(_xv.checks).length;
+                document.getElementById('xvChecking').textContent = n ? 'Layout check: ' + n + ' slide(s) flagged' : 'Layout check: no overlaps found';
+                _xvRenderSlides();
+            }
+        });
+
+        // ---- Notes for Claude
+        function xvToggleSlide(id, on) { if (on) _xv.selected.add(id); else _xv.selected.delete(id); _xvScopeLabel(); }
+        function xvSelectNone() { _xv.selected.clear(); _xvRenderSlides(); }
+        function _xvFlagged() {
+            return ((_xv.state && _xv.state.slides) || []).filter(m => _xvAllWarnings(m).some(w => !w.minor && !/^logo file missing/.test(w.msg))).map(m => m.id);
+        }
+        function xvSelectFlagged() { _xvFlagged().forEach(id => _xv.selected.add(id)); _xvRenderSlides(); }
+        function _xvTargets() {
+            if (_xv.selected.size) return Array.from(_xv.selected);
+            const cur = _xvSlideAt(_xv.t);
+            return cur ? [cur.id] : [];
+        }
+        function _xvScopeLabel() {
+            const el = document.getElementById('xvScopeSlides');
+            if (!el) return;
+            const ids = _xvTargets();
+            el.textContent = _xv.selected.size ? 'Ticked slides (' + ids.length + ': ' + ids.slice(0, 6).join(', ') + (ids.length > 6 ? '…' : '') + ')'
+                : (ids.length ? 'The slide on screen (' + ids[0] + ')' : 'Selected slides');
+        }
+        function xvScopeChanged() {
+            const all = (document.querySelector('input[name="xvScope"]:checked') || {}).value === 'all';
+            document.getElementById('xvReplanWrap').style.display = all ? 'inline' : 'none';
+            document.getElementById('xvSeeWrap').style.display = all ? 'none' : 'inline';
+        }
+        async function xvRevise(fixOnly) {
+            const all = !fixOnly && (document.querySelector('input[name="xvScope"]:checked') || {}).value === 'all';
+            const feedback = document.getElementById('xvFeedback').value.trim();
+            const ids = fixOnly ? _xvFlagged() : _xvTargets();
+            if (all && !feedback) { _xvStatus('Say what should change across the whole video.', '#f87171'); return; }
+            if (!all && !ids.length) { _xvStatus(fixOnly ? 'No slides have layout warnings.' : 'Tick the slides to change (or play to the one you mean).', '#f87171'); return; }
+            if (!all && !fixOnly && !feedback) { _xvStatus('Write what should change on ' + ids.join(', ') + '.', '#f87171'); return; }
+            if (all && !confirm('Rewrite every slide with these notes? This is a full rebuild (about as long and costly as the first build).')) return;
+            const warnings = {};
+            ids.forEach(id => { if (_xv.checks[id]) warnings[id] = _xv.checks[id]; });
+            xvPause();
+            const d = await _xvPost(_xvApi('/revise'), { feedback: feedback, scope: all ? 'all' : 'slides', slides: ids, warnings: warnings,
+                replan: document.getElementById('xvReplan').checked, see: document.getElementById('xvSee').checked });
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Could not start.'), '#f87171'); return; }
+            _elLog('✏️ Explainer revision sent to Claude' + (all ? ' (whole video)' : ' for ' + ids.join(', ')) + (feedback ? ': ' + feedback.slice(0, 160) : ' (layout fixes)'));
+            document.getElementById('xvFeedback').value = '';
+            _xv.selected.clear();
+            _xv.state = Object.assign(_xv.state || {}, d);
+            await xvRefresh();
+        }
+        function xvFixLayout() {
+            const ids = _xvFlagged();
+            if (!ids.length) { _xvStatus('No slides have layout warnings.', '#94a3b8'); return; }
+            if (!confirm('Send ' + ids.length + ' flagged slide(s) (' + ids.slice(0, 10).join(', ') + (ids.length > 10 ? '…' : '') + ') back to Claude to fix?')) return;
+            xvRevise(true);
+        }
+
+        // ---- Values, logos, answers
+        async function _xvApply(d) {
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Could not save.'), '#f87171'); return; }
+            const prev = _xv.state;
+            _xv.state = d;
+            _xvRenderState(prev);
+        }
+        async function xvSetValue(key, action) {
+            const input = document.getElementById('xvVal_' + key.replace(/[^A-Za-z0-9_]/g, '_'));
+            const val = input ? input.value.trim() : '';
+            const s = _xv.state || {};
+            const fig = (((s.plan || {}).figures) || []).find(f => f.key === key) || {};
+            const original = fig.value || ((s.ph || {})[key] || {}).default || '';
+            let entry;
+            if (action === '') entry = { status: '' };
+            else if (action === 'dropped') entry = { status: 'dropped', value: '' };
+            else if (action === 'filled') { if (!val) { _xvStatus('Type the value first, or choose Leave out.', '#f87171'); return; } entry = { status: 'filled', value: val }; }
+            else { if (!val) { _xvStatus('Type the figure as it should read on screen.', '#f87171'); return; } entry = { status: val === original.trim() ? 'confirmed' : 'edited', value: val }; }
+            const v = {}; v[key] = entry;
+            await _xvApply(await _xvPost(_xvApi('/values'), { values: v }));
+        }
+        async function xvLogoBadge(key) { const c = {}; c[key] = 'badge'; await _xvApply(await _xvPost(_xvApi('/values'), { logo_choices: c })); }
+        async function xvLogoUpload(input) {
+            if (!input.files || !input.files[0]) return;
+            _xvStatus('Adding the ' + _xvEsc(input.dataset.name) + ' logo…');
+            await _xvApply(await _xvForm(_xvApi('/logo'), { key: input.dataset.key, name: input.dataset.name, recolor: 'auto', file: input.files[0] }));
+        }
+        async function xvLogoPick(sel) {
+            if (!sel.value) return;
+            await _xvApply(await _xvForm(_xvApi('/logo'), { key: sel.dataset.key, name: sel.dataset.name, recolor: 'auto', image: sel.value }));
+        }
+        function xvToggleVideo(btn) {
+            xvPause();
+            const v = document.getElementById(btn.dataset.vid);
+            if (!v) return;
+            v.style.display = v.style.display === 'none' ? 'block' : 'none';
+            if (!v.getAttribute('src')) v.src = btn.dataset.url;
+        }
+        async function xvLogoRecolor(key, mode) { await _xvApply(await _xvForm(_xvApi('/logo'), { key: key, recolor: mode })); }
+        async function xvSaveAnswers() {
+            const qs = ((_xv.state && _xv.state.plan) || {}).questions || [];
+            const answers = {};
+            qs.forEach((q, i) => { const el = document.getElementById('xvAns' + i); if (el) answers[q] = el.value; });
+            await _xvApply(await _xvPost(_xvApi('/values'), { answers: answers }));
+            _xvStatus('✅ Answers saved.', '#34d399');
+        }
+
+        // ---- Renders, approval, versions
+        async function xvRender(kind) {
+            const s = _xv.state || {};
+            if (kind === 'final' && !confirm('Render the 4K final of version ' + s.current + ' (' + _xvFmt(s.duration) + ')? It renders on this computer and also makes the 720p phone copy.')) return;
+            const seconds = +document.getElementById('xvSampleLen').value || 30;
+            xvPause();
+            const d = await _xvPost(_xvApi('/render'), { kind: kind, start: _xv.t, seconds: seconds });
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Could not start the render.'), '#f87171'); return; }
+            _elLog('🎞️ Explainer ' + (kind === 'sample' ? seconds + ' s sample clip from ' + _xvFmt(_xv.t) : kind === 'review' ? '1080p review cut' : '4K final') + ' rendering (version ' + s.current + ')');
+            await xvRefresh();
+        }
+        async function xvStills() {
+            const d = await _xvPost(_xvApi('/stills'), {});
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Could not start.'), '#f87171'); return; }
+            await xvRefresh();
+        }
+        async function xvApprove() {
+            const s = _xv.state || {};
+            await _xvApply(await _xvPost(_xvApi('/approve'), { approved: s.approved !== s.current }));
+        }
+        async function xvUseVersion(n) { await _xvApply(await _xvPost(_xvApi('/version'), { n: n })); }
+
+        // ---- Test clip → whole video; presenter
+        async function xvExtend() {
+            const s = _xv.state || {};
+            if (!s.span) return;
+            const rest = Math.max(0, (s.audio_seconds || 0) - (s.span[1] - s.span[0]));
+            if (!confirm('Build the rest of the video (' + _xvFmt(rest) + ' of narration) around this test clip? Claude follows the test slides and your notes; about $'
+                + Math.max(1, Math.round(rest / 60 * 1.5)) + ' and ' + Math.round(rest / 60 * 1.1) + '–' + Math.round(rest / 60 * 1.7 + 2) + ' minutes.')) return;
+            xvPause();
+            const d = await _xvPost(_xvApi('/extend'), {});
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Could not start.'), '#f87171'); return; }
+            _elLog('🧩 Explainer: building the rest of the video around the test clip (' + _xvFmt(rest) + ' of narration)');
+            _xv.state = Object.assign(_xv.state || {}, d);
+            await xvRefresh();
+        }
+        async function xvHostSet(source) {
+            if (!source) { _xvStatus('Pick the HeyGen clips first.', '#f87171'); return; }
+            xvPause();
+            const d = await _xvPost(_xvApi('/host'), { source: source });
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Could not add the presenter.'), '#f87171'); return; }
+            _elLog('🧑‍💼 Explainer: matching the presenter clips to the narration');
+            _xv.state = Object.assign(_xv.state || {}, d);
+            await xvRefresh();
+        }
+        async function xvHostRemove() {
+            if (!confirm('Remove the presenter from this video? Slides marked for the presenter go back to slides only (you can add it again).')) return;
+            await _xvApply(await _xvPost(_xvApi('/host'), { source: '' }));
+        }
+        async function xvHostFocus(v) { await _xvApply(await _xvPost(_xvApi('/host'), { focus: +v })); }
+        async function xvHostShare(v) { await _xvApply(await _xvPost(_xvApi('/host'), { share: v })); }
+        async function xvSlideHost(id, layout) {
+            const d = await _xvPost(_xvApi('/layout'), { slide: id, host: layout });
+            await _xvApply(d);
+            if (d.success) _elLog('🧑‍💼 Explainer v' + d.current + ': ' + id + ' → ' + _XV_HOST_NAMES[layout || '']);
+        }
+        async function xvCancel() { await _xvPost(_xvApi('/cancel'), {}); setTimeout(xvRefresh, 800); }
+        async function xvReveal(rel) {
+            const s = _xv.state || {};
+            const d = await _xvPost('/api/youtube/reveal-path', { path: s.dir + (rel ? '/' + rel : '') });
+            if (!d.success) _xvStatus('❌ ' + _xvEsc(d.error || 'Could not open Finder.'), '#f87171');
         }
 
         // ---- API Keys modal (Claude / Google / HeyGen / ElevenLabs / Grok / X) ----

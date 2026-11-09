@@ -1675,7 +1675,8 @@ def _():
             assert c.post("/api/elevenlabs/tts", json={"text": "Hi.", "voice_id": "voiceABC123", "similarity": 1.5}).status_code == 400
 
             r = c.post("/api/elevenlabs/tts", json={"text": text, "voice_id": "voiceABC123", "voice_name": "Roz Clone",
-                                                    "model_id": "eleven_v4", "similarity": 0.75, "title": "My Test Title"}).get_json()
+                                                    "model_id": "eleven_v4", "similarity": 0.75, "clone_strength": 0.5,
+                                                    "title": "My Test Title"}).get_json()
             assert r["success"] and r["parts"] == len(parts), r
             s = wait_job(c, r["job_id"])
             assert s["status"] == "done" and s["done"] == len(parts), s
@@ -1686,7 +1687,8 @@ def _():
             assert "previous_request_ids" not in tts[0] and tts[-1]["previous_request_ids"] == [f"req{len(posts) - i}" for i in (3, 2, 1)]
             # Similarity 75%; the voice's other saved settings sent unchanged (a null clone_strength left out).
             assert all(b["voice_settings"] == {"stability": 0.4, "similarity_boost": 0.75, "style": 0.1,
-                                               "use_speaker_boost": True, "speed": 1.05} for b in tts), tts[0]
+                                               "use_speaker_boost": True, "speed": 1.05, "clone_strength": 0.5}
+                       for b in tts), tts[0]
             out = Path(s["path"])
             assert out.parent == d / "out" / "voiceover" and out.name.startswith("My_Test_Title_elevenlabs_Roz_Clone_")
             if have_ff:
@@ -1696,6 +1698,13 @@ def _():
             saved = _json.loads(settings.read_text())
             assert saved["elevenlabs_voice_id"] == "voiceABC123" and saved["elevenlabs_model_id"] == "eleven_v4"
             assert saved["elevenlabs_similarity"] == 0.75 and c.get("/api/elevenlabs/voices").get_json()["similarity"] == 0.75
+            assert saved["elevenlabs_clone_strength"] == 0.5 and c.get("/api/elevenlabs/voices").get_json()["clone_strength"] == 0.5
+            # Clone Strength is Eleven v4 only: another model keeps the voice's saved settings.
+            n0 = len(posts)
+            r2 = c.post("/api/elevenlabs/tts", json={"text": "Hi.", "voice_id": "voiceABC123", "model_id": "eleven_multilingual_v2",
+                                                     "clone_strength": 0.9}).get_json()
+            assert wait_job(c, r2["job_id"])["status"] == "done" and "clone_strength" not in posts[n0][3]["voice_settings"]
+            assert c.post("/api/elevenlabs/tts", json={"text": "Hi.", "voice_id": "voiceABC123", "clone_strength": 2}).status_code == 400
             a = c.get(f"/api/elevenlabs/audio/{r['job_id']}?download=1")
             assert a.status_code == 200 and a.mimetype == "audio/mpeg" and "attachment" in a.headers["Content-Disposition"]
             a.close()
@@ -1717,8 +1726,1053 @@ def _():
     assert html.count("['modalElevenlabsApiKey','elevenlabs_api_key']") == 2 and html.count('onclick="openElevenLabsModal()"') == 2
     assert 'id="elevenLabsModal"' in html and "async function startElevenLabsAudio()" in html
     assert 'id="elSimilarity"' in html and "similarity: similarity," in html
-    return (f"{len(parts)} stitched parts (last 3 request IDs passed), similarity 75% with the voice's other settings kept, busy reply retried, one MP3"
+    assert 'id="elCloneStrength"' in html and "clone_strength: cloneStrength" in html and "function _elToggleClone()" in html
+    return (f"{len(parts)} stitched parts (last 3 request IDs passed), similarity 75% + clone strength (v4 only) with the voice's other settings kept, busy reply retried, one MP3"
             + (" checked with ffprobe" if have_ff else "") + "; key masked + hydrated; own voices first; quota error plain, key redacted")
+
+@check("HeyGen clips from an ElevenLabs MP3: cut in pauses into clips under the frame limit counted at the upscaler's fps, each rendered with a template's avatar (engine, background) into heygen/, not aRoll/")
+def _():
+    import json as _json
+    import shutil
+    import subprocess
+    import tempfile
+    import threading as _thr
+    from pathlib import Path
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        raise AssertionError("ffmpeg/ffprobe are needed for this check (brew install ffmpeg)")
+    key = "sk_V2_test_heygen_WXYZ9876"
+    TPL, LOOK = "92c09f8e9a1c4f078f7ae53886b7ad80", "5fdf87555a1c4320932077baa2c62c37"
+    calls = []
+    mode = {"status": {}, "engines": ["avatar_v", "avatar_iv"], "busy": 0, "made": 0}
+
+    class _R:
+        def __init__(self, status, body=None, content=b""):
+            self.status_code, self._b, self.content = status, body, content
+            self.text = _json.dumps(body) if body is not None else ""
+        def json(self):
+            return self._b
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise web_gui.requests.exceptions.HTTPError(response=self)
+        def iter_content(self, chunk_size=1):
+            yield self.content[:3]
+            yield self.content[3:]
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    template = {"data": {"id": TPL, "name": "Roz in Black Template", "aspect_ratio": "16:9", "variables": {},
+                         "composition": {"scenes": [{"background": {"color": "#FFFFFF", "type": "color"},
+                                                     "elements": [{"type": "avatar", "avatar_id": LOOK, "engine": "avatar_v"}]}]}}}
+
+    def fake_get(url, params=None, headers=None, timeout=None, stream=False):
+        calls.append(("GET", url, dict(headers or {}), None))
+        if url.endswith("/v3/templates"):
+            return _R(200, {"data": [{"id": TPL, "name": "Roz in Black Template"}, {"id": "emptytpl01", "name": "No avatar"}],
+                            "has_more": False})
+        if url.endswith(f"/v3/templates/{TPL}"):
+            return _R(200, template)
+        if url.endswith("/v3/templates/emptytpl01"):
+            return _R(200, {"data": {"id": "emptytpl01", "name": "No avatar", "composition": {"scenes": [{"elements": []}]}}})
+        if url.endswith(f"/v3/avatars/looks/{LOOK}"):
+            return _R(200, {"data": {"id": LOOK, "name": "Black Outfit 4K", "avatar_type": "digital_twin",
+                                     "supported_api_engines": mode["engines"], "preview_image_url": "https://x/p.jpg"}})
+        if "/v3/videos/" in url:
+            vid = url.rsplit("/", 1)[1]
+            script = mode["status"].setdefault(vid, ["processing", "completed"])
+            st = script.pop(0) if script else "completed"
+            if st == "failed":
+                return _R(200, {"data": {"status": "failed", "failure_message": "Audio too quiet"}})
+            return _R(200, {"data": {"status": st, "video_url": f"https://cdn.heygen/{vid}.mp4" if st == "completed" else None}})
+        if url.startswith("https://cdn.heygen/"):
+            assert stream
+            return _R(200, content=b"MP4-" + url.rsplit("/", 1)[1].encode())
+        return _R(404, {"error": {"message": "nope"}})
+
+    def fake_post(url, headers=None, json=None, files=None, timeout=None):
+        calls.append(("POST", url, dict(headers or {}), json if json is not None else
+                      {k: (v[0], v[2]) for k, v in (files or {}).items()}))
+        if url.endswith("/v3/assets"):
+            return _R(200, {"data": {"asset_id": f"asset{sum(c[1].endswith('/v3/assets') for c in calls)}"}})
+        if url.endswith("/v3/videos"):
+            if mode["busy"]:
+                mode["busy"] -= 1
+                return _R(429, {"error": {"message": "Too many concurrent videos"}})
+            mode["made"] += 1
+            return _R(200, {"data": {"video_id": f"vid{mode['made']}", "status": "waiting"}})
+        return _R(404, {"error": {"message": "nope"}})
+
+    def wait_job(c, job_id):
+        for _ in range(1000):
+            s = c.get(f"/api/heygen/audio-video/{job_id}").get_json()
+            if s.get("status") != "running":
+                return s
+            _thr.Event().wait(0.02)
+        raise AssertionError("HeyGen job never finished")
+
+    def tone(path, seconds):
+        # 4.4 s of tone, then a 0.6 s pause, every 5 s: the pauses are where cuts may go.
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                        f"aevalsrc='if(lt(mod(t,5),4.4),0.5*sin(2*PI*300*t),0)':s=44100:d={seconds}",
+                        "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k", str(path)], check=True)
+
+    def posts(suffix):
+        return [x for x in calls if x[0] == "POST" and x[1].endswith(suffix)]
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        vo = d / "out" / "voiceover"
+        vo.mkdir(parents=True)
+        (vo / "older.mp3").write_bytes(b"\xff" * 16000)        # unreadable: length estimated at 128 kbps
+        short, long_ = vo / "Talk_elevenlabs_Roz_1.mp3", vo / "Talk_elevenlabs_Roz_2.mp3"
+        tone(short, 10)
+        tone(long_, 30)
+        for i, p in enumerate((vo / "older.mp3", short, long_)):
+            os.utime(p, (1000 + i, 1000 + i))
+        keep = (web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._get_run_output_dir, web_gui.requests.get,
+                web_gui.requests.post, web_gui.time.sleep, os.environ.get("HEYGEN_API_KEY"), web_gui.HEYGEN_AUDIO_MAX_BYTES,
+                web_gui._video_frames, web_gui._plan_clip_cuts)
+        try:
+            settings = d / "settings.json"
+            settings.write_text("{}")
+            web_gui.SCRIPTCRAFT_SETTINGS_PATH = settings
+            web_gui._get_run_output_dir = lambda title, create=True: d / "out"
+            web_gui.requests.get, web_gui.requests.post = fake_get, fake_post
+            web_gui.time.sleep = lambda s: None
+            os.environ.pop("HEYGEN_API_KEY", None)
+            c = web_gui.app.test_client()
+
+            o = c.get("/api/heygen/audio-video/options?title=Talk").get_json()
+            assert o["needs_key"] and [f["name"] for f in o["voiceovers"]] == [long_.name, short.name, "older.mp3"], o
+            settings.write_text(_json.dumps({"heygen_api_key": key}))
+
+            o = c.get("/api/heygen/audio-video/options?title=Talk")
+            oj = o.get_json()
+            assert oj["success"] and [t["name"] for t in oj["templates"]] == ["Roz in Black Template", "No avatar"]
+            secs = {f["name"]: f["seconds"] for f in oj["voiceovers"]}
+            assert abs(secs[long_.name] - 30) < 0.1 and abs(secs[short.name] - 10) < 0.1 and secs["older.mp3"] == 1, secs
+            assert (oj["heygen_fps"], oj["count_fps"], oj["max_frames"], oj["max_frames_range"]) == (25, 30, 9000, [250, 108000])
+            assert 30 in oj["count_fps_choices"] and 25 in oj["count_fps_choices"] and key not in o.get_data(as_text=True)
+
+            a = c.get(f"/api/heygen/template-avatar/{TPL}").get_json()
+            assert a["avatar_id"] == LOOK and a["avatar_name"] == "Black Outfit 4K" and a["engine"] == "avatar_v"
+            assert a["background"] == {"type": "color", "value": "#FFFFFF"} and a["aspect_ratio"] == "16:9"
+            assert "no avatar" in c.get("/api/heygen/template-avatar/emptytpl01").get_json()["error"]
+            assert c.get("/api/heygen/template-avatar/..%2Fx").status_code in (400, 404)
+
+            base = {"title": "Talk", "template_id": TPL, "resolution": "1080p"}
+            for bad in ("../older.mp3", "older.wav", "missing.mp3", ""):
+                assert c.post("/api/heygen/audio-video", json={**base, "voiceover": bad}).status_code == 400, bad
+            assert c.post("/api/heygen/audio-video", json={**base, "voiceover": short.name, "resolution": "8k"}).status_code == 400
+            for bad in ({"max_frames": 100}, {"max_frames": 200000}, {"max_frames": "abc"}, {"fps": 31}, {"fps": "x"}):
+                assert c.post("/api/heygen/audio-video", json={**base, "voiceover": short.name, **bad}).status_code == 400, bad
+                q = {"title": "Talk", "voiceover": short.name, **bad}
+                assert c.get("/api/heygen/audio-video/plan", query_string=q).status_code == 400, bad
+            web_gui.HEYGEN_AUDIO_MAX_BYTES = 1000                  # one whole-file video must fit HeyGen's upload limit
+            assert c.post("/api/heygen/audio-video", json={**base, "voiceover": short.name}).status_code == 400
+            web_gui.HEYGEN_AUDIO_MAX_BYTES = keep[6]
+
+            # 10 s fits in one 9,000-frame video: the MP3 goes up whole, as one video.
+            calls.clear()
+            r = c.post("/api/heygen/audio-video", json={**base, "voiceover": short.name}).get_json()
+            assert r["success"] and r["avatar"] == "Black Outfit 4K" and r["clips"] == 1 and abs(r["audio_seconds"] - 10) < 0.1, r
+            s = wait_job(c, r["job_id"])
+            assert s["status"] == "done" and [p["video_id"] for p in s["parts"]] == ["vid1"], s
+            up = posts("/v3/assets")
+            assert len(up) == 1 and up[0][3] == {"file": (short.name, "audio/mpeg")} and up[0][2]["x-api-key"] == key
+            body = posts("/v3/videos")[0][3]
+            assert body == {"type": "avatar", "avatar_id": LOOK, "audio_asset_id": "asset1", "title": "Talk (ElevenLabs audio)",
+                            "aspect_ratio": "16:9", "resolution": "1080p", "engine": {"type": "avatar_v"},
+                            "background": {"type": "color", "value": "#FFFFFF"}}, body
+            out = Path(s["parts"][0]["path"])
+            assert out.parent == d / "out" / "heygen" and out.name.startswith("Talk_ElevenLabs_") and out.read_bytes() == b"MP4-vid1.mp4"
+            assert not (vo / "clips").exists() and not (d / "out" / "aRoll").exists()
+            v = c.get(f"/api/heygen/audio-video/{r['job_id']}/file")
+            assert v.status_code == 200 and v.mimetype == "video/mp4"
+            v.close()
+
+            # The plan: 30 s with a 300-frame limit is 4 clips counted at 30 fps (9.86 s each at most)
+            # but 3 counted at 25 fps (11.84 s); every clip's frames are under the limit.
+            q = {"title": "Talk", "voiceover": long_.name, "max_frames": 300}
+            p30 = c.get("/api/heygen/audio-video/plan", query_string=q).get_json()
+            p25 = c.get("/api/heygen/audio-video/plan", query_string={**q, "fps": 25}).get_json()
+            assert p30["success"] and p30["fps"] == 30 and len(p30["clips"]) == 4 and p30["in_pauses"], p30
+            assert len(p25["clips"]) == 3 and all(x["frames"] <= 300 for x in p25["clips"] + p30["clips"]), (p25, p30)
+            assert [x["frames"] for x in p30["clips"]] == [web_gui._hg_frames(x["seconds"], 30) for x in p30["clips"]]
+
+            # 30 s with a 300-frame limit at 25 fps → 3 clips, cut in the pauses, rendered side by side.
+            # HeyGen holds one render back once; it starts on the next round.
+            calls.clear()
+            mode.update(busy=1, made=0, status={})
+            web_gui._video_frames = lambda p: (280, 25.0)
+            r = c.post("/api/heygen/audio-video", json={**base, "voiceover": long_.name, "max_frames": 300, "fps": 25}).get_json()
+            assert r["success"] and r["clips"] == 3 and r["max_frames"] == 300 and r["fps"] == 25, r
+            assert [x["end"] for x in r["plan"]] == [x["end"] for x in p25["clips"]], (r["plan"], p25)
+            s = wait_job(c, r["job_id"])
+            parts = s["parts"]
+            assert s["status"] == "done" and [p["status"] for p in parts] == ["done"] * 3, s
+            stem = Path(parts[0]["path"]).stem[:-len("_part1of3")]
+            assert [Path(p["path"]).name for p in parts] == [f"{stem}_part{i}of3.mp4" for i in (1, 2, 3)]
+            assert all(Path(p["path"]).parent == d / "out" / "heygen" for p in parts)
+            assert sorted(Path(p["path"]).read_bytes() for p in parts) == [b"MP4-vid1.mp4", b"MP4-vid2.mp4", b"MP4-vid3.mp4"]
+            assert [p["audio"] for p in parts] == [f"{stem}_part{i}of3.mp3" for i in (1, 2, 3)]
+            assert sorted(x.name for x in (vo / "clips").iterdir()) == [p["audio"] for p in parts]
+            for p in parts:
+                assert p["frames"] <= 300 and p["seconds"] <= 11.84 and p["video_frames"] == 280 and p["heygen_frames"] == 280, p
+            for cut in (parts[0]["end"], parts[1]["end"]):
+                assert 4.4 < cut % 5 < 5.0, f"cut at {cut} is not in a pause"
+            assert parts[0]["start"] == 0 and parts[0]["end"] == parts[1]["start"] and abs(parts[2]["end"] - 30) < 0.1
+            assert abs(sum(p["seconds"] for p in parts) - 30) < 0.15, parts
+            assert [x[3]["file"][0] for x in posts("/v3/assets")] == [p["audio"] for p in parts]
+            titles = [x[3]["title"] for x in posts("/v3/videos")]
+            assert titles == [f"Talk (ElevenLabs audio) part {i} of 3" for i in (1, 2, 3, 1)], titles   # clip 1 retried
+            v = c.get(f"/api/heygen/audio-video/{r['job_id']}/file?part=2")
+            assert v.status_code == 200 and v.mimetype == "video/mp4"
+            v.close()
+            assert c.get(f"/api/heygen/audio-video/{r['job_id']}/file?part=9").status_code == 404
+            saved = _json.loads(settings.read_text())
+            assert (saved["heygen_audio_template_id"], saved["heygen_audio_resolution"], saved["heygen_audio_max_frames"],
+                    saved["heygen_audio_count_fps"]) == (TPL, "1080p", 300, 25)
+
+            # One clip fails at HeyGen: the others are still saved and the error names the clip.
+            calls.clear()
+            mode.update(made=0, status={"vid2": ["processing", "failed"]})
+            r = c.post("/api/heygen/audio-video", json={**base, "voiceover": long_.name, "max_frames": 300, "fps": 25}).get_json()
+            s = wait_job(c, r["job_id"])
+            assert s["status"] == "error" and [p["status"] for p in s["parts"]] == ["done", "failed", "done"], s
+            assert "Clip 2 of 3: HeyGen could not render it: Audio too quiet" in s["error"] and "2 of 3 clips were saved" in s["error"]
+
+            # Cuts that would leave a clip over the limit stop the job before anything is uploaded.
+            calls.clear()
+            web_gui._plan_clip_cuts = lambda duration, pauses, max_seconds, n: [2.0, 4.0][:n - 1]
+            r = c.post("/api/heygen/audio-video", json={**base, "voiceover": long_.name, "max_frames": 300, "fps": 25}).get_json()
+            s = wait_job(c, r["job_id"])
+            assert s["status"] == "error" and "over the 300 limit" in s["error"] and not posts("/v3/assets"), s
+            web_gui._plan_clip_cuts = keep[8]
+
+            # A look without the template's engine gets HeyGen's default engine; a failed render reads plainly.
+            mode.update(engines=["avatar_iv"], made=0, status={"vid1": ["processing", "failed"]})
+            calls.clear()
+            r = c.post("/api/heygen/audio-video", json={**base, "voiceover": short.name, "max_frames": 9000, "fps": 30}).get_json()
+            s = wait_job(c, r["job_id"])
+            body = posts("/v3/videos")[0][3]
+            assert "engine" not in body and s["status"] == "error" and "Audio too quiet" in s["error"] and key not in s["error"], s
+            assert "Clip 1" not in s["error"]
+        finally:
+            (web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._get_run_output_dir, web_gui.requests.get,
+             web_gui.requests.post, web_gui.time.sleep, env, web_gui.HEYGEN_AUDIO_MAX_BYTES,
+             web_gui._video_frames, web_gui._plan_clip_cuts) = keep
+            if env is None:
+                os.environ.pop("HEYGEN_API_KEY", None)
+            else:
+                os.environ["HEYGEN_API_KEY"] = env
+
+    # Frames: HeyGen's video is the audio rounded up to a 25 fps frame; the upscaler counts it at its own rate.
+    # These are the three clips of 2026-11-07 (7,855 / 7,501 / 7,087 frames from HeyGen; two were over 9,000 at 30 fps).
+    hf = web_gui._hg_frames
+    assert [hf(x, 25) for x in (314.162708, 300.03, 283.475937)] == [7855, 7501, 7087]
+    assert [hf(x, 30) for x in (314.162708, 300.03, 283.475937)] == [9426, 9002, 8505]
+    assert hf(web_gui._hg_clip_seconds(9000, 30), 30) <= 9000 and hf(web_gui._hg_clip_seconds(9000, 25), 25) <= 9000
+    assert web_gui._hg_clip_count(887.14, 9000, 30) == 3 and web_gui._hg_clip_count(938.43, 9000, 30) == 4
+    assert web_gui._hg_clip_count(938.43, 9000, 25) == 3 and web_gui._hg_clip_count(299, 9000, 30) == 1
+
+    # Cut planning: the longest pause near an even split when there's room; inside a pause (not its middle)
+    # when the limit is tight; one more clip when no pauses line up; even cuts when there are no pauses.
+    plan, cap = web_gui._plan_clip_cuts, web_gui._hg_clip_seconds(9000, 30)
+    pauses = [(t - 0.2, t + 0.2) for t in range(3, 900, 3)] + [(293.0, 294.0)]
+    cuts = plan(887.14, pauses, cap, 3)
+    edges = [0] + cuts + [887.14]
+    assert len(cuts) == 2 and cuts[0] == 293.5 and all(b - a <= cap for a, b in zip(edges, edges[1:])), cuts
+    tight = [(150.0, 150.4), (290.81, 291.08), (297.92, 298.07), (450.0, 450.4), (597.81, 598.15), (750.0, 750.4)]
+    cuts = plan(897.706, tight, cap, 3)                 # 14:58 at 30 fps: only 1.9 s of slack across 3 clips
+    assert cuts and 297.97 <= cuts[0] <= 298.02 and 597.86 <= cuts[1] <= 598.10, cuts
+    edges = [0] + cuts + [897.706]
+    assert all(hf(b - a, 30) <= 9000 for a, b in zip(edges, edges[1:])), [hf(b - a, 30) for a, b in zip(edges, edges[1:])]
+    assert plan(897.706, tight[:2] + tight[3:], cap, 3) is None    # no pause near 5:00 → 3 clips can't be clean
+    assert plan(300, pauses, 359, 1) == []
+
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert 'id="hgaSection"' in html and 'id="hgaMaxFrames"' in html and "async function startHeyGenAudioVideo()" in html
+    assert "max_frames: maxFrames, fps: fps" in html and "function _hgaRenderClips(" in html and 'id="hgaCountFps"' in html
+    assert "fetch('/api/heygen/audio-video/plan?' + q)" in html
+    assert "hgaRefresh((s.path || '').split('/').pop());" in html
+    return "frames predicted as HeyGen + upscaler count them (the 2026-11-07 clips: 9,426/9,002/8,505 at 30 fps); 30 s at 300 frames → 4 clips at 30 fps, 3 at 25; cuts in pauses (inside one when tight; extra clip when none line up); rendered side by side (held-back render retried) into heygen/_partNof3.mp4; failed clip named; over-limit stops before upload; bad files/limits/fps refused; key never shown"
+
+@check("Explainer video: Claude Opus 5.5 (high) plans + writes slides in parallel batches on the timed narration; unsafe/off-style markup stripped; logos, figures and [insert] values gate the 4K render; revise splits a slide into a new version; renders sample, 4K final, phone copy and asset PNG")
+def _():
+    import json as _json
+    import shutil
+    import subprocess
+    import tempfile
+    import threading as _thr
+    from pathlib import Path
+    os.environ.setdefault("PORT", "0")
+    import anthropic
+    import httpx
+    import web_gui  # noqa: PLC0415
+    import explainer_video as xv  # noqa: PLC0415
+    from PIL import Image, ImageDraw
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        raise AssertionError("ffmpeg/ffprobe are needed for this check (brew install ffmpeg)")
+    spoken = ("AI stocks lost about two point three trillion dollars in one day. Your index fund probably paid too. "
+              "The Nasdaq one hundred fell six point three six percent. Here is your checklist for the week ahead.")
+    script = ("**Talk**\n\n**Host:**\n" + spoken.replace(". ", ".\n") + "\n[PRODUCTION BEGIN]\n[VERIFY BEFORE RENDER] Confirm 6.36%.\n"
+              "[GROK IMAGINE / RESOLVE] A night skyline with a falling chart.\n[ON SCREEN / RESOLVE] Overlay: jobs report [insert]\n"
+              "[PRODUCTION END]\n\n#  B-ROLL SEARCH TERMS TABLE\n| a | b |\n")
+    plan = {"summary": "One scene, one stat slide, one checklist.",
+            "sections": [{"key": "c1", "label": "One bad day"}, {"key": "c2", "label": "What to do"}],
+            "slides": [{"id": "s01", "section": "c1", "kind": "scene", "at": "AI stocks lost about", "idea": "Skyline, chart falls", "logos": ["acme"]},
+                       {"id": "s02", "section": "c1", "kind": "slide", "at": "Your index fund probably", "idea": "6.36% stat", "logos": ["openai"]},
+                       {"id": "s03", "section": "c2", "kind": "asset", "at": "Here is your checklist", "idea": "Checklist", "logos": []}],
+            "logos": [{"key": "acme", "name": "Acme"}, {"key": "openai", "name": "OpenAI"}],
+            "figures": [{"key": "nasdaq_drop", "label": "Nasdaq-100 one-day fall", "value": "6.36%", "note": "Confirm the close"}],
+            "inserts": [{"key": "jobs_report", "label": "Friday jobs report", "note": "Overlay only"}],
+            "questions": ["Will avatar clips be cut in?"], "dropped": []}
+    slides = {
+        "s01": ('<section id="s01" data-at="AI stocks lost about" data-kind="scene" data-section="c1" data-hud="off"><div class="scene">'
+                '<svg class="fill" viewBox="0 0 1920 1080"><rect x="0" y="700" width="1920" height="380" fill="var(--navy-2)"/>'
+                '<polyline points="200,300 600,500 900,800" fill="none" stroke="var(--red)" stroke-width="8" data-anim="draw" data-at="two point three trillion"/>'
+                '<image data-logo="acme" x="1400" y="200" width="300" height="120" data-anim="pop" data-at="in one day"/>'
+                '<linearGradient id="g"><stop stop-color="#ff0000"/></linearGradient><rect x="10" y="10" width="50" height="50" fill="url(#g)"/></svg></div>'
+                '<script>alert(1)</script><div class="lower-third" data-anim="up" data-at="two point three trillion" onclick="steal()">$2.3T erased</div></section>'),
+        "s02": ('<section id="s02" data-at="Your index fund probably" data-kind="slide" data-section="c1"><style>.x{box-shadow:0 0 9px red;color:var(--gold)}</style>'
+                '<div class="pad col gap-m"><h1 class="h1" data-anim="words">Your fund paid</h1>'
+                '<div class="huge red" data-anim="count" data-ph="nasdaq_drop" data-at="six point three six">6.36%</div>'
+                '<img class="logo" data-logo="openai" alt="OpenAI"><img src="https://evil.example/x.png">'
+                '<div class="overlay-card" data-needs="jobs_report">Jobs: <span data-ph="jobs_report">[insert]</span></div></div></section>'),
+        "s03": ('<section id="s03" data-at="Here is your checklist" data-kind="asset" data-section="c2"><div class="pad">'
+                '<h2 class="h2" data-anim="rise">Your checklist</h2><ul class="checklist" data-stagger="0.15" data-anim="left" data-at="week ahead">'
+                '<li>Check your fund</li><li>Stay the course</li></ul></div></section>'),
+    }
+    revised = ('CHANGES: Split the stat onto its own slide.\n<section id="s02" data-at="Your index fund probably" data-kind="slide" data-section="c1"><h1 class="h1">Revised</h1></section>'
+               '<section id="s02b" data-at="The Nasdaq one hundred" data-kind="slide" data-section="c1">'
+               '<div class="huge" data-ph="nasdaq_drop">6.36%</div></section>')
+    calls, mode = [], {"build_calls": 0, "fallback_400": True}
+
+    class _O:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    class _Stream:
+        def __init__(self, text):
+            self.text = text
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def __iter__(self):
+            yield _O(type="message_start")
+            for i in range(0, len(self.text), 300):
+                yield _O(type="content_block_delta", delta=_O(type="text_delta", text=self.text[i:i + 300]))
+        def get_final_message(self):
+            return _O(stop_reason="end_turn", content=[_O(type="text", text=self.text)],
+                      usage=_O(input_tokens=1000, output_tokens=4000, cache_creation_input_tokens=2000, cache_read_input_tokens=500))
+
+    class _Messages:
+        def stream(self, **kw):
+            calls.append(kw)
+            if mode["fallback_400"]:
+                mode["fallback_400"] = False
+                raise anthropic.BadRequestError("fallbacks: not enabled for this organization",
+                                                response=httpx.Response(400, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")),
+                                                body=None)
+            task = kw["messages"][0]["content"][-1]["text"]
+            if "format" in kw["output_config"]:
+                return _Stream(_json.dumps(plan))
+            if task.startswith("TASK: WRITE SLIDES"):
+                mode["build_calls"] += 1
+                ids = re.findall(r"^(s\d+) \(", task, re.M)
+                if mode["build_calls"] == 2 and len(ids) > 1:
+                    ids = ids[:1]          # one slide "forgotten": the batch is retried for it
+                return _Stream("\n".join(slides[i] for i in ids))
+            if "TASK: REVISE" in task:
+                return _Stream(revised)
+            raise AssertionError("unexpected Claude call")
+
+    client = _O(beta=_O(messages=_Messages()))
+
+    def wait(c, pid):
+        for _ in range(3000):
+            s = c.get(f"/api/explainer/{pid}?title=Talk").get_json()
+            if (s.get("job") or {}).get("status") != "running":
+                return s
+            _thr.Event().wait(0.05)
+        raise AssertionError("explainer job never finished")
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        out = d / "out"
+        vo = out / "voiceover"
+        img = out / "images"
+        vo.mkdir(parents=True)
+        img.mkdir(parents=True)
+        mp3 = vo / "Talk_elevenlabs_Roz_1.mp3"
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                        "aevalsrc='if(lt(mod(t,3),2.6),0.4*sin(2*PI*220*t),0)':s=44100:d=9",
+                        "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k", str(mp3)], check=True)
+        mp3.with_suffix(".txt").write_text(spoken, encoding="utf-8")
+        logo = Image.new("RGBA", (400, 120), (0, 0, 0, 0))
+        ImageDraw.Draw(logo).rectangle((20, 20, 380, 100), fill=(20, 20, 24, 255))     # a black wordmark
+        logo.save(img / "icons8-acme-480.png")
+        Image.new("RGB", (300, 300), (180, 120, 90)).save(img / "person.jpg")         # a photo: no transparency
+        keep = (web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._get_run_output_dir, web_gui._get_anthropic_client,
+                web_gui._eleven_key, xv.align_words, xv.BATCH_WEIGHT, os.environ.get("ANTHROPIC_API_KEY"))
+        try:
+            settings = d / "settings.json"
+            settings.write_text("{}")
+            web_gui.SCRIPTCRAFT_SETTINGS_PATH = settings
+            web_gui._get_run_output_dir = lambda title, create=True: out
+            web_gui._get_anthropic_client = lambda timeout=60.0: client
+            web_gui._eleven_key = lambda: "sk_test_eleven"
+            xv.align_words = lambda audio, text, key, timeout=900: (xv.estimate_words(text, 8.6, [(2.6, 3.0), (5.6, 6.0)]), 0.1)
+            xv.BATCH_WEIGHT = 2.0
+            os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test"
+            c = web_gui.app.test_client()
+
+            o = c.get("/api/explainer/options?title=Talk").get_json()
+            assert o["success"] and [v["name"] for v in o["voiceovers"]] == [mp3.name], o
+            ims = {i["file"]: i for i in o["images"]}
+            assert ims["icons8-acme-480.png"]["logo"] and ims["icons8-acme-480.png"]["name"] == "Acme" and not ims["person.jpg"]["logo"], ims
+            assert c.get("/api/explainer/image?title=Talk&file=../settings.json").status_code == 404
+            assert c.post("/api/explainer/start", json={"title": "Talk", "voiceover": "nope.mp3", "script": script}).status_code == 400
+
+            r = c.post("/api/explainer/start", json={"title": "Talk", "voiceover": mp3.name, "script": script,
+                                                    "logos": [{"file": "icons8-acme-480.png", "name": "Acme", "recolor": "auto"}]}).get_json()
+            assert r["success"], r
+            pid = r["project"]
+            s = wait(c, pid)
+            assert s["job"]["status"] == "done", s["job"]
+            proj = out / "explainer" / pid
+            assert "B-ROLL" not in (proj / "script.txt").read_text() and (proj / "narration.wav").is_file() and (proj / "narration.m4a").is_file()
+            assert s["timing"]["source"] == "elevenlabs" and s["text_source"].startswith("the exact text")
+            assert [m["id"] for m in s["slides"]] == ["s01", "s02", "s03"] and s["current"] == 1, s["slides"]
+            assert s["slides"][0]["t0"] == 0 and 1.5 < s["slides"][1]["t0"] < s["slides"][2]["t0"] and s["duration"] == round(s["audio_seconds"] + 1.5, 3), \
+                ([(m["id"], m["t0"], m["t1"]) for m in s["slides"]], s["duration"], s["audio_seconds"])
+            assert s["logos"]["acme"]["recolored"] and s["logos"]["acme"]["kind"] == "wordmark"
+            px = Image.open(proj / "logos" / "acme.png").convert("RGBA").getpixel((100, 40))
+            assert px[:3] == xv.OFF_WHITE and px[3] == 255, px                       # black mark → off-white
+            need = {(o_["type"], o_["key"]) for o_ in s["outstanding"]}
+            assert need == {("logo", "openai"), ("figure", "nasdaq_drop"), ("insert", "jobs_report")}, need
+            # Claude calls: plan (structured), 2 batches + 1 retry; Opus 5.5 at high effort, cached prefix, fallback dropped after a 400.
+            assert calls[0].get("betas") == [xv.FALLBACK_BETA] and calls[0]["extra_body"] == {"fallbacks": "default"}
+            assert "betas" not in calls[1] and "format" in calls[1]["output_config"]
+            build = [k for k in calls[2:] if k["messages"][0]["content"][-1]["text"].startswith("TASK: WRITE SLIDES")]
+            assert len(build) == 3, len(build)
+            for k in calls:
+                assert k["model"] == "claude-opus-5-5" and k["output_config"]["effort"] == "high" and k["thinking"] == {"type": "adaptive"}
+                assert k["system"][0]["cache_control"] == {"type": "ephemeral"} and "COMPOSITION FORMAT" in k["system"][0]["text"]
+                assert k["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+            assert "THE PLAN (JSON)" in build[0]["messages"][0]["content"][1]["text"]
+            assert s["usage"]["output_tokens"] > 0 and s["usage"]["cost"] > 0
+
+            page = c.get(f"/api/explainer/{pid}/preview?title=Talk").get_data(as_text=True)
+            for bad in ("alert(1)", "onclick", "evil.example", "box-shadow", "lineargradient", "url(#g)"):
+                assert bad not in page.lower(), bad
+            assert "Content-Security-Policy" in page and 'data-t0="0.000"' in page and "data:image/png;base64," in page
+            assert 'data-logo-missing="openai"' in page and re.search(r'class="[^"]*ph-pending', page) and "#s02 .x" in page
+
+            # Fill in what blocks the 4K render; the final stays locked until approved.
+            r = c.post(f"/api/explainer/{pid}/values", json={"title": "Talk", "values": {
+                "nasdaq_drop": {"status": "confirmed", "value": "6.36%"}, "jobs_report": {"status": "filled", "value": "+12,000 jobs"}},
+                "logo_choices": {"openai": "badge"}, "answers": {"Will avatar clips be cut in?": "No, headless"}}).get_json()
+            assert r["outstanding"] == [] and r["values"]["jobs_report"]["value"] == "+12,000 jobs", r["outstanding"]
+            page = c.get(f"/api/explainer/{pid}/preview?title=Talk").get_data(as_text=True)
+            assert "+12,000 jobs" in page and 'data-to="6.36"' in page and not re.search(r'class="[^"]*ph-pending', page), \
+                re.findall(r'<[^>]*ph-pending[^>]*>', page)[:3]
+            r = c.post(f"/api/explainer/{pid}/render", json={"title": "Talk", "kind": "final"}).get_json()
+            assert not r["success"] and "Approve" in r["error"], r
+            assert c.post(f"/api/explainer/{pid}/approve", json={"title": "Talk"}).get_json()["approved"] == 1
+            for bad in ("renders/../project.json", "project.json", "../x", "logos/../project.json"):
+                assert c.get(f"/api/explainer/{pid}/file?title=Talk&path={bad}").status_code == 404, bad
+            assert c.get(f"/api/explainer/{pid}?title=Other").status_code == 404
+            assert c.get("/api/explainer/..%2F..?title=Talk").status_code == 404
+
+            # A revision of s02 splits it; the approval does not carry over.
+            assert c.post(f"/api/explainer/{pid}/revise", json={"title": "Talk", "slides": []}).status_code == 400
+            r = c.post(f"/api/explainer/{pid}/revise", json={"title": "Talk", "feedback": "Split the stat out", "scope": "slides",
+                                                              "slides": ["s02"], "see": False, "warnings": {"s02": ["“Revised” overlaps “x”"]}}).get_json()
+            assert r["success"], r
+            s = wait(c, pid)
+            assert s["job"]["status"] == "done" and s["current"] == 2 and s["approved"] is None, s["job"]
+            assert [m["id"] for m in s["slides"]] == ["s01", "s02", "s02b", "s03"], [m["id"] for m in s["slides"]]
+            task = calls[-1]["messages"][0]["content"][-1]["text"]
+            assert "Split the stat out" in task and "overlaps" in task and 'data-logo="openai"' in task
+            assert [v["n"] for v in s["versions"]] == [1, 2] and s["versions"][1]["kind"] == "revise"
+            assert s["versions"][1]["note"] == "Split the stat out \u2192 Split the stat onto its own slide." and "Split the stat onto" in s["job"]["message"], s["versions"][1]
+            assert c.post(f"/api/explainer/{pid}/version", json={"title": "Talk", "n": 1}).get_json()["current"] == 1
+            assert c.post(f"/api/explainer/{pid}/version", json={"title": "Talk", "n": 2}).get_json()["current"] == 2
+
+            rendered = "renders skipped (no Chrome)"
+            if xv.find_chrome():
+                r = c.post(f"/api/explainer/{pid}/render", json={"title": "Talk", "kind": "sample", "start": 2.0, "seconds": 5}).get_json()
+                assert r["success"], r
+                s = wait(c, pid)
+                assert s["job"]["status"] == "done", s["job"]
+                f = s["renders"][-1]["files"][0]
+                probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height:format=duration",
+                                        "-of", "json", str(proj / f["path"])], capture_output=True, text=True).stdout
+                info = _json.loads(probe)
+                assert {st["codec_type"] for st in info["streams"]} == {"video", "audio"} and info["streams"][0]["width"] == 1920
+                assert abs(float(info["format"]["duration"]) - 5.0) < 0.1, info["format"]
+                assert c.get(f"/api/explainer/{pid}/file?title=Talk&path={f['path']}").status_code == 200
+                c.post(f"/api/explainer/{pid}/approve", json={"title": "Talk"})
+                r = c.post(f"/api/explainer/{pid}/render", json={"title": "Talk", "kind": "final"}).get_json()
+                assert r["success"], r
+                s = wait(c, pid)
+                assert s["job"]["status"] == "done", s["job"]
+                files = {x["kind"]: x for x in s["renders"][-1]["files"]}
+                assert set(files) == {"final", "phone", "asset"}, files
+                dims = lambda p: subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0",
+                                                 str(proj / p)], capture_output=True, text=True).stdout.split()[0]
+                assert dims(files["final"]["path"]) == "3840,2160" and dims(files["phone"]["path"]) == "1280,720"
+                assert Image.open(proj / files["asset"]["path"]).size == (3840, 2160)
+                assert s["renders"][-1]["levels"]["max_db"] is not None
+                rendered = "sample 1080p 5 s with audio, 4K final + 720p phone copy + 4K asset PNG rendered"
+        finally:
+            (web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._get_run_output_dir, web_gui._get_anthropic_client,
+             web_gui._eleven_key, xv.align_words, xv.BATCH_WEIGHT, k) = keep
+            if k is None:
+                os.environ.pop("ANTHROPIC_API_KEY", None)
+            else:
+                os.environ["ANTHROPIC_API_KEY"] = k
+
+        # The ElevenLabs job now saves the exact text it read next to the MP3.
+        keep = (web_gui._eleven_voice_settings, web_gui._eleven_tts_part)
+        try:
+            web_gui._eleven_voice_settings = lambda *a, **k: {}
+            web_gui._eleven_tts_part = lambda *a, **k: (mp3.read_bytes(), "rid")
+            target = d / "vo2" / "x.mp3"
+            web_gui._eleven_run("job-xv", "key", "voice", "Roz", "eleven_v4", ["Part one.", "Part two."], target)
+            assert target.with_suffix(".txt").read_text() == "Part one.\n\nPart two."
+        finally:
+            web_gui._eleven_voice_settings, web_gui._eleven_tts_part = keep
+
+    tl = xv.Timeline(xv.estimate_words(spoken, 8.6, []), 8.6)
+    assert tl.find("six point three six")[2] == "exact" and tl.find("six point tree six")[2] == "approx" and tl.find("bitcoin rally") is None
+    merged, changed = xv.merge_sections(xv.split_sections(slides["s01"] + slides["s02"] + slides["s03"]),
+                                        xv.split_sections(revised + '<section id="s03" data-delete="1"></section>'))
+    assert [m["id"] for m in merged] == ["s01", "s02", "s02b"] and changed == ["s02", "s02b", "s03"]
+    assert xv.logo_name_from_file("google-deepmind-logo-png_seeklogo-284971.png") == "Google Deepmind"
+    assert xv.logo_name_from_file("TSM-f70117e2.png") == "TSM" and xv.logo_name_from_file("Nasdaq_blue_black_transparent_backgr.png") == "Nasdaq"
+    assert xv.script_body(script).endswith("[PRODUCTION END]")
+
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert 'onclick="openExplainerModal()"' in html and 'id="explainerModal"' in html
+    assert '<iframe id="xvFrame" sandbox="allow-scripts"' in html and "ev.source !== fr.contentWindow" in html
+    assert "async function xvRevise(" in html and "async function xvRender(" in html and "function _xvRenderNeeds(" in html
+    return ("plan + 2 batches (+1 retry for a dropped slide) at effort high with cached prefix; fallback beta dropped after a 400; "
+            "script/onclick/external img/gradient/shadow stripped; black logo recolored; figure + insert + missing logo block the 4K "
+            "until filled; approval required and reset by a revision (s02 → s02 + s02b); path traversal refused; " + rendered
+            + "; ElevenLabs text sidecar saved")
+
+@check("Explainer video: a test clip on sentence boundaries, then 'build the rest' around it; HeyGen presenter clips matched to the narration by audio (wrong voiceover refused, upscales verified), shown per slide and composited under the page in renders and stills")
+def _():
+    import json as _json
+    import shutil
+    import subprocess
+    import tempfile
+    import threading as _thr
+    from pathlib import Path
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+    import explainer_video as xv  # noqa: PLC0415
+    from PIL import Image
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        raise AssertionError("ffmpeg/ffprobe are needed for this check (brew install ffmpeg)")
+    sents = ["AI stocks lost about two point three trillion dollars in one day.",
+             "Your index fund probably paid for part of that drop too.",
+             "The Nasdaq one hundred fell six point three six percent by the close.",
+             "Here is what that means for the money in your retirement account.",
+             "First, a correction is a fall of ten percent from a recent peak.",
+             "A bear market is a fall of twenty percent or more from that peak.",
+             "So far this is a correction and not a bear market at all.",
+             "Here is your checklist for the week ahead so you can stay calm."]
+    spoken, dur = " ".join(sents), 40.0
+    script = "**Talk**\n\n**Host:**\n" + "\n".join(sents) + "\n"
+    host_plan = {"summary": "Test.", "sections": [{"key": "c1", "label": "One bad day"}],
+                 "slides": [{"id": "s01", "section": "c1", "kind": "scene", "at": "AI stocks lost about", "idea": "Skyline", "logos": [], "host": "left"},
+                            {"id": "s02", "section": "c1", "kind": "slide", "at": "Your index fund probably", "idea": "Left panel", "logos": [], "host": "left"},
+                            {"id": "s03", "section": "c1", "kind": "slide", "at": "Here is what that means", "idea": "Full", "logos": [], "host": "full"}],
+                 "logos": [], "figures": [], "inserts": [], "questions": [], "dropped": []}
+    rest_plan = {"summary": "Rest.", "sections": [{"key": "c1", "label": "Renamed?"}, {"key": "c2", "label": "What to do"}],
+                 "slides": [{"id": "s04", "section": "c1", "kind": "slide", "at": "Your index fund probably", "idea": "Inside the test: dropped", "logos": [], "host": "none"},
+                            {"id": "s05", "section": "c2", "kind": "slide", "at": "So far this is", "idea": "Corner", "logos": [], "host": "pip"},
+                            {"id": "s06", "section": "c2", "kind": "asset", "at": "Here is your checklist", "idea": "Checklist", "logos": [], "host": "bogus"}],
+                 "logos": [], "figures": [{"key": "peak", "label": "Peak", "value": "10%", "note": "n"}], "inserts": [], "questions": [], "dropped": []}
+    markup = {
+        "s01": '<section id="s01" data-at="AI stocks lost about" data-kind="scene" data-section="c1"><div class="scene"><svg class="fill" viewBox="0 0 1920 1080"><rect width="1920" height="1080" fill="var(--navy)"/></svg></div></section>',
+        "s02": '<section id="s02" data-at="Your index fund probably" data-kind="slide" data-section="c1" data-host="left"><h1 class="h1" style="position:absolute;left:900px;top:300px">Your fund paid</h1></section>',
+        "s03": '<section id="s03" data-at="Here is what that means" data-kind="slide" data-section="c1" data-host="full"><div class="lower-third">Retirement</div></section>',
+        "s05": '<section id="s05" data-at="So far this is" data-kind="slide" data-section="c2" data-host="pip"><h2 class="h2" style="position:absolute;left:160px;top:200px">Correction</h2></section>',
+        "s06": '<section id="s06" data-at="Here is your checklist" data-kind="asset" data-section="c2"><h2 class="h2">Checklist</h2></section>'}
+    calls = []
+
+    class _O:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    class _Stream:
+        def __init__(self, text):
+            self.text = text
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def __iter__(self):
+            yield _O(type="message_start")
+            yield _O(type="content_block_delta", delta=_O(type="text_delta", text=self.text))
+        def get_final_message(self):
+            return _O(stop_reason="end_turn", content=[_O(type="text", text=self.text)],
+                      usage=_O(input_tokens=1000, output_tokens=2000, cache_creation_input_tokens=0, cache_read_input_tokens=0))
+
+    class _Messages:
+        def stream(self, **kw):
+            calls.append(kw)
+            task = kw["messages"][0]["content"][-1]["text"]
+            if "format" in kw["output_config"]:
+                return _Stream(_json.dumps(rest_plan if "PLAN THE REST" in task else host_plan))
+            if task.startswith("TASK: WRITE SLIDES"):
+                return _Stream("\n".join(markup[i] for i in re.findall(r"^(s\d+) \(", task, re.M) if i in markup))
+            raise AssertionError("unexpected Claude call")
+
+    client = _O(beta=_O(messages=_Messages()))
+
+    def wait(c, pid):
+        for _ in range(4000):
+            s = c.get(f"/api/explainer/{pid}?title=Talk").get_json()
+            if (s.get("job") or {}).get("status") != "running":
+                return s
+            _thr.Event().wait(0.05)
+        raise AssertionError("explainer job never finished")
+
+    def ff(*args):
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *map(str, args)], check=True)
+
+    # Unit pieces: the level-curve match, the crop maths, segments and the ffmpeg graph.
+    a = [abs(((i * 7919) % 97) - 48) for i in range(400)]
+    lag, score = xv._best_lag(a, [0.0] * 37 + a + [0.0] * 50)
+    assert abs(lag - 37) < 0.01 and score > 0.99, (lag, score)
+    assert xv._cover(1920, 1080, 800, 1080, 0.45) == (1920, 1080, 464, 0) and xv._cover(1920, 1080, 544, 306, 0.5)[:2] == (544, 306)
+    segs = xv.host_segments({"parts": [{"file": "b", "offset": 20.03, "seconds": 20.0, "w": 1, "h": 1},
+                                       {"file": "a", "offset": 0.01, "seconds": 20.04, "w": 1, "h": 1}]})
+    assert [(x["file"], x["src"], x["t0"], x["t1"]) for x in segs] == [("a", 0.0, 0.01, 20.05), ("b", 0.02, 20.05, 40.03)], segs
+    inputs, graph = xv._host_filter({"k": 2, "W": 3840, "H": 2160, "focus": 0.5, "segments": segs,
+                                     "windows": [{"t0": 18.0, "t1": 22.0, "layout": "right"}]}, 15.0, 25.0)
+    assert inputs.count("-i") == 2 and "concat=n=2" in graph and "overlay=2240:0" in graph and "between(t,2.9990,7.0000)" in graph, graph
+    assert "-reinit_filter" in xv._x264_cmd(Path("x.mp4"), 16)
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        out = d / "out"
+        for sub in ("voiceover", "heygen", "aroll", "other"):
+            (out / sub).mkdir(parents=True)
+        mp3 = out / "voiceover" / "Talk_elevenlabs_Roz_1.mp3"
+        expr = "0.5*sin(2*PI*190*t)*gt(sin(2*PI*0.83*t)+sin(2*PI*2.31*t+1.3)+sin(2*PI*0.29*t+0.4),0.2)*lt(mod(t,5),4.6)"
+        ff("-f", "lavfi", "-i", f"aevalsrc='{expr}':s=44100:d={dur}", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k", mp3)
+        mp3.with_suffix(".txt").write_text(spoken, encoding="utf-8")
+        stem = "Talk_ElevenLabs_20261109_090000"
+        for i, (t0, t1, src) in enumerate(((0, 20.0, "testsrc2"), (20.0, dur, "smptebars")), 1):
+            ff("-f", "lavfi", "-i", f"{src}=s=640x360:r=25:d={t1 - t0}", "-ss", t0, "-t", t1 - t0, "-i", mp3,
+               "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+               out / "heygen" / f"{stem}_part{i}of2.mp4")
+        ff("-i", out / "heygen" / f"{stem}_part1of2.mp4", "-vf", "scale=1280:720", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+           "-c:a", "copy", out / "aroll" / f"{stem}_part1of2_upscaled.mp4")
+        ff("-f", "lavfi", "-i", "color=c=red:s=1280x720:r=25:d=20", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+           out / "aroll" / "decoy_same_length.mp4")                                  # same length as part 2, not its footage, no audio
+        other = out / "other" / "other.mp3"                                           # a different voiceover take, same length
+        ff("-f", "lavfi", "-i", f"aevalsrc='0.5*sin(2*PI*240*t)*gt(sin(2*PI*1.7*t+2),0)':s=44100:d={dur}", "-ac", "1", other)
+        ff("-f", "lavfi", "-i", f"testsrc=s=640x360:r=25:d={dur}", "-i", other, "-map", "0:v", "-map", "1:a",
+           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", out / "other" / "wrong_take.mp4")
+        keep = (web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._get_run_output_dir, web_gui._get_anthropic_client,
+                web_gui._eleven_key, xv.align_words, xv.HOST_MIN_BYTES, os.environ.get("ANTHROPIC_API_KEY"))
+        try:
+            settings = d / "settings.json"
+            settings.write_text("{}")
+            web_gui.SCRIPTCRAFT_SETTINGS_PATH = settings
+            web_gui._get_run_output_dir = lambda title, create=True: out
+            web_gui._get_anthropic_client = lambda timeout=60.0: client
+            web_gui._eleven_key = lambda: "sk_test_eleven"
+            xv.align_words = lambda audio, text, key, timeout=900: (
+                xv.estimate_words(text, dur - 0.4, [(4.6 + 5 * k, 5.0 + 5 * k) for k in range(7)]), 0.1)
+            xv.HOST_MIN_BYTES = 0
+            os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test"
+            c = web_gui.app.test_client()
+
+            o = c.get("/api/explainer/options?title=Talk").get_json()
+            src = {x["id"]: x for x in o["presenters"]}
+            sid = f"set:heygen/{stem}"
+            assert sid in src and "file:other/wrong_take.mp4" in src, list(src)
+            parts = src[sid]["parts"]
+            assert parts[0]["upscale"]["rel"] == f"aroll/{stem}_part1of2_upscaled.mp4", parts[0]
+            assert parts[1]["upscale"]["rel"] == "aroll/decoy_same_length.mp4", parts[1]         # found by length, checked on attach
+            assert "file:aroll/decoy_same_length.mp4" not in src and abs(src[sid]["seconds"] - dur) < 0.2
+            r = c.post("/api/explainer/start", json={"title": "Talk", "voiceover": mp3.name, "script": script, "presenter": "set:nope"}).get_json()
+            assert not r["success"] and "no longer" in r["error"], r
+
+            # A presenter from a different voiceover is refused before any Claude call.
+            r = c.post("/api/explainer/start", json={"title": "Talk", "voiceover": mp3.name, "script": script,
+                                                    "test": {"start": 0, "minutes": 0.5}, "presenter": "file:other/wrong_take.mp4"}).get_json()
+            s = wait(c, r["project"])
+            assert s["job"]["status"] == "error" and "different voiceover" in s["job"]["error"] and not calls, s["job"]
+
+            # A 30-second test clip with the HeyGen clips.
+            r = c.post("/api/explainer/start", json={"title": "Talk", "voiceover": mp3.name, "script": script,
+                                                    "test": {"start": 0, "minutes": 0.5}, "presenter": sid, "share": "lots"}).get_json()
+            pid = r["project"]
+            s = wait(c, pid)
+            assert s["job"]["status"] == "done", s["job"]
+            proj = out / "explainer" / pid
+            span = s["span"]
+            assert span[0] == 0 and 27 < span[1] < 34 and s["start"] == 0 and s["end"] == span[1], span
+            h = s["host"]
+            assert [x["upscaled"] for x in h["parts"]] == [True, False] and h["parts"][0]["w"] == 1280, h["parts"]
+            assert abs(h["parts"][0]["offset"]) < 0.06 and abs(h["parts"][1]["offset"] - 20.0) < 0.06 and min(x["score"] for x in h["parts"]) > 0.9, h["parts"]
+            assert h["share"] == "lots" and (proj / "host" / "proxy.mp4").is_file() and (proj / "host" / "still.jpg").is_file()
+            assert abs(xv.probe_video(proj / "host" / "proxy.mp4")["seconds"] - dur) < 0.2
+            plan_call = calls[0]["messages"][0]["content"]
+            assert plan_call[1]["type"] == "image" and "PRESENTER VIDEO" in plan_call[2]["text"] and plan_call[2]["cache_control"]
+            assert "TASK: PLAN A TEST CLIP" in plan_call[-1]["text"] and "about 50% of the runtime" in plan_call[-1]["text"]
+            builds = [k["messages"][0]["content"][-1]["text"] for k in calls if k["messages"][0]["content"][-1]["text"].startswith("TASK: WRITE")]
+            assert any('presenter left panel: data-host="left"' in b for b in builds), builds
+            meta = {m["id"]: m for m in s["slides"]}
+            assert [m["id"] for m in s["slides"]] == ["s01", "s02", "s03"] and meta["s02"]["host"] == "left" and meta["s03"]["host"] == "full"
+            assert meta["s01"]["host"] == "" and [w["layout"] for w in s["host_windows"]] == ["left", "full"], s["host_windows"]
+            comp = xv.compile_composition('<section id="s01" data-at="AI stocks lost about" data-kind="scene" data-host="full"></section>',
+                                          xv.open_project(proj).timeline(), duration=dur, plan={}, logos={}, values={},
+                                          logo_choices={}, host_on=True)
+            assert any("scene hides the presenter" in w["msg"] for w in comp["slides"][0]["warnings"]), comp["slides"]
+            page = c.get(f"/api/explainer/{pid}/preview?title=Talk").get_data(as_text=True)
+            assert "media-src 'self'" in page and "host/proxy.mp4" in page and 'class="mode-preview host-on"' in page
+            assert c.get(f"/api/explainer/{pid}/file?title=Talk&path=host/proxy.mp4").status_code == 200
+
+            # Per-slide presenter, framing; no Claude call.
+            n_calls = len(calls)
+            s = c.post(f"/api/explainer/{pid}/layout", json={"title": "Talk", "slide": "s02", "host": "right"}).get_json()
+            assert s["current"] == 2 and {m["id"]: m["host"] for m in s["slides"]}["s02"] == "right" and len(calls) == n_calls
+            assert c.post(f"/api/explainer/{pid}/layout", json={"title": "Talk", "slide": "s02", "host": "sideways"}).status_code == 400
+            s = c.post(f"/api/explainer/{pid}/layout", json={"title": "Talk", "slide": "s02", "host": "left"}).get_json()
+            assert 'data-host="left"' in (proj / "versions" / "v003.html").read_text() and (proj / "versions" / "v003.html").read_text().count("data-host") == 2
+            s = c.post(f"/api/explainer/{pid}/host", json={"title": "Talk", "focus": 0.3}).get_json()
+            assert s["host"]["focus"] == 0.3
+
+            rendered = "renders skipped (no Chrome)"
+            if xv.find_chrome():
+                # Sample across s02 (left panel): the footage shows in the panel, the page on the right.
+                m2 = {m["id"]: m for m in s["slides"]}["s02"]
+                r = c.post(f"/api/explainer/{pid}/render", json={"title": "Talk", "kind": "sample", "start": m2["t0"] + 0.6, "seconds": 5}).get_json()
+                assert r["success"], r
+                s = wait(c, pid)
+                assert s["job"]["status"] == "done", s["job"]
+                f = proj / s["renders"][-1]["files"][0]["path"]
+                assert abs(xv.media_seconds(f) - 5.0) < 0.1
+                fr = subprocess.run(["ffmpeg", "-v", "error", "-ss", "2", "-i", str(f), "-frames:v", "1", "-f", "image2pipe",
+                                     "-c:v", "png", "-"], capture_output=True).stdout
+                im = Image.open(__import__("io").BytesIO(fr)).convert("RGB")
+                panel = [im.getpixel((x, 540)) for x in range(40, 760, 60)]
+                right = [im.getpixel((x, 900)) for x in range(1000, 1880, 80)]
+                assert max(max(p_) - min(p_) for p_ in panel) > 120, panel                 # saturated test pattern = footage
+                assert all(max(p_) < 60 for p_ in right), right                           # dark page background
+                stills = xv.slide_stills(xv.open_project(proj), ["s02"])
+                sim = Image.open(__import__("io").BytesIO(stills["s02"])).convert("RGB")
+                assert sim.size == (1280, 720) and max(max(p_) - min(p_) for p_ in (sim.getpixel((x, 360)) for x in range(30, 500, 40))) > 120
+                rendered = "sample with the presenter in the left panel; Claude's stills include the presenter"
+
+            # Build the rest: plans around the test clip, keeps its slides, drops a planned slide inside it.
+            n_calls = len(calls)
+            r = c.post(f"/api/explainer/{pid}/extend", json={"title": "Talk"}).get_json()
+            assert r["success"], r
+            s = wait(c, pid)
+            assert s["job"]["status"] == "done", s["job"]
+            assert s["span"] is None and [m["id"] for m in s["slides"]] == ["s01", "s02", "s03", "s05", "s06"], [m["id"] for m in s["slides"]]
+            assert s["end"] == round(s["audio_seconds"] + xv.TAIL, 3) and s["versions"][-1]["kind"] == "extend"
+            rest_call = calls[n_calls]["messages"][0]["content"]
+            assert "TASK: PLAN THE REST" in rest_call[-1]["text"] and "<test_slides>" in rest_call[-2]["text"] and 'id="s02"' in rest_call[-2]["text"]
+            plan_now = _json.loads((proj / "plan.json").read_text())
+            assert [x["id"] for x in plan_now["slides"]] == ["s01", "s02", "s03", "s05", "s06"] and plan_now["slides"][-1]["host"] == "none"
+            assert {x["key"]: x["label"] for x in plan_now["sections"]}["c1"] == "One bad day" and plan_now["figures"][0]["key"] == "peak"
+            assert {m["id"]: m["host"] for m in s["slides"]}["s05"] == "pip"
+            assert c.post(f"/api/explainer/{pid}/extend", json={"title": "Talk"}).status_code == 400
+
+            # Remove the presenter: data-host stays in the markup but nothing shows.
+            s = c.post(f"/api/explainer/{pid}/host", json={"title": "Talk", "source": ""}).get_json()
+            assert s["host"] is None and all(not m["host"] for m in s["slides"]) and not s["host_windows"]
+            page = c.get(f"/api/explainer/{pid}/preview?title=Talk").get_data(as_text=True)
+            assert 'class="mode-preview"' in page and "host/proxy.mp4" not in page
+        finally:
+            (web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._get_run_output_dir, web_gui._get_anthropic_client,
+             web_gui._eleven_key, xv.align_words, xv.HOST_MIN_BYTES, k) = keep
+            if k is None:
+                os.environ.pop("ANTHROPIC_API_KEY", None)
+            else:
+                os.environ["ANTHROPIC_API_KEY"] = k
+    tl = xv.Timeline(xv.estimate_words(spoken, 39.6, []), 39.6)
+    assert xv.pick_span(tl, 0, 600) is None
+    a_, b_ = xv.pick_span(tl, 12.0, 10)
+    assert 0 < a_ < 12.5 < b_ and b_ - a_ < 25, (a_, b_)
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert 'id="xvHostSel"' in html and 'name="xvBuild"' in html and "async function xvExtend(" in html and "function xvSlideHost(" in html
+    return ("30 s test clip ends on a sentence; wrong-voiceover clips refused before Claude; clips placed by audio (upscale of clip 1 "
+            "used, same-length decoy rejected); Claude sees the presenter still; per-slide layout without Claude; " + rendered
+            + "; the rest planned around the test (slide inside it dropped) and merged; presenter removable")
+
+
+@check("Explainer video: pick clips from your HeyGen account (download the ones not in the folder, refuse other voiceovers), place each on the narration by its audio, and place presenter sections (In/Out + layout) that render, get checked and reach Claude")
+def _():
+    import io as _io
+    import json as _json
+    import shutil
+    import subprocess
+    import tempfile
+    import threading as _thr
+    from pathlib import Path
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+    import explainer_video as xv  # noqa: PLC0415
+    from PIL import Image
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        raise AssertionError("ffmpeg/ffprobe are needed for this check (brew install ffmpeg)")
+    sents = ["AI stocks lost about two point three trillion dollars in one day.",
+             "Your index fund probably paid for part of that drop too.",
+             "The Nasdaq one hundred fell six point three six percent by the close.",
+             "Here is what that means for the money in your retirement account.",
+             "First, a correction is a fall of ten percent from a recent peak.",
+             "A bear market is a fall of twenty percent or more from that peak.",
+             "So far this is a correction and not a bear market at all.",
+             "Here is your checklist for the week ahead so you can stay calm."]
+    spoken, dur = " ".join(sents), 40.0
+    plan = {"summary": "S.", "sections": [{"key": "c1", "label": "One bad day"}],
+            "slides": [{"id": "s01", "section": "c1", "kind": "slide", "at": "AI stocks lost about", "idea": "a", "logos": [], "host": "none"},
+                       {"id": "s02", "section": "c1", "kind": "slide", "at": "Here is what that means", "idea": "b", "logos": [], "host": "none"},
+                       {"id": "s03", "section": "c1", "kind": "slide", "at": "So far this is", "idea": "c", "logos": [], "host": "none"}],
+            "logos": [], "figures": [], "inserts": [], "questions": [], "dropped": []}
+    markup = {
+        "s01": '<section id="s01" data-at="AI stocks lost about" data-kind="slide" data-section="c1"><h1 class="h1" style="position:absolute;left:1000px;top:300px">Lost</h1></section>',
+        "s02": '<section id="s02" data-at="Here is what that means" data-kind="slide" data-section="c1"><h1 class="h1" style="position:absolute;left:160px;top:300px">Your account</h1></section>',
+        "s03": '<section id="s03" data-at="So far this is" data-kind="slide" data-section="c1"><h2 class="h2">Correction</h2></section>'}
+    calls = []
+
+    class _O:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    class _Stream:
+        def __init__(self, text):
+            self.text = text
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def __iter__(self):
+            yield _O(type="message_start")
+            yield _O(type="content_block_delta", delta=_O(type="text_delta", text=self.text))
+        def get_final_message(self):
+            return _O(stop_reason="end_turn", content=[_O(type="text", text=self.text)],
+                      usage=_O(input_tokens=100, output_tokens=200, cache_creation_input_tokens=0, cache_read_input_tokens=0))
+
+    class _Messages:
+        def stream(self, **kw):
+            calls.append(kw)
+            task = kw["messages"][0]["content"][-1]["text"]
+            if "format" in kw["output_config"]:
+                return _Stream(_json.dumps(plan))
+            if task.startswith("TASK: WRITE SLIDES"):
+                return _Stream("\n".join(markup[i] for i in re.findall(r"^(s\d+) \(", task, re.M)))
+            if "TASK: REVISE" in task:
+                return _Stream('CHANGES: moved right.\n' + markup["s02"].replace("left:160px", "left:900px"))
+            raise AssertionError("unexpected Claude call")
+
+    client = _O(beta=_O(messages=_Messages()))
+
+    def wait(c, pid):
+        for _ in range(4000):
+            s = c.get(f"/api/explainer/{pid}?title=Talk").get_json()
+            if (s.get("job") or {}).get("status") != "running":
+                return s
+            _thr.Event().wait(0.05)
+        raise AssertionError("explainer job never finished")
+
+    def ff(*args):
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *map(str, args)], check=True)
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        out, stage = d / "out", d / "heygen_cloud"
+        for sub in ("voiceover", "heygen"):
+            (out / sub).mkdir(parents=True)
+        stage.mkdir()
+        mp3 = out / "voiceover" / "Talk_elevenlabs_Roz_1.mp3"
+        expr = "0.5*sin(2*PI*190*t)*gt(sin(2*PI*0.83*t)+sin(2*PI*2.31*t+1.3)+sin(2*PI*0.29*t+0.4),0.2)*lt(mod(t,5),4.6)"
+        ff("-f", "lavfi", "-i", f"aevalsrc='{expr}':s=44100:d={dur}", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k", mp3)
+        mp3.with_suffix(".txt").write_text(spoken, encoding="utf-8")
+        # In the folder already (made by this app): part 1. In the HeyGen "cloud": part 2 and a chapter clip in another voice.
+        for i, (t0, t1, src, dest) in enumerate(((0, 20.0, "testsrc2", out / "heygen" / "Talk_ElevenLabs_20261109_090000_part1of2.mp4"),
+                                                 (20.0, dur, "smptebars", stage / "part2.mp4")), 1):
+            ff("-f", "lavfi", "-i", f"{src}=s=640x360:r=25:d={t1 - t0}", "-ss", t0, "-t", t1 - t0, "-i", mp3,
+               "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", dest)
+        ff("-f", "lavfi", "-i", "testsrc=s=640x360:r=25:d=12", "-f", "lavfi", "-i", "aevalsrc='0.5*sin(2*PI*300*t)*gt(sin(2*PI*1.3*t),0)':s=44100:d=12",
+           "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", stage / "chapter.mp4")
+        cloud = [{"id": "vidPart2xyz", "title": "Talk (ElevenLabs audio) part 2 of 2", "duration": 20.0, "status": "completed",
+                  "created_at": 1794300000, "thumbnail_url": "https://cdn.example/t2.jpg", "video_url": "https://cdn.example/part2.mp4"},
+                 {"id": "vidPart1abc", "title": "Talk (ElevenLabs audio) part 1 of 2", "duration": 20.0, "status": "completed",
+                  "created_at": 1794300000, "thumbnail_url": "", "video_url": "https://cdn.example/part1.mp4"},
+                 {"id": "vidChapter1", "title": "Talk-Ch1p1", "duration": 12.0, "status": "completed",
+                  "created_at": 1794200000, "thumbnail_url": "", "video_url": "https://cdn.example/chapter.mp4"},
+                 {"id": "vidRendering", "title": "Talk-Ch2p1", "duration": 0, "status": "processing", "created_at": 1794400000}]
+        seen = []
+
+        class _Resp:
+            def __init__(self, data, code=200):
+                self.status_code, self._d = code, data
+            def json(self):
+                return self._d
+
+        def fake_get(url, headers=None, params=None, timeout=None, **kw):
+            seen.append((url, dict(params or {}), (headers or {}).get("x-api-key")))
+            if url.endswith("/v3/videos"):
+                q = (params or {}).get("title", "")
+                return _Resp({"data": [v for v in cloud if q.lower() in v["title"].lower()], "has_more": False, "next_token": None})
+            vid = url.rsplit("/", 1)[-1]
+            v = next((x for x in cloud if x["id"] == vid), None)
+            return _Resp({"data": v} if v else {"error": {"message": "not found"}}, 200 if v else 404)
+
+        downloads = []
+
+        def fake_download(url, out_path):
+            downloads.append(url)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(stage / url.rsplit("/", 1)[-1], out_path)
+
+        keep = (web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._get_run_output_dir, web_gui._get_anthropic_client,
+                web_gui._eleven_key, web_gui._heygen_key, web_gui._hg_download, web_gui.requests.get,
+                xv.align_words, xv.HOST_MIN_BYTES, os.environ.get("ANTHROPIC_API_KEY"))
+        try:
+            settings = d / "settings.json"
+            settings.write_text("{}")
+            web_gui.SCRIPTCRAFT_SETTINGS_PATH = settings
+            web_gui._get_run_output_dir = lambda title, create=True: out
+            web_gui._get_anthropic_client = lambda timeout=60.0: client
+            web_gui._eleven_key = lambda: "sk_test_eleven"
+            web_gui._heygen_key = lambda: "hg-test-key-123456"
+            web_gui._hg_download = fake_download
+            web_gui.requests.get = fake_get
+            xv.align_words = lambda audio, text, key, timeout=900: (
+                xv.estimate_words(text, dur - 0.4, [(4.6 + 5 * k, 5.0 + 5 * k) for k in range(7)]), 0.1)
+            xv.HOST_MIN_BYTES = 0
+            os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test"
+            c = web_gui.app.test_client()
+            r = c.post("/api/explainer/start", json={"title": "Talk", "voiceover": mp3.name, "script": "**Host:**\n" + spoken}).get_json()
+            pid = r["project"]
+            s = wait(c, pid)
+            assert s["job"]["status"] == "done" and s["host"] is None, s["job"]
+            assert c.post(f"/api/explainer/{pid}/sections", json={"title": "Talk", "sections": []}).status_code == 400
+
+            # Browse: the part already in the folder is marked; nothing leaks the key.
+            g = c.get(f"/api/explainer/heygen-videos?title=Talk&pid={pid}&q=Talk").get_json()
+            assert g["success"] and seen[-1][1] == {"limit": 50, "title": "Talk"} and seen[-1][2] == "hg-test-key-123456"
+            vids = {v["id"]: v for v in g["videos"]}
+            assert vids["vidPart1abc"]["local"] == "heygen/Talk_ElevenLabs_20261109_090000_part1of2.mp4" and vids["vidPart2xyz"]["local"] == ""
+            assert vids["vidRendering"]["status"] == "processing" and "hg-test-key" not in _json.dumps(g)
+            assert c.post(f"/api/explainer/{pid}/heygen-add", json={"title": "Talk", "ids": ["../etc"]}).status_code == 400
+
+            # Add part 2 (downloaded) and the chapter clip (another voice: refused), placed anywhere in the narration.
+            r = c.post(f"/api/explainer/{pid}/heygen-add", json={"title": "Talk", "ids": ["vidPart2xyz", "vidChapter1"]}).get_json()
+            assert r["success"], r
+            s = wait(c, pid)
+            assert (s.get("job") or {}).get("status") == "done", s
+            assert downloads == ["https://cdn.example/part2.mp4", "https://cdn.example/chapter.mp4"], downloads
+            man = _json.loads((out / "heygen" / "heygen_videos.json").read_text())
+            assert set(man) == {"vidPart2xyz", "vidChapter1"} and (out / "heygen" / man["vidPart2xyz"]["file"]).is_file()
+            h = s["host"]
+            assert len(h["parts"]) == 1 and abs(h["parts"][0]["offset"] - 20.0) < 0.06 and h["parts"][0]["score"] > 0.9, h["parts"]
+            assert len(h["refused"]) == 1 and "different voiceover" in h["refused"][0] and "added" in s["job"]["message"], (h["refused"], s["job"])
+            assert h["coverage"] == [[20.0, 40.0]] or [list(x) for x in h["coverage"]] == [[20.0, 40.0]], h["coverage"]
+            g = c.get(f"/api/explainer/heygen-videos?title=Talk&pid={pid}&q=part").get_json()
+            assert {v["id"]: v["in_video"] for v in g["videos"]} == {"vidPart2xyz": True, "vidPart1abc": False}
+            # Adding part 1 uses the copy in the folder: no download.
+            r = c.post(f"/api/explainer/{pid}/heygen-add", json={"title": "Talk", "ids": ["vidPart1abc"]}).get_json()
+            s = wait(c, pid)
+            assert len(downloads) == 2 and len(s["host"]["parts"]) == 2 and abs(s["host"]["parts"][0]["offset"]) < 0.06, s["host"]["parts"]
+            r = c.post(f"/api/explainer/{pid}/host", json={"title": "Talk", "remove": "Talk_ElevenLabs_20261109_090000_part1of2.mp4"}).get_json()
+            s = wait(c, pid)
+            assert [p_["orig"] for p_ in s["host"]["parts"]] == [man["vidPart2xyz"]["file"]], s["host"]["parts"]
+
+            # Sections: In/Out + layout; one with no footage gets a warning; approval cleared.
+            c.post(f"/api/explainer/{pid}/approve", json={"title": "Talk"})
+            r = c.post(f"/api/explainer/{pid}/sections", json={"title": "Talk", "sections": [
+                {"t0": 22.0, "t1": 27.0, "layout": "left"}, {"t0": 5, "t1": 8, "layout": "full"},
+                {"t0": 30, "t1": 30.2, "layout": "pip"}, {"t0": 1, "t1": 3, "layout": "sideways"}]}).get_json()
+            assert r["success"] and r["approved"] is None and "0:05" in r.get("warning", ""), r.get("warning")
+            assert r["host"]["sections"] == [{"t0": 5.0, "t1": 8.0, "layout": "full"}, {"t0": 22.0, "t1": 27.0, "layout": "left"}]
+            m2 = {m["id"]: m for m in r["slides"]}["s02"]
+            assert m2["sections"] == [{"t0": 22.0, "t1": 27.0, "layout": "left"}] and m2["t0"] < 22 < 27 < m2["t1"], m2
+            assert {"t0": 22.0, "t1": 27.0, "layout": "left"} in r["host_windows"]
+            page = c.get(f"/api/explainer/{pid}/preview?title=Talk").get_data(as_text=True)
+            assert '"sections": [{"t0": 5.0' in page and '"fade": 0.3' in page
+            assert "user places the presenter themselves" in xv._host_guide({"share": "mine", "parts": [1]})
+
+            rendered = "renders skipped (no Chrome)"
+            proj = xv.open_project(out / "explainer" / pid)
+            if xv.find_chrome():
+                r = c.post(f"/api/explainer/{pid}/render", json={"title": "Talk", "kind": "sample", "start": 22.5, "seconds": 5}).get_json()
+                s = wait(c, pid)
+                assert s["job"]["status"] == "done", s["job"]
+                f = proj.dir / s["renders"][-1]["files"][0]["path"]
+                im = Image.open(_io.BytesIO(subprocess.run(["ffmpeg", "-v", "error", "-ss", "2", "-i", str(f), "-frames:v", "1",
+                                                            "-f", "image2pipe", "-c:v", "png", "-"], capture_output=True).stdout)).convert("RGB")
+                panel = [im.getpixel((x, 800)) for x in range(40, 760, 60)]
+                assert max(max(p_) - min(p_) for p_ in panel) > 100, panel          # colour bars: the presenter clip
+                assert max(im.getpixel((1500, 800))) < 60                            # the page on the right
+                # The layout check sees the section over s02's headline.
+                comp = proj.compile()
+                page_f = xv.write_page(proj, comp, "render", "check.html")
+
+                async def _chk():
+                    exe, hn = xv.find_chrome()
+                    async with xv._Chrome(exe, hn) as ch:
+                        await ch.open(page_f, 1, transparent=True)
+                        return await ch.evaluate("JSON.stringify(window.__check())")
+                import asyncio as _asyncio
+                issues = {x["id"]: x["issues"] for x in _json.loads(_asyncio.run(_chk()))}
+                assert any("covers the presenter" in i for i in issues.get("s02", [])), issues           # left section 22-27 s
+                assert any("covers the presenter" in i for i in issues.get("s01", [])), issues           # full section 5-8 s
+                assert not any("presenter" in i for i in issues.get("s03", [])), issues                  # no section
+                rendered = "sample shows the clip in the section's left panel; the layout check flags the headlines under both sections"
+            # Claude's revision of s02 is told about the section.
+            r = c.post(f"/api/explainer/{pid}/revise", json={"title": "Talk", "feedback": "", "scope": "slides", "slides": ["s02"],
+                                                              "see": False, "warnings": {"s02": ["“Your account” covers the presenter"]}}).get_json()
+            s = wait(c, pid)
+            task = calls[-1]["messages"][0]["content"][-1]["text"]
+            assert s["job"]["status"] == "done" and "PRESENTER SECTIONS the user placed on this slide" in task and "left panel 22.0-27.0 s" in task, task[-600:]
+            r = c.post(f"/api/explainer/{pid}/host", json={"title": "Talk", "remove": man["vidPart2xyz"]["file"]}).get_json()
+            s = wait(c, pid)
+            assert s["host"] is None and not s["host_windows"]
+        finally:
+            (web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._get_run_output_dir, web_gui._get_anthropic_client,
+             web_gui._eleven_key, web_gui._heygen_key, web_gui._hg_download, web_gui.requests.get,
+             xv.align_words, xv.HOST_MIN_BYTES, k) = keep
+            if k is None:
+                os.environ.pop("ANTHROPIC_API_KEY", None)
+            else:
+                os.environ["ANTHROPIC_API_KEY"] = k
+    segs = xv.host_segments({"parts": [{"file": "a", "offset": 0.0, "seconds": 10.0, "w": 1, "h": 1},
+                                       {"file": "b", "offset": 8.0, "seconds": 10.0, "w": 1, "h": 1},
+                                       {"file": "c", "offset": 18.1, "seconds": 5.0, "w": 1, "h": 1},
+                                       {"file": "d", "offset": 30.0, "seconds": 5.0, "w": 1, "h": 1}]})
+    assert [(x["file"], x["src"], x["t0"], x["t1"]) for x in segs] == [("a", 0.0, 0.0, 10.0), ("b", 2.0, 10.0, 18.1),
+                                                                      ("c", 0.0, 18.1, 23.1), ("d", 0.0, 30.0, 35.0)], segs
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert "function xvHgOpen(" in html and "async function xvSecAdd(" in html and 'id="xvMarks"' in html and 'value="mine"' in html
+    return ("HeyGen list marks the copy in the folder; part 2 downloaded and placed at 20 s by its audio, the chapter clip "
+            "(another voice) refused, part 1 added from the folder without a download, a clip removed; sections cleaned, "
+            "the one without footage warned, approval cleared; " + rendered + "; Claude's revision brief names the section")
+
 
 if __name__ == "__main__":
     width = max(len(n) for n, _, _ in RESULTS)
