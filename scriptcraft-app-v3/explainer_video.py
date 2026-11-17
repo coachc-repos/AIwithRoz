@@ -98,7 +98,11 @@ HOST_LAYOUTS = {
     "right": {"x": 1120, "y": 0, "w": 800, "h": 1080, "r": 0},
     "pip": {"x": 1296, "y": 694, "w": 544, "h": 306, "r": 18},
 }
-HOST_SHARES = {"mine": 0, "little": 15, "some": 30, "lots": 50}   # % of the runtime the plan aims for
+# % of runtime (screen time, not slide count) the plan aims to show the presenter.
+# "brief" is the default when the project has no saved share. The other keys
+# keep their percentages, so a share the user already saved still wins.
+HOST_SHARES = {"mine": 0, "brief": 10, "little": 15, "some": 30, "lots": 50}
+HOST_DEFAULT_SHARE = "brief"
 HOST_SECTION_FADE = 0.3          # a placed presenter section fades in and out over this long
 HOST_VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv"}
 HOST_MIN_BYTES = 20 * 1048576    # smaller files are not presenter footage
@@ -816,7 +820,7 @@ def place_clip(narration: Path, clip: Path, seconds: float, expected: Optional[f
 
 
 def attach_host(project: "Project", source: dict, root: Path, status: Callable, log: Callable,
-                share: str = "some") -> dict:
+                share: Optional[str] = None) -> dict:
     """Use a presenter source found by find_host_sources (a HeyGen clip set
     or one video) as the project's presenter footage."""
     items = []
@@ -896,7 +900,7 @@ def attach_clips(project: "Project", items: list, status: Callable, log: Callabl
     host = {"source": source or old.get("source") or "clips", "label": label or old.get("label") or "Presenter clips",
             "parts": sorted(parts, key=lambda x: x["offset"]), "sections": list(old.get("sections") or []),
             "focus": old.get("focus", HOST_FOCUS),
-            "share": share if share in HOST_SHARES else old.get("share", "some"),
+            "share": host_share_key(share, old.get("share")),
             "refused": refused, "created": time.time()}
     _host_preview(project, host, status)
     with project.lock:
@@ -1834,15 +1838,35 @@ def _plan_block(project: "Project", extra: str = "") -> dict:
     return {"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}
 
 
+def host_share_key(share: Optional[str] = None, saved: Optional[str] = None) -> str:
+    """Which HOST_SHARES key to plan with.
+
+    An explicit choice wins, then a share already saved on the project, then
+    HOST_DEFAULT_SHARE (about 10% of runtime). An unknown value is not a choice.
+    """
+    if share in HOST_SHARES:
+        return share
+    if saved in HOST_SHARES:
+        return saved
+    return HOST_DEFAULT_SHARE
+
+
+def host_share_pct(share: Optional[str] = None, saved: Optional[str] = None) -> int:
+    """Target presenter screen time, as a percent of runtime."""
+    return HOST_SHARES[host_share_key(share, saved)]
+
+
 def _host_guide(host: Optional[dict]) -> str:
     if not host:
         return "- host: none on every slide (no presenter video)."
-    pct = HOST_SHARES.get(host.get("share") or "some", 30)
+    pct = host_share_pct(host.get("share"))
     if not pct:
         return ("- host: none on every slide. The user places the presenter themselves (PRESENTER SECTIONS in a "
                 "slide's brief); keep those areas clear.")
-    return (f"- host: the presenter is on screen for about {pct}% of the runtime. Use it where the host talks "
-            "to the viewer: the opening line, a chapter's first beat after its chapter card, opinions and asides, "
+    return (f"- host: the presenter is on screen for about {pct}% of the runtime. "
+            "That figure is screen time, and it is the budget. Spend it where the host talks "
+            "to the viewer, in this order, and drop later items before going much past "
+            f"{pct}%: the opening line, a chapter's first beat after its chapter card, opinions and asides, "
             "direct \"you\" moments, the call to action and the sign-off. full for short direct-address beats "
             "(4 to 10 s); left or right when one simple graphic supports what the host says; pip only now and then "
             "over a regular slide. Never on scenes, chapter cards or the asset slide. none for every other slide.")
@@ -2500,7 +2524,7 @@ def revise(project: Project, client, cancel, status, log, *, feedback: str, slid
 def run_create(project: Project, client, *, audio_src: Path, spoken_text: str, eleven_key: str,
                pauses: Callable, logos: list, images_dir: Path, cancel, status, log,
                test: Optional[dict] = None, presenter: Optional[dict] = None,
-               root: Optional[Path] = None, share: str = "some") -> dict:
+               root: Optional[Path] = None, share: Optional[str] = None) -> dict:
     """The whole first pass: prepare, (match the presenter clips,) plan,
     build. Returns the job result."""
     prepare(project, audio_src=audio_src, spoken_text=spoken_text, eleven_key=eleven_key, pauses=pauses,
