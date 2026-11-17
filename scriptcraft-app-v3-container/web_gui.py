@@ -10578,7 +10578,7 @@ def explainer_start():
                           if x["id"] == data["presenter"]), None)
         if presenter is None:
             return jsonify({"success": False, "error": "That presenter video is no longer in the script folder."}), 400
-    share = data.get("share") if data.get("share") in _xv.HOST_SHARES else "some"
+    share = _xv.host_share_key(data.get("share"))
     pid = _xv.new_project_id()
     folder = _get_run_output_dir(title) / "explainer" / pid
     folder.mkdir(parents=True, exist_ok=True)
@@ -10895,7 +10895,7 @@ def explainer_host(pid):
     source = next((x for x in _xv_presenters(title, [p.data.get("audio_seconds") or 0]) if x["id"] == source_id), None)
     if source is None:
         return jsonify({"success": False, "error": "That presenter video is no longer in the script folder."}), 400
-    share = data.get("share_new") if data.get("share_new") in _xv.HOST_SHARES else (host or {}).get("share", "some")
+    share = _xv.host_share_key(data.get("share_new"), (host or {}).get("share"))
     root = _get_run_output_dir(title, create=False)
 
     def job(proj, cancel, status):

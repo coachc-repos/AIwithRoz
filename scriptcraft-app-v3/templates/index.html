@@ -3645,7 +3645,7 @@
                     <span class="xv-label">Presenter <span style="color:#64748b; font-weight:normal;">(HeyGen clips made from this narration, found in the script folder; 4K upscales of the same length are used automatically)</span></span>
                     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
                         <select id="xvHostSel" class="xv-input" style="max-width:620px; height:34px;" onchange="_xvCostNote()"></select>
-                        <select id="xvHostShare" class="xv-input" style="width:auto; height:34px;" title="How much of the runtime Claude puts the presenter on screen"><option value="mine">only where I put it</option><option value="little">on screen a little (~15%)</option><option value="some" selected>on screen some (~30%)</option><option value="lots">on screen a lot (~50%)</option></select>
+                        <select id="xvHostShare" class="xv-input" style="width:auto; height:34px;" title="How much of the runtime Claude puts the presenter on screen"><option value="mine">only where I put it</option><option value="brief" selected>on screen briefly (~10%)</option><option value="little">on screen a little (~15%)</option><option value="some">on screen some (~30%)</option><option value="lots">on screen a lot (~50%)</option></select>
                     </div>
                     <div id="xvHostNote" style="font-size:0.75em; color:#64748b; margin-bottom:14px;"></div>
                     <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
@@ -12551,7 +12551,7 @@ Thank you for watching!`;
                     + '<input type="range" min="0.1" max="0.9" step="0.01" value="' + (+h.focus || 0.45) + '" style="width:100%; accent-color:#f59e0b;" onchange="xvHostFocus(this.value)">'
                     + '<div style="display:flex; justify-content:space-between; color:#64748b;"><span>◀ left of the frame</span><span>right ▶</span></div>'
                     + '<span class="xv-label" style="margin-top:8px;">Where Claude puts the presenter (next plan or rebuild)</span>'
-                    + '<select class="xv-input" onchange="xvHostShare(this.value)">' + ['mine|Only where I put it', 'little|A little (~15%)', 'some|Some (~30%)', 'lots|A lot (~50%)'].map(o => { const [v, l] = o.split('|'); return '<option value="' + v + '"' + (h.share === v ? ' selected' : '') + '>' + l + '</option>'; }).join('') + '</select></div>';
+                    + '<select class="xv-input" onchange="xvHostShare(this.value)">' + ['mine|Only where I put it', 'brief|Briefly (~10%)', 'little|A little (~15%)', 'some|Some (~30%)', 'lots|A lot (~50%)'].map(o => { const [v, l] = o.split('|'); return '<option value="' + v + '"' + ((h.share || 'brief') === v ? ' selected' : '') + '>' + l + '</option>'; }).join('') + '</select></div>';
             }
             html += _xvHgPanel(running);
             el.innerHTML = html;
