@@ -21,7 +21,6 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[2]
 APPS = ("scriptcraft-app-v3", "scriptcraft-app-v3-container")
 SAMPLES = ROOT / "scriptcraft-app-v3" / "tests" / "samples" / "explainer_look"
-NAVY = (12, 21, 38)
 GOLD = (245, 184, 61)
 PAPER = (242, 244, 248)
 
@@ -186,27 +185,50 @@ def check_page(xv) -> None:
     assert saved["host"]["windows"][0]["frame"] == "tv"
 
 
+def check_depth(xv) -> None:
+    """The frames are shaded, the screen hole stays clear, and the bubble has a shadow."""
+    for name in xv.PIP_DEVICES:
+        im = Image.open(io.BytesIO(xv.device_png(name))).convert("RGBA")
+        ox, oy, ow, oh = xv.PIP_FRAME_GEOM[name]["outer"]
+        sx, sy, sw, sh = xv.PIP_FRAME_GEOM[name]["screen"]
+        cx, cy = sx - ox + sw // 2, sy - oy + sh // 2
+        assert im.getpixel((cx, cy))[3] == 0, name
+        assert im.getpixel((cx, sy - oy + 4))[3] > 0, name  # glass sheen at the top of the screen
+    monitor = Image.open(io.BytesIO(xv.device_png("monitor"))).convert("RGBA")
+    lit, side = monitor.getpixel((272, 8)), monitor.getpixel((530, 40))
+    assert lit[3] == 255 and side[3] == 255
+    assert sum(lit[:3]) > sum(side[:3]) + 40
+    tv = Image.open(io.BytesIO(xv.device_png("tv"))).convert("RGBA")
+    foot_top, foot_front = tv.getpixel((160, 290)), tv.getpixel((160, 302))
+    assert sum(foot_top[:3]) > sum(foot_front[:3]) + 40
+    bubble = Image.open(io.BytesIO(xv.bubble_png("AI stocks lost about two trillion")[0])).convert("RGBA")
+    assert near(bubble.getpixel((410, 40)), PAPER)
+    assert bubble.getpixel((430, 165))[3] > 20  # contact shadow, off the paper
+    assert sum(bubble.getpixel((200, 168))[:3]) < sum(PAPER) - 30  # the bubble's thicker underside
+
+
 def check_stills(xv) -> None:
     monitor = Image.open(io.BytesIO(xv.look_still("monitor"))).convert("RGB")
-    assert near(monitor.getpixel((1452, 702)), NAVY)
     assert near(monitor.getpixel((1568, 832)), GOLD)
+    assert sum(monitor.getpixel((1568, 702))[:3]) > sum(monitor.getpixel((1826, 734))[:3]) + 40
     plain = Image.open(io.BytesIO(xv.look_still("plain"))).convert("RGB")
     assert near(plain.getpixel((1568, 822)), GOLD)
-    assert not near(plain.getpixel((1452, 702)), NAVY)
     both = Image.open(io.BytesIO(xv.look_still("both"))).convert("RGB")
-    assert near(both.getpixel((1452, 702)), NAVY)
     assert near(both.getpixel((1568, 832)), GOLD)
-    assert near(both.getpixel((458, 878)), PAPER)
+    assert near(both.getpixel((458, 888)), PAPER)
+    # The sample card is raised: its face is lighter than the hard shadow beside it.
+    assert sum(both.getpixel((400, 400))[:3]) > sum(both.getpixel((1008, 400))[:3])
     committed = SAMPLES / "frame_monitor.png"
-    assert committed.is_file(), committed
+    before = SAMPLES / "before" / "frame_monitor.png"
+    assert committed.is_file() and before.is_file()
+    assert committed.read_bytes() != before.read_bytes()
     saved = Image.open(committed).convert("RGB")
-    assert near(saved.getpixel((1452, 702)), NAVY)
-    assert near(saved.getpixel((1568, 832)), GOLD)
+    assert sum(saved.getpixel((1568, 702))[:3]) > sum(Image.open(before).convert("RGB").getpixel((1568, 702))[:3]) + 20
     runtime = SAMPLES / "runtime_monitor_and_bubble.png"
     assert runtime.is_file()
     shot = Image.open(runtime).convert("RGB")
-    assert near(shot.getpixel((1452, 702)), NAVY)
-    assert near(shot.getpixel((200, 900)), PAPER)
+    assert near(shot.getpixel((1568, 832)), GOLD)
+    assert near(shot.getpixel((458, 888)), PAPER)
 
 
 def check_runtime(xv) -> None:
@@ -226,7 +248,9 @@ def check_runtime(xv) -> None:
             t += 0.32
     timeline = xv.Timeline(words, t + 2)
     raw = ('<section id="s01" data-at="Markets moved by more" data-kind="slide" data-host="pip">'
-           '<h1 class="h1">Markets moved</h1></section>')
+           '<h1 class="h1">Markets moved</h1>'
+           '<div class="card" style="position:absolute; left:160px; top:280px; width:780px; height:220px;">'
+           '<div class="h3">AI stocks</div></div></section>')
     comp = xv.compile_composition(raw, timeline, duration=t + 2, plan={"slides": [], "sections": []},
                                   logos={}, values={}, logo_choices={}, host_on=True)
     html = xv.page_html(comp, mode="render", host={"focus": 0.45}, pip_frame="monitor", bubble="often")
@@ -242,8 +266,12 @@ def check_runtime(xv) -> None:
     im = Image.open(io.BytesIO(asyncio.run(shoot()))).convert("RGBA")
     sx, sy, sw, sh = xv.PIP_FRAME_GEOM["monitor"]["screen"]
     assert im.getpixel((sx + sw // 2, sy + sh // 2))[3] == 0
-    assert near(im.getpixel((1452, 702)), NAVY) and im.getpixel((1452, 702))[3] == 255
-    assert near(im.getpixel((200, 900)), PAPER) and im.getpixel((200, 900))[3] == 255
+    assert im.getpixel((sx + 30, sy + 6))[3] > 0  # the glass sheen, not a fog over the face
+    lit, wall = im.getpixel((1568, 702)), im.getpixel((1826, 734))
+    assert lit[3] == 255 and wall[3] == 255 and sum(lit[:3]) > sum(wall[:3]) + 40
+    assert near(im.getpixel((458, 888)), PAPER) and im.getpixel((458, 888))[3] == 255
+    # The card's hard offset sits just outside its box and is darker than the empty frame.
+    assert sum(im.getpixel((700, 400))[:3]) > sum(im.getpixel((946, 400))[:3])
 
 
 def check_ui(app: str) -> None:
@@ -261,6 +289,9 @@ def check_ui(app: str) -> None:
     js = (ROOT / app / "static" / "explainer" / "runtime.js").read_text(encoding="utf-8")
     assert "placeFrame" in js and "placeAside" in js
     assert "name === 'pip' && frame" in js
+    css = (ROOT / app / "static" / "explainer" / "design.css").read_text(encoding="utf-8")
+    assert "box-shadow: 8px 10px 0 rgba(0, 0, 0, 0.38)" in css
+    assert "border-bottom: 6px solid #070b12" in css
     gui = (ROOT / app / "web_gui.py").read_text(encoding="utf-8")
     assert 'pip_frame = _xv.pip_frame_key(data.get("pip_frame"))' in gui
     assert 'bubble = _xv.bubble_mode_key(data.get("bubble"))' in gui
@@ -291,6 +322,7 @@ def main() -> None:
         check_geometry(xv)
         check_bubble_text(xv)
         check_page(xv)
+        check_depth(xv)
         check_stills(xv)
     check_copies(local, container)
     for app in APPS:

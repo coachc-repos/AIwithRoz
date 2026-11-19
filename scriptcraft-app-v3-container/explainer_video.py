@@ -2061,6 +2061,34 @@ def _punch_round(im, box: "tuple[int, int, int, int]", radius: int):
     return Image.merge("RGBA", (r, g, b, ImageChops.multiply(a, mask)))
 
 
+def _soft_shadow(size, box, radius: int, blur: int = 7, alpha: int = 120, dx: int = 0, dy: int = 8):
+    """A blurred contact shadow. Drawn once per device, then cached with the PNG."""
+    from PIL import Image, ImageDraw, ImageFilter
+    x0, y0, x1, y1 = box
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    ImageDraw.Draw(layer).rounded_rectangle((x0 + dx, y0 + dy, x1 + dx, y1 + dy), radius=radius, fill=(0, 0, 0, alpha))
+    return layer.filter(ImageFilter.GaussianBlur(blur))
+
+
+def _glass_sheen(im, screen, radius: int):
+    """A short reflection across the top of the screen. The middle stays clear
+    so the presenter footage is not fogged."""
+    from PIL import Image, ImageChops, ImageDraw
+    x0, y0, x1, y1 = screen
+    h = max(1, y1 - y0)
+    overlay = Image.new("RGBA", im.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(overlay)
+    for start, end, alpha in ((0.0, 0.07, 58), (0.07, 0.14, 30), (0.14, 0.22, 12)):
+        d.rectangle((x0, y0 + int(h * start), x1, y0 + int(h * end)), fill=(236, 244, 255, alpha))
+    streak = x0 + int((x1 - x0) * 0.34)
+    d.polygon([(x0 + 16, y0 + 8), (streak, y0 + 6), (streak - 18, y0 + 20), (x0 + 10, y0 + 22)],
+              fill=(255, 255, 255, 46))
+    mask = Image.new("L", im.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle(screen, radius=radius, fill=255)
+    r, g, b, a = overlay.split()
+    return Image.alpha_composite(im, Image.merge("RGBA", (r, g, b, ImageChops.multiply(a, mask))))
+
+
 def _local_box(outer, box) -> "tuple[int, int, int, int]":
     ox, oy = outer[0], outer[1]
     x, y, w, h = box
@@ -2068,7 +2096,13 @@ def _local_box(outer, box) -> "tuple[int, int, int, int]":
 
 
 def device_png(name: str) -> bytes:
-    """The device frame for a corner window: opaque chrome, a clear screen."""
+    """The device frame for a corner window.
+
+    The chassis is a short 3/4 view: a lit top edge, a darker side wall, a
+    recessed screen, and a contact shadow. The screen stays an axis-aligned
+    rounded rectangle so the presenter footage sits in that hole. The middle
+    of the screen is fully clear.
+    """
     cache = device_png.__dict__.setdefault("cache", {})
     if name in cache:
         return cache[name]
@@ -2077,34 +2111,102 @@ def device_png(name: str) -> bytes:
     g = PIP_FRAME_GEOM[name]
     _, _, ow, oh = g["outer"]
     screen = _local_box(g["outer"], g["screen"])
+    navy, deep, side, top, lit = (12, 21, 38, 255), (5, 8, 16, 255), (8, 13, 24, 255), (62, 80, 110, 255), (34, 46, 68, 255)
+    gold, gold_lit, gold_dim = (245, 184, 61, 255), (255, 220, 140, 255), (150, 96, 24, 255)
     im = Image.new("RGBA", (ow, oh), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
-    navy, panel, panel2, line, gold = (12, 21, 38, 255), (18, 24, 36, 255), (26, 34, 50, 255), (42, 52, 70, 255), (245, 184, 61, 255)
+    sx0, sy0, sx1, sy1 = screen
     if name == "monitor":
-        d.rounded_rectangle((ow // 2 - 78, oh - 16, ow // 2 + 78, oh - 4), radius=4, fill=panel2)
-        d.rectangle((ow // 2 - 24, oh - 40, ow // 2 + 24, oh - 12), fill=panel)
-        d.rounded_rectangle((0, 0, ow - 1, oh - 28), radius=16, fill=navy, outline=line, width=4)
-        d.rectangle((ow // 2 - 18, 262, ow // 2 + 18, 270), fill=gold)
+        im = Image.alpha_composite(im, _soft_shadow((ow, oh), (28, 18, ow - 28, oh - 34), 18, blur=8, alpha=130, dy=14))
+        d = ImageDraw.Draw(im)
+        cx = ow // 2
+        # Foot: the top plane catches the light and the front face drops away.
+        d.polygon([(cx - 70, oh - 6), (cx + 96, oh - 8), (cx + 104, oh - 1), (cx - 62, oh - 1)], fill=deep)
+        d.polygon([(cx - 108, oh - 24), (cx + 72, oh - 30), (cx + 90, oh - 6), (cx - 92, oh - 4)], fill=(32, 44, 64, 255))
+        d.line((cx - 100, oh - 23, cx + 66, oh - 28), fill=top, width=2)
+        d.polygon([(cx + 2, 272), (cx + 22, 266), (cx + 26, oh - 20), (cx + 4, oh - 18)], fill=side)
+        d.polygon([(cx - 28, 274), (cx + 6, 268), (cx + 8, oh - 20), (cx - 26, oh - 18)], fill=lit)
+        # Side wall, then the front. The wall sits up and to the right.
+        d.polygon([(516, 14), (538, 4), (542, 270), (516, 280)], fill=side)
+        d.polygon([(516, 14), (538, 4), (538, 16), (516, 26)], fill=top)
+        d.rounded_rectangle((6, 8, 518, 278), radius=14, fill=navy)
+        d.rectangle((14, 8, 506, 15), fill=top)
+        d.line((10, 16, 10, 268), fill=(150, 168, 196, 255), width=2)
+        d.rounded_rectangle((sx0 - 8, sy0 - 6, sx1 + 8, sy1 + 10), radius=g["radius"] + 6, fill=deep)
+        d.line((sx0, sy0 - 4, sx1, sy0 - 4), fill=(170, 186, 210, 255), width=2)
+        d.rectangle((cx - 20, 264, cx + 8, 268), fill=gold_dim)
+        d.rectangle((cx - 20, 261, cx + 8, 265), fill=gold)
     elif name == "laptop":
-        d.rounded_rectangle((8, oh - 62, ow - 9, oh - 4), radius=10, fill=panel, outline=line, width=3)
-        d.rounded_rectangle((36, oh - 50, ow - 37, oh - 16), radius=6, fill=panel2)
+        im = Image.alpha_composite(im, _soft_shadow((ow, oh), (20, 16, ow - 24, oh - 18), 12, blur=7, alpha=120, dy=10))
+        d = ImageDraw.Draw(im)
+        # Base, wider at the near edge so the deck recedes toward the hinge.
+        d.polygon([(8, 294), (536, 284), (528, oh - 2), (2, oh - 1)], fill=deep)
+        d.polygon([(22, 258), (508, 250), (534, 292), (10, 300)], fill=(20, 28, 42, 255))
+        d.line((28, 258, 504, 251), fill=top, width=2)
         for row in range(3):
-            for col in range(11):
-                d.rounded_rectangle((52 + col * 40, oh - 46 + row * 10, 84 + col * 40, oh - 40 + row * 10), radius=2, fill=line)
-        d.rounded_rectangle((0, 0, ow - 1, oh - 52), radius=14, fill=navy, outline=line, width=4)
+            for col in range(12):
+                u0, u1 = col / 12, (col + 1) / 12
+                v0, v1 = row / 3, (row + 0.72) / 3
+                def deck(u, v, y_far=(258, 250), y_near=(292, 284), x_far=(36, 496), x_near=(24, 522)):
+                    y = y_far[0] + (y_near[0] - y_far[0]) * v, y_far[1] + (y_near[1] - y_far[1]) * v
+                    x = x_far[0] + (x_near[0] - x_far[0]) * v, x_far[1] + (x_near[1] - x_far[1]) * v
+                    return (x[0] + (x[1] - x[0]) * u, y[0] + (y[1] - y[0]) * u)
+                k0, k1 = deck(u0 + 0.08, v0 + 0.08), deck(u1 - 0.08, v0 + 0.08)
+                k2, k3 = deck(u1 - 0.06, v1), deck(u0 + 0.06, v1)
+                d.polygon([k0, k1, k2, k3], fill=(8, 12, 22, 255) if row == 2 else side)
+                cap = 0.55 if row < 2 else 0.4
+                c0, c1 = deck(u0 + 0.08, v0 + 0.08), deck(u1 - 0.08, v0 + 0.08)
+                c2, c3 = deck(u1 - 0.07, v0 + cap), deck(u0 + 0.07, v0 + cap)
+                d.polygon([c0, c1, c2, c3], fill=(48, 62, 86, 255) if (row + col) % 5 else (62, 78, 104, 255))
+        # Trackpad, inset into the near edge of the deck.
+        d.polygon([(230, 286), (330, 282), (336, 296), (224, 300)], fill=deep)
+        d.polygon([(232, 286), (328, 283), (330, 288), (230, 291)], fill=lit)
+        # Lid: side wall, then the front, with the screen recessed in it.
+        d.polygon([(500, 16), (528, 6), (524, 236), (500, 246)], fill=side)
+        d.polygon([(500, 16), (528, 6), (524, 18), (500, 26)], fill=top)
+        d.rounded_rectangle((10, 6, 502, 246), radius=12, fill=navy)
+        d.rectangle((18, 6, 490, 13), fill=top)
+        d.line((14, 14, 14, 236), fill=(150, 168, 196, 255), width=2)
+        d.rounded_rectangle((sx0 - 7, sy0 - 5, sx1 + 7, sy1 + 8), radius=g["radius"] + 5, fill=deep)
+        d.line((sx0, sy0 - 3, sx1, sy0 - 3), fill=(170, 186, 210, 255), width=2)
+        d.rectangle((ow // 2 - 28, 242, ow // 2 + 28, 248), fill=(30, 40, 58, 255))
     elif name == "phone":
-        d.rounded_rectangle((6, 6, ow - 7, oh - 7), radius=36, fill=navy, outline=line, width=4)
-        d.ellipse((22, oh // 2 - 8, 38, oh // 2 + 8), fill=panel2)
-        d.rounded_rectangle((18, oh // 2 - 22, 26, oh // 2 + 22), radius=4, fill=gold)
+        im = Image.alpha_composite(im, _soft_shadow((ow, oh), (16, 12, ow - 18, oh - 14), 36, blur=8, alpha=120, dy=10))
+        d = ImageDraw.Draw(im)
+        d.rounded_rectangle((18, 14, ow - 4, oh - 4), radius=40, fill=side)
+        d.rounded_rectangle((8, 6, ow - 16, oh - 12), radius=38, fill=navy)
+        d.arc((10, 8, ow - 18, 90), 200, 340, fill=top, width=3)
+        d.line((12, 40, 12, oh - 40), fill=(150, 168, 196, 255), width=3)
+        # Raised side button.
+        d.rounded_rectangle((2, oh // 2 - 8, 12, oh // 2 + 36), radius=3, fill=gold_dim)
+        d.rounded_rectangle((2, oh // 2 - 18, 12, oh // 2 + 22), radius=3, fill=gold)
+        d.line((4, oh // 2 - 14, 4, oh // 2 + 16), fill=gold_lit, width=2)
+        # Camera island on the left bezel, proud of the body.
+        d.rounded_rectangle((16, oh // 2 - 26, 40, oh // 2 + 34), radius=8, fill=deep)
+        d.rounded_rectangle((16, oh // 2 - 34, 38, oh // 2 + 24), radius=8, fill=(24, 32, 48, 255))
+        d.ellipse((20, oh // 2 - 22, 34, oh // 2 - 8), fill=(4, 6, 12, 255))
+        d.ellipse((23, oh // 2 - 19, 28, oh // 2 - 14), fill=(180, 200, 230, 180))
+        d.rounded_rectangle((sx0 - 6, sy0 - 5, sx1 + 8, sy1 + 8), radius=g["radius"] + 4, fill=deep)
+        d.line((sx0 + 8, sy0 - 3, sx1 - 8, sy0 - 3), fill=(170, 186, 210, 255), width=2)
     else:
-        d.rectangle((ow // 2 - 150, oh - 16, ow // 2 - 110, oh - 2), fill=panel)
-        d.rectangle((ow // 2 + 110, oh - 16, ow // 2 + 150, oh - 2), fill=panel)
-        d.rounded_rectangle((0, 0, ow - 1, oh - 18), radius=10, fill=navy, outline=line, width=3)
-        d.ellipse((518, 120, 532, 134), fill=gold)
-    # A flat lip just outside the screen, then the screen itself is cut away.
-    lip = (screen[0] - 6, screen[1] - 6, screen[2] + 6, screen[3] + 6)
-    d.rounded_rectangle(lip, radius=g["radius"] + 4, fill=panel2)
+        im = Image.alpha_composite(im, _soft_shadow((ow, oh), (12, 8, ow - 16, oh - 20), 10, blur=7, alpha=120, dy=8))
+        d = ImageDraw.Draw(im)
+        # Feet sit under the screen, each with a lit top and a dark front.
+        for cx in (150, 330):
+            d.polygon([(cx - 8, 296), (cx + 54, 294), (cx + 62, 305), (cx, 305)], fill=deep)
+            d.polygon([(cx - 40, 284), (cx + 30, 280), (cx + 52, 296), (cx - 18, 300)], fill=(78, 98, 128, 255))
+            d.line((cx - 34, 286, cx + 26, 282), fill=(160, 178, 204, 255), width=2)
+        d.polygon([(ow - 22, 10), (ow - 4, 4), (ow - 2, 278), (ow - 22, 284)], fill=side)
+        d.polygon([(ow - 22, 10), (ow - 4, 4), (ow - 6, 14), (ow - 22, 18)], fill=top)
+        d.rounded_rectangle((2, 2, ow - 20, 284), radius=8, fill=navy)
+        d.rectangle((10, 2, ow - 28, 8), fill=top)
+        d.line((6, 8, 6, oh - 24), fill=(150, 168, 196, 255), width=2)
+        d.rounded_rectangle((sx0 - 4, sy0 - 3, sx1 + 5, sy1 + 2), radius=g["radius"] + 3, fill=deep)
+        d.line((sx0, sy0 - 2, sx1, sy0 - 2), fill=(190, 202, 220, 255), width=2)
+        d.ellipse((ow - 36, oh // 2 - 6, ow - 26, oh // 2 + 4), fill=gold_dim)
+        d.ellipse((ow - 36, oh // 2 - 8, ow - 26, oh // 2), fill=gold)
     im = _punch_round(im, screen, g["radius"])
+    im = _glass_sheen(im, screen, g["radius"])
     buf = _io.BytesIO()
     im.save(buf, "PNG")
     cache[name] = buf.getvalue()
@@ -2112,31 +2214,48 @@ def device_png(name: str) -> bytes:
 
 
 def bubble_png(text: str) -> "tuple[bytes, int, int]":
-    """The guide character and a speech bubble. Returns PNG bytes and its size."""
-    from PIL import Image, ImageDraw
+    """The guide character and a speech bubble, with a shaded face and a
+    contact shadow. Returns PNG bytes and its size. The words stay on the
+    light face of the bubble."""
+    from PIL import Image, ImageDraw, ImageFilter
     import io as _io
     w, h = ASIDE_SIZE
     im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    shadow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(shadow)
+    sd.ellipse((24, 150, 108, 172), fill=(0, 0, 0, 90))
+    sd.rounded_rectangle((136, 28, w - 2, h - 4), radius=20, fill=(0, 0, 0, 80))
+    im = Image.alpha_composite(im, shadow.filter(ImageFilter.GaussianBlur(4)))
     d = ImageDraw.Draw(im)
-    navy, gold, ink, paper = (12, 21, 38, 255), (245, 184, 61, 255), (12, 21, 38, 255), (242, 244, 248, 255)
-    # Character: a simple original mark, not a likeness.
-    d.rounded_rectangle((30, 86, 98, 168), radius=28, fill=navy)
-    d.ellipse((28, 22, 100, 94), fill=gold)
-    d.ellipse((48, 50, 58, 60), fill=navy)
-    d.ellipse((70, 50, 80, 60), fill=navy)
-    d.arc((50, 58, 78, 82), 20, 160, fill=navy, width=3)
-    d.rounded_rectangle((8, 108, 34, 128), radius=8, fill=gold)
-    # Bubble with a flat outline and a tail toward the character.
-    d.polygon([(128, 78), (104, 96), (128, 114)], fill=navy)
-    d.rounded_rectangle((124, 16, w - 8, h - 14), radius=20, fill=navy)
-    d.polygon([(132, 82), (112, 96), (132, 110)], fill=paper)
-    d.rounded_rectangle((128, 20, w - 12, h - 18), radius=18, fill=paper)
+    navy, navy_lit, gold, gold_lit, gold_dim = (12, 21, 38, 255), (36, 52, 78, 255), (245, 184, 61, 255), (255, 224, 150, 255), (176, 112, 28, 255)
+    ink, paper, paper_shade = (12, 21, 38, 255), (242, 244, 248, 255), (214, 220, 230, 255)
+    # Body, darker on the right where it turns away from the light.
+    d.rounded_rectangle((34, 90, 102, 166), radius=28, fill=gold_dim)
+    d.rounded_rectangle((30, 84, 94, 160), radius=28, fill=navy)
+    d.rounded_rectangle((32, 86, 70, 156), radius=22, fill=navy_lit)
+    # Head: a lit cap over a warmer underside.
+    d.ellipse((28, 26, 100, 98), fill=gold_dim)
+    d.ellipse((26, 18, 98, 90), fill=gold)
+    d.ellipse((32, 20, 78, 58), fill=gold_lit)
+    d.ellipse((48, 48, 58, 58), fill=navy)
+    d.ellipse((70, 48, 80, 58), fill=navy)
+    d.ellipse((50, 49, 55, 54), fill=paper)
+    d.arc((50, 56, 78, 80), 20, 160, fill=navy, width=3)
+    d.rounded_rectangle((10, 112, 36, 132), radius=8, fill=gold_dim)
+    d.rounded_rectangle((8, 106, 32, 124), radius=8, fill=gold)
+    # Bubble: a thicker underside, then the paper face, then a top highlight.
+    d.polygon([(132, 84), (108, 102), (132, 120)], fill=(150, 158, 172, 255))
+    d.rounded_rectangle((126, 22, w - 6, h - 8), radius=20, fill=(176, 184, 196, 255))
+    d.polygon([(130, 78), (110, 94), (130, 110)], fill=paper)
+    d.rounded_rectangle((124, 16, w - 12, h - 16), radius=18, fill=paper)
+    d.rounded_rectangle((136, 22, w - 24, 34), radius=6, fill=(255, 255, 255, 255))
+    d.polygon([(128, 24), (168, 20), (160, 32), (126, 34)], fill=paper_shade)
     font = _font(22, bold=True)
-    lines = _bubble_lines(text, font, w - 128 - 36)
+    lines = _bubble_lines(text, font, w - 128 - 40)
     gap, block = 28, 28 * len(lines)
-    y = 20 + max(8, ((h - 38) - block) // 2)
+    y = 28 + max(6, ((h - 52) - block) // 2)
     for line in lines:
-        d.text((146, y), line, font=font, fill=ink)
+        d.text((148, y), line, font=font, fill=ink)
         y += gap
     buf = _io.BytesIO()
     im.save(buf, "PNG")
@@ -2223,7 +2342,12 @@ def look_still(kind: str) -> bytes:
     d = ImageDraw.Draw(im)
     d.text((160, 130), "MARKETS", font=_font(28, bold=True), fill=(245, 184, 61, 255))
     d.text((160, 176), "One day. Trillions erased.", font=_font(60, bold=True), fill=(242, 244, 248, 255))
-    d.rounded_rectangle((160, 320, 1000, 600), radius=24, fill=(18, 24, 36, 255), outline=(42, 52, 70, 255), width=3)
+    # The same hard depth the slide cards use: a contact shadow, a dark
+    # underside, then the lit face.
+    d.rounded_rectangle((172, 334, 1016, 616), radius=24, fill=(0, 0, 0, 80))
+    d.rounded_rectangle((160, 328, 1000, 608), radius=24, fill=(7, 11, 18, 255))
+    d.rounded_rectangle((160, 320, 1000, 596), radius=24, fill=(18, 24, 36, 255), outline=(74, 92, 120, 255), width=2)
+    d.line((184, 322, 976, 322), fill=(120, 142, 176, 255), width=3)
     d.text((200, 360), "AI stocks", font=_font(40, bold=True), fill=(242, 244, 248, 255))
     d.text((200, 430), "A slide, with the corner kept clear.", font=_font(28), fill=(138, 148, 166, 255))
     show_frame = kind if kind in PIP_FRAME_GEOM else ("monitor" if kind == "both" else "")
