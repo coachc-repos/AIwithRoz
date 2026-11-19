@@ -29,7 +29,12 @@ Presenter video: HeyGen clips made from the same ElevenLabs audio (or one
 long video, or upscaled copies of either) are matched to the narration by
 their audio. Slides with data-host show the presenter full frame, in a side
 panel or in a corner window: the page leaves that area transparent and the
-renderer puts the footage under it with ffmpeg.
+renderer puts the footage under it with ffmpeg. About half of the corner
+windows (the default) sit inside a drawn device frame — a monitor, a laptop,
+a phone or a TV, in turn — and the rest stay a plain corner. A small guide
+character can hold a short line taken from that slide's narration, lower
+left, only where it stays clear of the presenter. Both are drawn locally,
+and both can be turned off.
 
 The module has no Flask dependency; web_gui.py wires the routes and passes in
 the Anthropic client, the ElevenLabs key and its pause detector.
@@ -109,6 +114,32 @@ HOST_MIN_BYTES = 20 * 1048576    # smaller files are not presenter footage
 HOST_SEARCH = 3.0                # seconds either side of where a clip should start
 HOST_MIN_SCORE = 0.6             # audio match below this: made from a different voiceover
 HOST_FOCUS = 0.45                # where the presenter sits across the frame (0 left, 1 right)
+# Corner-window dressing. "mix" frames about half of the corner windows
+# (the 1st, 3rd, 5th…), cycling a monitor, a laptop, a phone and a TV, and
+# leaves the rest as the plain corner. A device name frames every corner
+# window that way. "off" is always the plain corner. An explicit choice
+# wins, then a value already saved, then this default.
+PIP_FRAME_MODES = ("off", "mix", "monitor", "laptop", "phone", "tv")
+PIP_FRAME_DEFAULT = "mix"
+PIP_DEVICES = ("monitor", "laptop", "phone", "tv")
+# The device occupies the reserved corner (the plain pip box). The screen is
+# the see-through opening the presenter is scaled into. Every number is even
+# so a 4K scale stays on whole pixels.
+_PIP_BOX = (1296, 694, 544, 306)
+PIP_FRAME_GEOM = {
+    "monitor": {"outer": _PIP_BOX, "screen": (1352, 710, 432, 244), "radius": 8},
+    "laptop": {"outer": _PIP_BOX, "screen": (1368, 710, 400, 224), "radius": 6},
+    "phone": {"outer": _PIP_BOX, "screen": (1344, 720, 448, 252), "radius": 22},
+    "tv": {"outer": _PIP_BOX, "screen": (1328, 706, 480, 270), "radius": 4},
+}
+# Guide character. "some" shows one on about a third of the slides that have
+# room (including the first). "often" shows one on every such slide. "off"
+# shows none. The graphic sits lower left, clear of the corner window.
+BUBBLE_MODES = ("off", "some", "often")
+BUBBLE_DEFAULT = "some"
+ASIDE_AT = (48, 848)
+ASIDE_SIZE = (440, 176)
+BUBBLE_MAX = 46                  # characters in the bubble, so it stays two short lines
 
 HERE = Path(__file__).resolve().parent
 ASSET_DIR = HERE / "static" / "explainer"
@@ -150,7 +181,7 @@ DESIGN SYSTEM
 - Layout in 1920x1080 units; the app renders at 2x for 4K, so everything is vectors and live text.
 - Colors (CSS variables): --bg #090c12 (background), --panel #121824, --panel-2 #1a2232, --line #2a3446, --text #f2f4f8 (off-white), --muted #8a94a6, --gold #f5b83d (emphasis and "own"), --red #f05252 (losses and "rent"), --green #3cc878 (gains), --blue #4c8dff, --amber #f59e0b, --navy #0c1526 and --navy-2 #13213a (scene skies and ground), --sky-3 #1b2c4a. Use these, plus brand colors where a brand is shown.
 - Type: Inter (Inter Display at large sizes, automatic). Classes: kicker (gold caps label), h1 (104px), h2 (72px), h3 (48px), lead (40px, muted), body (34px), small (26px), huge (220px numbers), num (tabular figures); color classes gold, red, green, blue, amber, muted, white.
-- The app draws the particle background (rows of small particles riding a slow wave at the bottom, fading out by mid-screen), the HUD (section label top left, chapter tracker top right, thin progress bar at the bottom) and the slide transitions (a 0.4 s push up). Keep content inside x 120-1800 and y 110-990 so it clears the HUD; full-bleed scenes may fill the frame.
+- The app draws the particle background (rows of small particles riding a slow wave at the bottom, fading out by mid-screen), the HUD (section label top left, chapter tracker top right, thin progress bar at the bottom) and the slide transitions (a 0.4 s push up). Keep content inside x 120-1800 and y 110-990 so it clears the HUD; full-bleed scenes may fill the frame. The app may briefly show a small guide character with a short line from this slide's narration in the lower left (about x 40-520, y 820-1030). Keep essential type, logos and figures out of that pocket.
 - The blend: presentation slides for stats, lists, definitions, timelines, comparisons and quotes; illustrated vector scenes for about a third of the runtime, for metaphor and story passages, drawn from the GROK IMAGINE briefs (not every brief needs a scene); a cold-open panorama with camera pans if the script describes one; a chapter card per section; the copyable asset (checklist or cheat sheet) as its own slide of kind asset.
 - Any slide where text alone would sit for more than about 8 seconds gets a supporting icon or small illustration (inline SVG).
 - Motion: headlines rise word by word, cards slide in, numbers count up, key figures pop or stamp (a ring burst on the biggest), charts draw or wipe on, bars grow from the bottom. Every element appears on the spoken words it illustrates and stays until the slide changes unless it is being swapped.
@@ -174,7 +205,7 @@ Presenter (only when the context lists PRESENTER VIDEO)
 - data-host="full|left|right|pip" on a section shows the presenter, synced to the narration, in a fixed area; the app draws the footage under your content and that area must stay see-through:
   full: the whole frame. Add at most a kicker, a lower-third or one small card in the empty part of the frame (see the presenter still); never over the face or body.
   left / right: an 800x1080 panel at that side (x 0-800, or 1120-1920). Put all content on the other side (x 880-1800, or 120-1040): one stat, a short list, a logo row or a headline.
-  pip: a 544x306 corner window at x 1296-1840, y 694-1000 over a regular slide. Keep that corner clear.
+  pip: a 544x306 corner window at x 1296-1840, y 694-1000 over a regular slide. Keep that corner clear. The app may draw that window inside a monitor, laptop, phone or TV frame; the corner stays the same either way.
 - A presenter slide never has a scene, full-bleed background, panel or camera over the presenter area.
 
 Layout
@@ -820,7 +851,7 @@ def place_clip(narration: Path, clip: Path, seconds: float, expected: Optional[f
 
 
 def attach_host(project: "Project", source: dict, root: Path, status: Callable, log: Callable,
-                share: Optional[str] = None) -> dict:
+                share: Optional[str] = None, pip_frame: Optional[str] = None) -> dict:
     """Use a presenter source found by find_host_sources (a HeyGen clip set
     or one video) as the project's presenter footage."""
     items = []
@@ -832,12 +863,13 @@ def attach_host(project: "Project", source: dict, root: Path, status: Callable, 
         items.append({"orig": str(orig), "seconds": p["seconds"], "w": p["w"], "h": p["h"], "audio": p["audio"],
                       "up": ({"file": str((Path(root) / up["rel"]).resolve()), **{k: up[k] for k in ("seconds", "w", "h", "audio")}}
                              if up else None)})
-    return attach_clips(project, items, status, log, share=share, replace=True, ordered=True,
+    return attach_clips(project, items, status, log, share=share, pip_frame=pip_frame, replace=True, ordered=True,
                         source=source["id"], label=source["label"])
 
 
 def attach_clips(project: "Project", items: list, status: Callable, log: Callable, *, share: Optional[str] = None,
-                 replace: bool = False, ordered: bool = False, source: str = "", label: str = "") -> dict:
+                 pip_frame: Optional[str] = None, replace: bool = False, ordered: bool = False, source: str = "",
+                 label: str = "") -> dict:
     """Place presenter clips (clip_item dicts) on the narration by their
     audio and add them to the project's presenter footage (or replace it).
     Clips made from another voiceover are refused. Then remake the preview
@@ -901,6 +933,7 @@ def attach_clips(project: "Project", items: list, status: Callable, log: Callabl
             "parts": sorted(parts, key=lambda x: x["offset"]), "sections": list(old.get("sections") or []),
             "focus": old.get("focus", HOST_FOCUS),
             "share": host_share_key(share, old.get("share")),
+            "pip_frame": pip_frame_key(pip_frame, old.get("pip_frame") or project.data.get("pip_frame")),
             "refused": refused, "created": time.time()}
     _host_preview(project, host, status)
     with project.lock:
@@ -1013,6 +1046,18 @@ def _host_box(layout: str, k: float) -> dict:
     return {"x": even(L["x"]), "y": even(L["y"]), "w": even(L["w"]), "h": even(L["h"])}
 
 
+def _window_box(win: dict, k: float) -> dict:
+    """Where the presenter footage goes. A framed corner uses the device's
+    screen; everything else uses the layout's own rectangle."""
+    frame = (win.get("frame") or "") if win.get("layout") == "pip" else ""
+    geom = PIP_FRAME_GEOM.get(frame)
+    if not geom:
+        return _host_box(win["layout"], k)
+    x, y, w, h = geom["screen"]
+    even = lambda v: int(round(v * k / 2)) * 2
+    return {"x": even(x), "y": even(y), "w": max(2, even(w)), "h": max(2, even(h))}
+
+
 def _ffmpeg_host_track(segs: list, out: Path, w: int, h: int, crf: int = 30, preset: str = "veryfast") -> None:
     """The footage as one w x h, 30 fps video on the narration's timeline
     (black before the first clip), for the preview player."""
@@ -1061,7 +1106,7 @@ def composite_host(png: bytes, t: float, windows: list, segs: list, focus: float
     k = page.width / 1920
     base = Image.new("RGBA", page.size, (0, 0, 0, 255))
     for w in live:
-        box = _host_box(w["layout"], k)
+        box = _window_box(w, k)
         im = host_frame(segs, t, box["w"], box["h"], w["layout"], focus)
         if im is not None:
             base.paste(im, (box["x"], box["y"]))
@@ -1083,7 +1128,7 @@ def _host_filter(plan: dict, a_t: float, b_t: float) -> "tuple[list, str]":
         a, b = max(win["t0"], a_t), min(win["t1"], b_t)
         if b - a < 0.5 / FPS:
             continue
-        box = _host_box(win["layout"], k)
+        box = _window_box(win, k)
         focus = plan["focus"] if win["layout"] in ("left", "right") else 0.5
         pieces = []
         for seg in plan["segments"]:
@@ -1652,7 +1697,8 @@ def compile_composition(raw: str, timeline: Timeline, *, duration: float, plan: 
         if not idea:
             idea = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body)).strip()[:140]
         slides_meta.append({"id": sid, "t0": t0, "t1": t1, "kind": kind, "section": label or "",
-                            "idea": idea, "at": a.get("data-at") or "", "host": host, "warnings": slide_warn})
+                            "idea": idea, "at": a.get("data-at") or "", "host": host, "warnings": slide_warn,
+                            "spoken": timeline.window_text(t0, t1)[:500]})
         warnings.extend(slide_warn)
     # The user's presenter sections, inside this video's stretch. They win
     # over a slide's own presenter layout: the slide's window keeps only the
@@ -1701,22 +1747,29 @@ def compile_composition(raw: str, timeline: Timeline, *, duration: float, plan: 
 
 
 def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer",
-              host: Optional[dict] = None) -> str:
+              host: Optional[dict] = None, pip_frame: Optional[str] = None,
+              bubble: Optional[str] = None) -> str:
     """A self-contained page: design CSS, the compiled slides, the runtime.
     The runtime exposes __seek(t), __check() and __ready for the renderer;
     in preview mode it answers postMessage seeks from the dialog. With a
     presenter (`host`: focus, and in preview the proxy video's URL) the
-    presenter areas are see-through; the preview plays the proxy under them."""
+    presenter areas are see-through; the preview plays the proxy under them.
+    Corner windows carry their device frame, and guide-character cues carry
+    a drawn bubble, both as local images."""
     css = (ASSET_DIR / "design.css").read_text(encoding="utf-8")
     js = (ASSET_DIR / "runtime.js").read_text(encoding="utf-8")
     host_on = bool(host) and compiled.get("host_on")
     video = (host or {}).get("video") if host_on and mode == "preview" else None
+    frame_mode = pip_frame_key(pip_frame, None if pip_frame is not None else (host or {}).get("pip_frame"))
+    windows = framed_windows(compiled.get("host_windows") or [], frame_mode) if host_on else []
     cfg = json.dumps({"duration": compiled["duration"], "fps": FPS, "mode": mode,
                       "start": compiled.get("start", 0.0), "end": compiled.get("end", compiled["duration"]),
                       "sections": compiled.get("sections") or [],
+                      "asides": _aside_payloads(compiled.get("slides") or [], bubble),
                       "host": {"on": True, "layouts": HOST_LAYOUTS, "focus": float(host.get("focus", HOST_FOCUS)),
                                "video": video, "sections": compiled.get("host_sections") or [],
-                               "fade": HOST_SECTION_FADE} if host_on else {"on": False}}).replace("</", "<\\/")
+                               "fade": HOST_SECTION_FADE, "windows": windows,
+                               "frames": _frame_payloads(windows)} if host_on else {"on": False}}).replace("</", "<\\/")
     csp = ("default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
            "script-src 'unsafe-inline'; font-src data:" + ("; media-src 'self'" if video else ""))
     cls = f"mode-{mode}" + (" host-on" if host_on else "")
@@ -1856,6 +1909,364 @@ def host_share_pct(share: Optional[str] = None, saved: Optional[str] = None) -> 
     return HOST_SHARES[host_share_key(share, saved)]
 
 
+def pip_frame_key(choice: Optional[str] = None, saved: Optional[str] = None) -> str:
+    """Which corner-frame mode to draw with.
+
+    An explicit choice wins, then a mode already saved on the project, then
+    PIP_FRAME_DEFAULT (about half of the corner windows, cycling devices).
+    An unknown value is not a choice.
+    """
+    if choice in PIP_FRAME_MODES:
+        return choice
+    if saved in PIP_FRAME_MODES:
+        return saved
+    return PIP_FRAME_DEFAULT
+
+
+def bubble_mode_key(choice: Optional[str] = None, saved: Optional[str] = None) -> str:
+    """Which guide-character mode to draw with. Same precedence as pip_frame_key."""
+    if choice in BUBBLE_MODES:
+        return choice
+    if saved in BUBBLE_MODES:
+        return saved
+    return BUBBLE_DEFAULT
+
+
+def look_of(data: Optional[dict], host: Optional[dict] = None) -> "tuple[str, str]":
+    """(corner-frame mode, guide mode) saved on a project, with the defaults filled in."""
+    data, host = data or {}, host or {}
+    return (pip_frame_key(None, host.get("pip_frame") or data.get("pip_frame")),
+            bubble_mode_key(None, data.get("bubble")))
+
+
+def pip_device_for(mode: str, index: int) -> str:
+    """The device for the `index`th corner window (0-based), or "" for a plain corner.
+
+    "mix" frames the 1st, 3rd, 5th… window — about half — and cycles monitor,
+    laptop, phone, TV. A device name frames every window. "off" frames none.
+    """
+    mode = pip_frame_key(mode)
+    if mode == "off":
+        return ""
+    if mode in PIP_DEVICES:
+        return mode
+    if index % 2 == 1:
+        return ""
+    return PIP_DEVICES[(index // 2) % len(PIP_DEVICES)]
+
+
+def framed_windows(windows: list, mode: Optional[str] = None) -> list:
+    """Copy presenter windows, tagging each corner window with its device (or "")."""
+    out, i = [], 0
+    for w in windows or []:
+        w = dict(w)
+        if w.get("layout") == "pip":
+            w["frame"] = pip_device_for(mode or PIP_FRAME_DEFAULT, i)
+            i += 1
+        else:
+            w["frame"] = ""
+        out.append(w)
+    return out
+
+
+_BUBBLE_FILLER = re.compile(r"^(?:and|but|so|well|now|then|okay|ok|yeah|right)\b[, ]*", re.I)
+
+
+def bubble_text(spoken: str, idea: str = "") -> str:
+    """A short bubble line from the narration, or from the slide idea if the
+    narration has nothing readable. The words are the source's own words."""
+    for src in (spoken, idea):
+        line = _bubble_clip(src)
+        if line:
+            return line
+    return ""
+
+
+def _bubble_clip(text: str) -> str:
+    text = re.sub(r"\s+", " ", text or "").strip()
+    if not text:
+        return ""
+    sentence = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0].strip(" \"'`")
+    sentence = _BUBBLE_FILLER.sub("", sentence).strip()
+    sentence = sentence.rstrip(".!?…").strip(" \"'`")
+    if len(sentence) <= BUBBLE_MAX and len(sentence) >= 12:
+        return sentence
+    if len(sentence) < 12:
+        return ""
+    cut = sentence[:BUBBLE_MAX - 1].rsplit(" ", 1)[0].rstrip(",;:")
+    if len(cut) < 12:
+        return ""
+    return cut + "…"
+
+
+def aside_cues(slides: list, mode: Optional[str] = None) -> list:
+    """Where the guide character shows: a few seconds on a slide that has room.
+
+    Skips chapter cards, the asset slide, short slides, and any slide whose
+    presenter is full frame or a side panel (those cover the lower left, or
+    the whole frame). "some" keeps about one in three of the slides that
+    qualify, including the first. "often" keeps all of them. "off" keeps none.
+    """
+    mode = bubble_mode_key(mode)
+    if mode == "off":
+        return []
+    eligible = []
+    for s in slides or []:
+        if s.get("kind") not in ("slide", "scene"):
+            continue
+        if s.get("host") in ("full", "left", "right"):
+            continue
+        if any(x.get("layout") in ("full", "left", "right") for x in s.get("sections") or []):
+            continue
+        if float(s.get("t1") or 0) - float(s.get("t0") or 0) < 6.5:
+            continue
+        text = bubble_text(s.get("spoken") or "", s.get("idea") or "")
+        if not text:
+            continue
+        eligible.append((s, text))
+    step = 1 if mode == "often" else 3
+    cues = []
+    for i, (s, text) in enumerate(eligible):
+        if i % step:
+            continue
+        t0 = round(float(s["t0"]) + 1.0, 3)
+        t1 = round(min(float(s["t1"]) - 0.35, t0 + 3.4), 3)
+        if t1 - t0 < 2.0:
+            continue
+        cues.append({"t0": t0, "t1": t1, "text": text, "slide": s.get("id") or ""})
+    return cues
+
+
+def _font(size: int, bold: bool = False):
+    """Inter when the machine has it, otherwise another installed sans."""
+    from PIL import ImageFont
+    names = ("Inter-Bold.ttf", "Inter-SemiBold.ttf", "DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf") if bold \
+        else ("Inter-Medium.ttf", "Inter-Regular.ttf", "DejaVuSans.ttf", "LiberationSans-Regular.ttf")
+    roots = (Path("/usr/share/fonts/truetype/macos"), Path("/usr/share/fonts/truetype/dejavu"),
+             Path("/usr/share/fonts/truetype/liberation"), Path("/usr/share/fonts/truetype/liberation2"))
+    for root in roots:
+        for name in names:
+            p = root / name
+            if p.is_file():
+                return ImageFont.truetype(str(p), size)
+    return ImageFont.load_default()
+
+
+def _punch_round(im, box: "tuple[int, int, int, int]", radius: int):
+    """Clear a rounded rectangle (box is x0, y0, x1, y1) out of an RGBA image."""
+    from PIL import Image, ImageChops, ImageDraw
+    mask = Image.new("L", im.size, 255)
+    ImageDraw.Draw(mask).rounded_rectangle(box, radius=radius, fill=0)
+    r, g, b, a = im.split()
+    return Image.merge("RGBA", (r, g, b, ImageChops.multiply(a, mask)))
+
+
+def _local_box(outer, box) -> "tuple[int, int, int, int]":
+    ox, oy = outer[0], outer[1]
+    x, y, w, h = box
+    return (x - ox, y - oy, x - ox + w, y - oy + h)
+
+
+def device_png(name: str) -> bytes:
+    """The device frame for a corner window: opaque chrome, a clear screen."""
+    cache = device_png.__dict__.setdefault("cache", {})
+    if name in cache:
+        return cache[name]
+    from PIL import Image, ImageDraw
+    import io as _io
+    g = PIP_FRAME_GEOM[name]
+    _, _, ow, oh = g["outer"]
+    screen = _local_box(g["outer"], g["screen"])
+    im = Image.new("RGBA", (ow, oh), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    navy, panel, panel2, line, gold = (12, 21, 38, 255), (18, 24, 36, 255), (26, 34, 50, 255), (42, 52, 70, 255), (245, 184, 61, 255)
+    if name == "monitor":
+        d.rounded_rectangle((ow // 2 - 78, oh - 16, ow // 2 + 78, oh - 4), radius=4, fill=panel2)
+        d.rectangle((ow // 2 - 24, oh - 40, ow // 2 + 24, oh - 12), fill=panel)
+        d.rounded_rectangle((0, 0, ow - 1, oh - 28), radius=16, fill=navy, outline=line, width=4)
+        d.rectangle((ow // 2 - 18, 262, ow // 2 + 18, 270), fill=gold)
+    elif name == "laptop":
+        d.rounded_rectangle((8, oh - 62, ow - 9, oh - 4), radius=10, fill=panel, outline=line, width=3)
+        d.rounded_rectangle((36, oh - 50, ow - 37, oh - 16), radius=6, fill=panel2)
+        for row in range(3):
+            for col in range(11):
+                d.rounded_rectangle((52 + col * 40, oh - 46 + row * 10, 84 + col * 40, oh - 40 + row * 10), radius=2, fill=line)
+        d.rounded_rectangle((0, 0, ow - 1, oh - 52), radius=14, fill=navy, outline=line, width=4)
+    elif name == "phone":
+        d.rounded_rectangle((6, 6, ow - 7, oh - 7), radius=36, fill=navy, outline=line, width=4)
+        d.ellipse((22, oh // 2 - 8, 38, oh // 2 + 8), fill=panel2)
+        d.rounded_rectangle((18, oh // 2 - 22, 26, oh // 2 + 22), radius=4, fill=gold)
+    else:
+        d.rectangle((ow // 2 - 150, oh - 16, ow // 2 - 110, oh - 2), fill=panel)
+        d.rectangle((ow // 2 + 110, oh - 16, ow // 2 + 150, oh - 2), fill=panel)
+        d.rounded_rectangle((0, 0, ow - 1, oh - 18), radius=10, fill=navy, outline=line, width=3)
+        d.ellipse((518, 120, 532, 134), fill=gold)
+    # A flat lip just outside the screen, then the screen itself is cut away.
+    lip = (screen[0] - 6, screen[1] - 6, screen[2] + 6, screen[3] + 6)
+    d.rounded_rectangle(lip, radius=g["radius"] + 4, fill=panel2)
+    im = _punch_round(im, screen, g["radius"])
+    buf = _io.BytesIO()
+    im.save(buf, "PNG")
+    cache[name] = buf.getvalue()
+    return cache[name]
+
+
+def bubble_png(text: str) -> "tuple[bytes, int, int]":
+    """The guide character and a speech bubble. Returns PNG bytes and its size."""
+    from PIL import Image, ImageDraw
+    import io as _io
+    w, h = ASIDE_SIZE
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    navy, gold, ink, paper = (12, 21, 38, 255), (245, 184, 61, 255), (12, 21, 38, 255), (242, 244, 248, 255)
+    # Character: a simple original mark, not a likeness.
+    d.rounded_rectangle((30, 86, 98, 168), radius=28, fill=navy)
+    d.ellipse((28, 22, 100, 94), fill=gold)
+    d.ellipse((48, 50, 58, 60), fill=navy)
+    d.ellipse((70, 50, 80, 60), fill=navy)
+    d.arc((50, 58, 78, 82), 20, 160, fill=navy, width=3)
+    d.rounded_rectangle((8, 108, 34, 128), radius=8, fill=gold)
+    # Bubble with a flat outline and a tail toward the character.
+    d.polygon([(128, 78), (104, 96), (128, 114)], fill=navy)
+    d.rounded_rectangle((124, 16, w - 8, h - 14), radius=20, fill=navy)
+    d.polygon([(132, 82), (112, 96), (132, 110)], fill=paper)
+    d.rounded_rectangle((128, 20, w - 12, h - 18), radius=18, fill=paper)
+    font = _font(22, bold=True)
+    lines = _bubble_lines(text, font, w - 128 - 36)
+    gap, block = 28, 28 * len(lines)
+    y = 20 + max(8, ((h - 38) - block) // 2)
+    for line in lines:
+        d.text((146, y), line, font=font, fill=ink)
+        y += gap
+    buf = _io.BytesIO()
+    im.save(buf, "PNG")
+    return buf.getvalue(), w, h
+
+
+def _bubble_lines(text: str, font, width: int) -> list:
+    def width_of(s: str) -> float:
+        return font.getlength(s) if hasattr(font, "getlength") else len(s) * 12
+    words = (text or "").split()
+    if not words:
+        return []
+    lines, cur = [], ""
+    overflow = False
+    for word in words:
+        trial = (cur + " " + word).strip()
+        if not cur or width_of(trial) <= width:
+            cur = trial
+            continue
+        lines.append(cur)
+        cur = word
+        if len(lines) == 2:
+            overflow = True
+            break
+    if len(lines) < 2 and cur:
+        lines.append(cur)
+    if overflow and len(lines) == 2:
+        last = lines[1]
+        while last and width_of(last + "…") > width:
+            last = last.rsplit(" ", 1)[0] if " " in last else last[:-1]
+        lines[1] = (last or lines[1][:1]).rstrip(",;:") + "…"
+    return lines[:2]
+
+
+def _aside_payloads(slides: list, mode: Optional[str]) -> list:
+    """Cues plus the drawn graphic, for the page config."""
+    out = []
+    for cue in aside_cues(slides, mode):
+        png, w, h = bubble_png(cue["text"])
+        out.append({**cue, "x": ASIDE_AT[0], "y": ASIDE_AT[1], "w": w, "h": h,
+                    "uri": "data:image/png;base64," + base64.b64encode(png).decode()})
+    return out
+
+
+def _frame_payloads(windows: list) -> dict:
+    """Device graphics the page shows around corner windows that use one."""
+    used = [w["frame"] for w in windows if w.get("frame")]
+    out = {}
+    for name in PIP_DEVICES:
+        if name not in used:
+            continue
+        g = PIP_FRAME_GEOM[name]
+        ox, oy, ow, oh = g["outer"]
+        sx, sy, sw, sh = g["screen"]
+        out[name] = {"x": ox, "y": oy, "w": ow, "h": oh, "sx": sx, "sy": sy, "sw": sw, "sh": sh,
+                     "sr": g["radius"], "uri": "data:image/png;base64," + base64.b64encode(device_png(name)).decode()}
+    return out
+
+
+def _stand_in(w: int, h: int):
+    """A drawn stand-in for the presenter, for sample stills. Not footage."""
+    from PIL import Image, ImageDraw
+    im = Image.new("RGBA", (w, h), (19, 33, 58, 255))
+    d = ImageDraw.Draw(im)
+    cx, rad = w // 2, int(min(w, h) * 0.18)
+    cy = int(h * 0.42)
+    d.rounded_rectangle((cx - int(w * 0.30), int(h * 0.70), cx + int(w * 0.30), h + 30), radius=rad, fill=(26, 34, 50, 255))
+    d.ellipse((cx - rad, cy - rad, cx + rad, cy + rad), fill=(245, 184, 61, 255))
+    d.ellipse((cx - rad // 3, cy - rad // 5, cx - rad // 8, cy + rad // 8), fill=(12, 21, 38, 255))
+    d.ellipse((cx + rad // 8, cy - rad // 5, cx + rad // 3, cy + rad // 8), fill=(12, 21, 38, 255))
+    return im
+
+
+def look_still(kind: str) -> bytes:
+    """One 1920x1080 still of the corner treatment and the guide character.
+
+    `kind` is plain, monitor, laptop, phone, tv, bubble, or both (a monitor
+    plus the guide). The presenter is the drawn stand-in, so this needs no
+    footage and no network.
+    """
+    from PIL import Image, ImageDraw
+    import io as _io
+    im = Image.new("RGBA", (STAGE_W, STAGE_H), (9, 12, 18, 255))
+    d = ImageDraw.Draw(im)
+    d.text((160, 130), "MARKETS", font=_font(28, bold=True), fill=(245, 184, 61, 255))
+    d.text((160, 176), "One day. Trillions erased.", font=_font(60, bold=True), fill=(242, 244, 248, 255))
+    d.rounded_rectangle((160, 320, 1000, 600), radius=24, fill=(18, 24, 36, 255), outline=(42, 52, 70, 255), width=3)
+    d.text((200, 360), "AI stocks", font=_font(40, bold=True), fill=(242, 244, 248, 255))
+    d.text((200, 430), "A slide, with the corner kept clear.", font=_font(28), fill=(138, 148, 166, 255))
+    show_frame = kind if kind in PIP_FRAME_GEOM else ("monitor" if kind == "both" else "")
+    if kind == "plain" or show_frame:
+        if show_frame:
+            box = PIP_FRAME_GEOM[show_frame]["screen"]
+            outer = PIP_FRAME_GEOM[show_frame]["outer"]
+        else:
+            box = _PIP_BOX
+            outer = None
+        x, y, w, h = box
+        stand = _stand_in(w, h)
+        if kind == "plain":
+            mask = Image.new("L", (w, h), 0)
+            ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=18, fill=255)
+            im.paste(stand, (x, y), mask)
+        else:
+            im.paste(stand, (x, y), stand)
+            frame = Image.open(_io.BytesIO(device_png(show_frame))).convert("RGBA")
+            im.alpha_composite(frame, (outer[0], outer[1]))
+    if kind in ("bubble", "both"):
+        png, bw, bh = bubble_png("AI stocks lost about two trillion")
+        im.alpha_composite(Image.open(_io.BytesIO(png)).convert("RGBA"), ASIDE_AT)
+    buf = _io.BytesIO()
+    im.convert("RGB").save(buf, "PNG")
+    return buf.getvalue()
+
+
+def write_look_samples(folder: Path) -> list:
+    """Write the sample stills (plain corner, each device, the guide, both)."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    names = {"plain": "plain_corner.png", "monitor": "frame_monitor.png", "laptop": "frame_laptop.png",
+             "phone": "frame_phone.png", "tv": "frame_tv.png", "bubble": "guide_bubble.png",
+             "both": "monitor_and_bubble.png"}
+    out = []
+    for kind, name in names.items():
+        p = folder / name
+        p.write_bytes(look_still(kind))
+        out.append(p)
+    return out
+
+
 def _host_guide(host: Optional[dict]) -> str:
     if not host:
         return "- host: none on every slide (no presenter video)."
@@ -1978,7 +2389,7 @@ class Project:
             return None
         return {"k": scale, "W": int(round(1920 * scale)), "H": int(round(1080 * scale)),
                 "focus": float(host.get("focus", HOST_FOCUS)), "segments": host_segments(host),
-                "windows": compiled["host_windows"]}
+                "windows": framed_windows(compiled["host_windows"], look_of(self.data, host)[0])}
 
     def version_name(self, n: int) -> str:
         return f"versions/v{int(n):03d}.html"
@@ -2524,15 +2935,20 @@ def revise(project: Project, client, cancel, status, log, *, feedback: str, slid
 def run_create(project: Project, client, *, audio_src: Path, spoken_text: str, eleven_key: str,
                pauses: Callable, logos: list, images_dir: Path, cancel, status, log,
                test: Optional[dict] = None, presenter: Optional[dict] = None,
-               root: Optional[Path] = None, share: Optional[str] = None) -> dict:
+               root: Optional[Path] = None, share: Optional[str] = None,
+               pip_frame: Optional[str] = None, bubble: Optional[str] = None) -> dict:
     """The whole first pass: prepare, (match the presenter clips,) plan,
     build. Returns the job result."""
     prepare(project, audio_src=audio_src, spoken_text=spoken_text, eleven_key=eleven_key, pauses=pauses,
             logos=logos, images_dir=images_dir, status=status, log=log, test=test)
+    with project.lock:
+        project.data["pip_frame"] = pip_frame_key(pip_frame, project.data.get("pip_frame"))
+        project.data["bubble"] = bubble_mode_key(bubble, project.data.get("bubble"))
+    project.save()
     if cancel.is_set():
         raise Cancelled()
     if presenter:
-        attach_host(project, presenter, root or project.dir, status, log, share)
+        attach_host(project, presenter, root or project.dir, status, log, share, project.data.get("pip_frame"))
     plan_video(project, client, cancel, status, log)
     sections = build_slides(project, client, cancel, status, log)
     n = project.add_version(sections, "build", "Test clip" if project.span() else "First build")
@@ -3159,8 +3575,10 @@ def phone_copy(src: Path, out: Path) -> Path:
 def write_page(project: Project, compiled: dict, mode: str, name: str) -> Path:
     page = project.dir / "pages" / name
     page.parent.mkdir(parents=True, exist_ok=True)
+    host = project.host()
+    frame, bubble = look_of(project.data, host)
     page.write_text(page_html(compiled, mode=mode, title=project.data.get("title") or "Explainer",
-                              host=project.host()), encoding="utf-8")
+                              host=host, pip_frame=frame, bubble=bubble), encoding="utf-8")
     return page
 
 
