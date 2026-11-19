@@ -60,7 +60,7 @@
         ctx.closePath();
     }
     var dpr = 0;
-    function drawBg(t, holes) {
+    function drawBg(t, holes, frame) {
         var k = window.devicePixelRatio || 1;
         if (k !== dpr) { dpr = k; canvas.width = 1920 * k; canvas.height = 1080 * k; canvas.style.width = '1920px'; canvas.style.height = '1080px'; }
         ctx.setTransform(k, 0, 0, k, 0, 0);
@@ -79,9 +79,11 @@
             ctx.fill();
         }
         // Presenter areas: cut out, as far as the slide showing them is faded in.
+        // A framed corner cuts the device's screen, not the whole corner.
         for (var name in holes || {}) {
             var L = LAYOUTS[name], o = holes[name];
             if (!L || !(o > 0)) continue;
+            if (name === 'pip' && frame) L = { x: frame.sx, y: frame.sy, w: frame.sw, h: frame.sh, r: frame.sr || 0 };
             ctx.save();
             ctx.globalCompositeOperation = 'destination-out';
             ctx.globalAlpha = Math.min(1, o);
@@ -101,11 +103,12 @@
         hostVid.style.cssText = 'position:absolute; left:0; top:0; width:1920px; height:1080px; object-fit:cover; visibility:hidden;';
         stage.insertBefore(hostVid, canvas);
     }
-    function placeHost(holes) {
+    function placeHost(holes, frame) {
         if (!hostVid) return;
         var best = null, bo = 0;
         for (var n in holes) if (holes[n] > bo) { bo = holes[n]; best = n; }
         var L = best && LAYOUTS[best];
+        if (best === 'pip' && frame) L = { x: frame.sx, y: frame.sy, w: frame.sw, h: frame.sh, r: frame.sr || 0 };
         if (!L) { hostVid.style.visibility = 'hidden'; return; }
         var asp = hostVid.videoWidth && hostVid.videoHeight ? hostVid.videoWidth / hostVid.videoHeight : 16 / 9;
         var sw = Math.max(L.w, L.h * asp), over = sw - L.w;
@@ -128,6 +131,47 @@
         } else {
             if (!hostVid.paused) hostVid.pause();
             if (Math.abs(hostVid.currentTime - want) > 0.04) hostVid.currentTime = want;
+        }
+    }
+
+    // Device frames and the guide character are images drawn by the server
+    // (local, no extra service). They are in the page from the start so the
+    // renderer has decoded them before the first captured frame.
+    var slidesEl = document.getElementById('slides');
+    var frameEls = {};
+    Object.keys(HOST.frames || {}).forEach(function (name) {
+        var g = HOST.frames[name];
+        var im = document.createElement('img');
+        im.alt = '';
+        im.src = g.uri;
+        im.style.cssText = 'position:absolute; pointer-events:none; z-index:1; display:none; left:' + g.x
+            + 'px; top:' + g.y + 'px; width:' + g.w + 'px; height:' + g.h + 'px;';
+        stage.insertBefore(im, slidesEl);
+        frameEls[name] = im;
+    });
+    var asideEls = (CFG.asides || []).map(function (a) {
+        var im = document.createElement('img');
+        im.alt = '';
+        im.src = a.uri;
+        im.style.cssText = 'position:absolute; pointer-events:none; z-index:900; display:none; left:' + a.x
+            + 'px; top:' + a.y + 'px; width:' + a.w + 'px; height:' + a.h + 'px;';
+        stage.appendChild(im);
+        a.el = im;
+        return a;
+    });
+    function placeFrame(frame, opacity) {
+        Object.keys(frameEls).forEach(function (name) {
+            var im = frameEls[name];
+            var on = !!(frame && HOST.frames[name] === frame && opacity > 0);
+            im.style.display = on ? 'block' : 'none';
+            if (on) im.style.opacity = opacity >= 1 ? '' : (+opacity).toFixed(3);
+        });
+    }
+    function placeAside(t) {
+        for (var i = 0; i < asideEls.length; i++) {
+            var a = asideEls[i];
+            var on = t >= a.t0 && t < a.t1;
+            a.el.style.display = on ? 'block' : 'none';
         }
     }
 
@@ -393,8 +437,21 @@
             for (var hn in holes) holes[hn] *= 1 - smax;
             for (var sn in sh) holes[sn] = Math.max(holes[sn] || 0, sh[sn]);
         }
-        drawBg(t, holes);
-        placeHost(holes);
+        var frame = null;
+        if ((holes.pip || 0) > 0) {
+            var wins = HOST.windows || [];
+            for (var wi = 0; wi < wins.length; wi++) {
+                var fw = wins[wi];
+                if (fw.layout === 'pip' && fw.frame && t >= fw.t0 && t < fw.t1) {
+                    frame = (HOST.frames || {})[fw.frame] || null;
+                    break;
+                }
+            }
+        }
+        drawBg(t, holes, frame);
+        placeHost(holes, frame);
+        placeFrame(frame, frame ? (holes.pip || 0) : 0);
+        placeAside(t);
         // The HUD gets a dark backing where it sits over the presenter.
         hud.classList.toggle('over-left', (holes.full || holes.left || 0) > 0.5);
         hud.classList.toggle('over-right', (holes.full || holes.right || 0) > 0.5);

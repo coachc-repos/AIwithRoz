@@ -3629,7 +3629,7 @@
                 <!-- Setup: narration, script, logos -->
                 <div id="xvSetup" style="display:none; flex:1; min-height:0; overflow-y:auto;">
                     <p style="margin:0 0 12px 0; color:#94a3b8; font-size:0.85em; line-height:1.55; max-width:980px;">
-                        Claude Opus 5.5 (high effort) reads the open script with its production notes and your ElevenLabs narration, plans an explainer that blends presentation slides with illustrated vector scenes (from the GROK IMAGINE briefs), and writes every slide synced word by word to the narration. It can cut in your HeyGen presenter clips (full frame, a side panel or a corner window). Start with a short test clip, refine it, then build the rest in the same look. You preview it live with the audio, send notes on any slides, fill in the logos and figures it flags, and only then render the 4K final (3840×2160, 30 fps, -14 LUFS) with a 720p phone copy. Brand logos come only from your files; it never shows photos of real people or mock posts and statements.
+                        Claude Opus 5.5 (high effort) reads the open script with its production notes and your ElevenLabs narration, plans an explainer that blends presentation slides with illustrated vector scenes (from the GROK IMAGINE briefs), and writes every slide synced word by word to the narration. It can cut in your HeyGen presenter clips (full frame, a side panel or a corner window). Corner windows sometimes sit inside a monitor, laptop, phone or TV, and a small guide character can hold a short line from the narration. Start with a short test clip, refine it, then build the rest in the same look. You preview it live with the audio, send notes on any slides, fill in the logos and figures it flags, and only then render the 4K final (3840×2160, 30 fps, -14 LUFS) with a 720p phone copy. Brand logos come only from your files; it never shows photos of real people or mock posts and statements.
                     </p>
                     <div id="xvScriptInfo" style="font-size:0.85em; color:#94a3b8; margin-bottom:12px;"></div>
                     <label for="xvAudioSel" class="xv-label">Narration (ElevenLabs audio for this script)</label>
@@ -3646,6 +3646,8 @@
                     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
                         <select id="xvHostSel" class="xv-input" style="max-width:620px; height:34px;" onchange="_xvCostNote()"></select>
                         <select id="xvHostShare" class="xv-input" style="width:auto; height:34px;" title="How much of the runtime Claude puts the presenter on screen"><option value="mine">only where I put it</option><option value="brief" selected>on screen briefly (~10%)</option><option value="little">on screen a little (~15%)</option><option value="some">on screen some (~30%)</option><option value="lots">on screen a lot (~50%)</option></select>
+                        <select id="xvPipFrame" class="xv-input" style="width:auto; height:34px;" title="Corner windows: sometimes inside a monitor, laptop, phone or TV"><option value="mix" selected>corner frame sometimes</option><option value="off">plain corner only</option><option value="monitor">corner: monitor</option><option value="laptop">corner: laptop</option><option value="phone">corner: phone</option><option value="tv">corner: TV</option></select>
+                        <select id="xvBubble" class="xv-input" style="width:auto; height:34px;" title="A guide character with a short line from the narration, lower left"><option value="some" selected>guide notes sometimes</option><option value="off">no guide notes</option><option value="often">guide notes often</option></select>
                     </div>
                     <div id="xvHostNote" style="font-size:0.75em; color:#64748b; margin-bottom:14px;"></div>
                     <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
@@ -12370,8 +12372,10 @@ Thank you for watching!`;
             const test = isTest ? { start: startAt, minutes: +document.getElementById('xvTestLen').value || 2 } : null;
             const presenter = document.getElementById('xvHostSel').value;
             const share = document.getElementById('xvHostShare').value;
+            const pipFrame = document.getElementById('xvPipFrame').value;
+            const bubble = document.getElementById('xvBubble').value;
             const d = await _xvPost('/api/explainer/start', { voiceover: audio, script: script, text: extractHeyGenSection(script) || '', logos: logos,
-                test: test, presenter: presenter, share: share });
+                test: test, presenter: presenter, share: share, pip_frame: pipFrame, bubble: bubble });
             if (!d.success) {
                 btn.disabled = false;
                 _xvStatus('❌ ' + _xvEsc(d.error || 'Could not start.') + (d.needs_key ? ' <a href="#" onclick="closeExplainerModal(); openApiKeysModal(); return false;">🔑 API Keys</a>' : ''), '#f87171');
@@ -12434,7 +12438,7 @@ Thank you for watching!`;
             // Preview: reload when the version, values or logos change.
             const note = document.getElementById('xvFrameNote');
             if (s.current) {
-                const key = s.current + '|' + JSON.stringify([s.values, s.logo_choices, s.logos, s.span, s.host && [s.host.created, s.host.focus, s.host.sections]]);
+                const key = s.current + '|' + JSON.stringify([s.values, s.logo_choices, s.logos, s.span, s.pip_frame, s.bubble, s.host && [s.host.created, s.host.focus, s.host.sections, s.host.pip_frame]]);
                 if (key !== _xv.frameKey) {
                     _xv.frameKey = key;
                     document.getElementById('xvFrame').src = _xvApi('/preview?' + _xvQ() + '&v=' + s.current + '&_=' + Date.now());
@@ -12505,13 +12509,20 @@ Thank you for watching!`;
             const hosted = ((s.slides || []).filter(m => m.host)).length;
             document.getElementById('xvHostCount').textContent = h ? '(' + ((h.sections || []).length + hosted) + ')' : '';
             _xvRenderMarks();
-            const key = JSON.stringify([s.id, h, running, hosted, _xv.hg && [_xv.hg.open, _xv.hg.items.length, _xv.hg.loading, _xv.hg.error, Array.from(_xv.hg.ticked)]]);
+            const key = JSON.stringify([s.id, h, running, hosted, s.pip_frame, s.bubble, _xv.hg && [_xv.hg.open, _xv.hg.items.length, _xv.hg.loading, _xv.hg.error, Array.from(_xv.hg.ticked)]]);
             if (!force && key === _xv.presKey) return;
             _xv.presKey = key;
             const list = _xvMatchingPresenters(s.audio_seconds);
             const opts = '<option value="">Pick a clip set from the script folder…</option>' + list.map(x => '<option value="' + _xvEsc(x.id) + '"' + (h && h.source === x.id ? ' selected' : '') + '>' + _xvEsc(_xvPresenterLabel(x)) + '</option>').join('');
             const dis = running ? ' disabled' : '';
-            let html = '';
+            const frameOpts = [['mix', 'Sometimes (monitor, laptop, phone, TV)'], ['off', 'Plain corner only'], ['monitor', 'Always a monitor'], ['laptop', 'Always a laptop'], ['phone', 'Always a phone'], ['tv', 'Always a TV']];
+            const bubbleOpts = [['some', 'Sometimes (about 1 in 3)'], ['off', 'Off'], ['often', 'On suitable slides']];
+            let html = '<div class="xv-item"><span class="xv-label">Corner window</span>'
+                + '<div style="color:#64748b; font-size:0.78em; margin:2px 0 6px;">About half of the corner windows sit inside a device, in turn: a monitor, a laptop, a phone, a TV. The rest stay a plain corner. Pick one device to use it every time, or turn the frame off.</div>'
+                + '<select class="xv-input" onchange="xvLook(\'pip_frame\', this.value)"' + dis + '>' + frameOpts.map(function (o) { return '<option value="' + o[0] + '"' + ((s.pip_frame || 'mix') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>'
+                + '<span class="xv-label" style="margin-top:8px;">Guide character</span>'
+                + '<div style="color:#64748b; font-size:0.78em; margin:2px 0 6px;">A small character with a short line from that slide\'s narration, lower left, for a few seconds. It stays off full-frame and side-panel shots, chapter cards and the asset slide. Sometimes is about one in three slides that have room, including the first.</div>'
+                + '<select class="xv-input" onchange="xvLook(\'bubble\', this.value)"' + dis + '>' + bubbleOpts.map(function (o) { return '<option value="' + o[0] + '"' + ((s.bubble || 'some') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>';
             if (!h) {
                 html += '<div class="xv-item">No presenter footage yet. Add HeyGen clips made from this narration (' + _xvFmt(s.audio_seconds) + ': the ElevenLabs MP3 you built on); each is placed on the narration by its audio.'
                     + '<div style="display:flex; gap:6px; margin-top:8px;"><button class="xv-btn small primary" onclick="xvHgOpen()"' + dis + '>⬇️ Pick clips from HeyGen</button>'
@@ -13101,6 +13112,7 @@ Thank you for watching!`;
         }
         async function xvHostFocus(v) { await _xvApply(await _xvPost(_xvApi('/host'), { focus: +v })); }
         async function xvHostShare(v) { await _xvApply(await _xvPost(_xvApi('/host'), { share: v })); }
+        async function xvLook(key, v) { const body = {}; body[key] = v; await _xvApply(await _xvPost(_xvApi('/host'), body)); }
         async function xvSlideHost(id, layout) {
             const d = await _xvPost(_xvApi('/layout'), { slide: id, host: layout });
             await _xvApply(d);

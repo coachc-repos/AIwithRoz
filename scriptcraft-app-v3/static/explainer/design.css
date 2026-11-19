@@ -1,5 +1,6 @@
-/* Explainer video design system: 1920x1080 layout units, flat colors only
-   (no gradients, glows or shadows: they band after YouTube re-encodes). */
+/* Explainer video design system: 1920x1080 layout units. Panels use a hard
+   edge of depth (a solid offset, no blur) so they read as raised without the
+   banding a soft shadow leaves after YouTube re-encodes. */
 :root {
     --bg: #090c12; --panel: #121824; --panel-2: #1a2232; --line: #2a3446;
     --text: #f2f4f8; --muted: #8a94a6; --gold: #f5b83d; --red: #f05252; --green: #3cc878;
@@ -63,12 +64,15 @@ body.host-on.mode-render #viewport { background: transparent; }
 .blue { color: var(--blue); } .amber { color: var(--amber); } .muted { color: var(--muted); } .white { color: var(--text); }
 .w { display: inline-block; }
 
-/* components */
-.card { background: var(--panel); border: 2px solid var(--line); border-radius: 24px; padding: 40px 44px; }
-.gold-edge { border-color: var(--gold); } .red-edge { border-color: var(--red); }
-.green-edge { border-color: var(--green); } .blue-edge { border-color: var(--blue); }
-.chip { display: inline-flex; align-items: center; gap: 10px; padding: 10px 22px; border-radius: 999px; background: var(--panel-2); border: 2px solid var(--line); font-size: 26px; font-weight: 600; }
-.badge { display: inline-flex; align-items: center; padding: 6px 16px; border-radius: 10px; background: var(--panel-2); border: 2px solid var(--line); font-size: 26px; font-weight: 800; letter-spacing: 0.06em; }
+/* components. The extra bottom border and the hard offset are the panel's
+   thickness and its contact shadow. No blur, so a frame stays cheap to draw. */
+.card { background: var(--panel); border: 2px solid var(--line); border-top-color: #4a5c78; border-bottom: 6px solid #070b12; border-radius: 24px; padding: 40px 44px 34px; box-shadow: 8px 10px 0 rgba(0, 0, 0, 0.38); }
+.gold-edge { border-color: var(--gold); border-top-color: #ffe09a; border-bottom: 6px solid #8a6210; }
+.red-edge { border-color: var(--red); border-top-color: #ffb0b0; border-bottom: 6px solid #7a2424; }
+.green-edge { border-color: var(--green); border-top-color: #b6f0d0; border-bottom: 6px solid #14663a; }
+.blue-edge { border-color: var(--blue); border-top-color: #c5d8ff; border-bottom: 6px solid #1d3f86; }
+.chip { display: inline-flex; align-items: center; gap: 10px; padding: 10px 22px; border-radius: 999px; background: var(--panel-2); border: 2px solid var(--line); border-top-color: #4a5c78; border-bottom: 4px solid #070b12; font-size: 26px; font-weight: 600; box-shadow: 0 4px 0 rgba(0, 0, 0, 0.38); }
+.badge { display: inline-flex; align-items: center; padding: 6px 16px; border-radius: 10px; background: var(--panel-2); border: 2px solid var(--line); border-top-color: #4a5c78; border-bottom: 4px solid #070b12; font-size: 26px; font-weight: 800; letter-spacing: 0.06em; box-shadow: 0 3px 0 rgba(0, 0, 0, 0.38); }
 .stat { display: flex; flex-direction: column; gap: 8px; }
 .steps { list-style: none; margin: 0; padding: 0; counter-reset: st; display: flex; flex-direction: column; gap: 26px; }
 .steps > li { counter-increment: st; display: flex; align-items: center; gap: 28px; font-size: 38px; line-height: 1.3; }
@@ -77,11 +81,11 @@ body.host-on.mode-render #viewport { background: transparent; }
 .checklist > li { display: flex; align-items: center; gap: 24px; font-size: 36px; line-height: 1.3; }
 .checklist > li::before { content: "\2713"; flex: 0 0 48px; height: 48px; border-radius: 12px; border: 3px solid var(--green); color: var(--green); font-weight: 800; font-size: 30px; display: flex; align-items: center; justify-content: center; }
 .quote { font-size: 56px; line-height: 1.25; font-weight: 600; border-left: 8px solid var(--gold); padding-left: 40px; }
-.lower-third { position: absolute; left: 160px; right: 160px; bottom: 110px; background: var(--panel); border: 2px solid var(--line); border-left: 10px solid var(--gold); border-radius: 18px; padding: 26px 36px; font-size: 36px; font-weight: 600; }
-.overlay-card { background: var(--panel); border: 2px solid var(--gold); border-radius: 22px; padding: 36px 44px; }
-.photo-spot { position: relative; border: 3px dashed var(--muted); border-radius: 24px; background: var(--panel); }
+.lower-third { position: absolute; left: 160px; right: 160px; bottom: 110px; background: var(--panel); border: 2px solid var(--line); border-top-color: #4a5c78; border-left: 10px solid var(--gold); border-bottom: 6px solid #070b12; border-radius: 18px; padding: 26px 36px; font-size: 36px; font-weight: 600; box-shadow: 8px 10px 0 rgba(0, 0, 0, 0.38); }
+.overlay-card { background: var(--panel); border: 2px solid var(--gold); border-top-color: #ffe09a; border-bottom: 6px solid #8a6210; border-radius: 22px; padding: 36px 44px 30px; box-shadow: 8px 10px 0 rgba(0, 0, 0, 0.38); }
+.photo-spot { position: relative; border: 3px dashed var(--muted); border-radius: 24px; background: var(--panel); box-shadow: 6px 8px 0 rgba(0, 0, 0, 0.38); }
 body.mode-preview .photo-spot::after { content: "Photo spot \00b7 add a photo you have rights to in your editor"; position: absolute; left: 0; right: 0; bottom: 18px; text-align: center; font-size: 22px; color: var(--muted); padding: 0 16px; }
-.skeleton { background: var(--panel); border: 2px solid var(--line); border-radius: 22px; padding: 28px; display: flex; flex-direction: column; gap: 16px; }
+.skeleton { background: var(--panel); border: 2px solid var(--line); border-top-color: #4a5c78; border-bottom: 6px solid #070b12; border-radius: 22px; padding: 28px; display: flex; flex-direction: column; gap: 16px; box-shadow: 8px 10px 0 rgba(0, 0, 0, 0.38); }
 .sk-bar { height: 18px; border-radius: 9px; background: var(--line); }
 .sk-line { height: 12px; border-radius: 6px; background: #222b3b; }
 .sk-avatar { width: 56px; height: 56px; border-radius: 50%; background: var(--line); flex: 0 0 auto; }
