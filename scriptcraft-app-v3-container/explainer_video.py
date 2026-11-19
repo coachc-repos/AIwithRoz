@@ -132,6 +132,11 @@ PIP_FRAME_GEOM = {
     "phone": {"outer": _PIP_BOX, "screen": (1344, 720, 448, 252), "radius": 22},
     "tv": {"outer": _PIP_BOX, "screen": (1328, 706, 480, 270), "radius": 4},
 }
+# Light comes from the upper left, the same way a card's shadow falls (down
+# and to the right). A screen panel is only a few pixels thick. A laptop's
+# thickness is the base; a monitor's and a TV's is the stand.
+PANEL_EDGE = 3
+LAPTOP_BASE = 16
 # Guide character. "some" shows one on about a third of the slides that have
 # room (including the first). "often" shows one on every such slide. "off"
 # shows none. The graphic sits lower left, clear of the corner window.
@@ -2098,10 +2103,11 @@ def _local_box(outer, box) -> "tuple[int, int, int, int]":
 def device_png(name: str) -> bytes:
     """The device frame for a corner window.
 
-    The chassis is a short 3/4 view: a lit top edge, a darker side wall, a
-    recessed screen, and a contact shadow. The screen stays an axis-aligned
-    rounded rectangle so the presenter footage sits in that hole. The middle
-    of the screen is fully clear.
+    Light comes from the upper left. A lid, a phone and a TV are a thin panel:
+    the side wall is only PANEL_EDGE pixels. The laptop's thickness is the
+    keyboard base, and a monitor's is the neck and the foot. The screen stays
+    an axis-aligned rounded rectangle so the presenter footage sits in that
+    hole. The middle of the screen is fully clear.
     """
     cache = device_png.__dict__.setdefault("cache", {})
     if name in cache:
@@ -2111,100 +2117,87 @@ def device_png(name: str) -> bytes:
     g = PIP_FRAME_GEOM[name]
     _, _, ow, oh = g["outer"]
     screen = _local_box(g["outer"], g["screen"])
-    navy, deep, side, top, lit = (12, 21, 38, 255), (5, 8, 16, 255), (8, 13, 24, 255), (62, 80, 110, 255), (34, 46, 68, 255)
+    navy, deep, side, top = (12, 21, 38, 255), (5, 8, 16, 255), (8, 13, 24, 255), (62, 80, 110, 255)
     gold, gold_lit, gold_dim = (245, 184, 61, 255), (255, 220, 140, 255), (150, 96, 24, 255)
+    rim = (150, 168, 196, 255)
     im = Image.new("RGBA", (ow, oh), (0, 0, 0, 0))
-    d = ImageDraw.Draw(im)
     sx0, sy0, sx1, sy1 = screen
+    e = PANEL_EDGE
+
+    def chassis(front, radius):
+        """Thin panel: lit top and left, a PANEL_EDGE wall on the right."""
+        x0, y0, x1, y1 = front
+        d.polygon([(x1 + 1, y0 + 2), (x1 + e, y0), (x1 + e, y1 - 1), (x1 + 1, y1)], fill=side)
+        d.polygon([(x1 + 1, y0 + 2), (x1 + e, y0), (x1 + e, y0 + 2), (x1 + 1, y0 + 3)], fill=top)
+        d.rounded_rectangle((x0, y0, x1, y1), radius=radius, fill=navy)
+        d.rectangle((x0 + 10, y0, x1 - 8, y0 + 2), fill=top)
+        d.line((x0 + 2, y0 + 4, x0 + 2, y1 - 6), fill=rim, width=2)
+
     if name == "monitor":
-        im = Image.alpha_composite(im, _soft_shadow((ow, oh), (28, 18, ow - 28, oh - 34), 18, blur=8, alpha=130, dy=14))
+        front = (48, 6, 496, 268)
+        im = Image.alpha_composite(im, _soft_shadow((ow, oh), (ow // 2 - 100, 286, ow // 2 + 90, 302), 8, blur=6, alpha=110, dx=6, dy=6))
         d = ImageDraw.Draw(im)
         cx = ow // 2
-        # Foot: the top plane catches the light and the front face drops away.
-        d.polygon([(cx - 70, oh - 6), (cx + 96, oh - 8), (cx + 104, oh - 1), (cx - 62, oh - 1)], fill=deep)
-        d.polygon([(cx - 108, oh - 24), (cx + 72, oh - 30), (cx + 90, oh - 6), (cx - 92, oh - 4)], fill=(32, 44, 64, 255))
-        d.line((cx - 100, oh - 23, cx + 66, oh - 28), fill=top, width=2)
-        d.polygon([(cx + 2, 272), (cx + 22, 266), (cx + 26, oh - 20), (cx + 4, oh - 18)], fill=side)
-        d.polygon([(cx - 28, 274), (cx + 6, 268), (cx + 8, oh - 20), (cx - 26, oh - 18)], fill=lit)
-        # Side wall, then the front. The wall sits up and to the right.
-        d.polygon([(516, 14), (538, 4), (542, 270), (516, 280)], fill=side)
-        d.polygon([(516, 14), (538, 4), (538, 16), (516, 26)], fill=top)
-        d.rounded_rectangle((6, 8, 518, 278), radius=14, fill=navy)
-        d.rectangle((14, 8, 506, 15), fill=top)
-        d.line((10, 16, 10, 268), fill=(150, 168, 196, 255), width=2)
-        d.rounded_rectangle((sx0 - 8, sy0 - 6, sx1 + 8, sy1 + 10), radius=g["radius"] + 6, fill=deep)
-        d.line((sx0, sy0 - 4, sx1, sy0 - 4), fill=(170, 186, 210, 255), width=2)
-        d.rectangle((cx - 20, 264, cx + 8, 268), fill=gold_dim)
-        d.rectangle((cx - 20, 261, cx + 8, 265), fill=gold)
+        # The foot is the thick part: a lit top plane and a dark front face.
+        d.polygon([(cx - 96, 292), (cx + 70, 286), (cx + 86, 300), (cx - 84, 304)], fill=(32, 44, 64, 255))
+        d.line((cx - 90, 294, cx + 64, 288), fill=top, width=2)
+        d.polygon([(cx - 78, 300), (cx + 88, 296), (cx + 96, oh - 1), (cx - 70, oh - 1)], fill=deep)
+        # Neck, with its own narrow side, under the thin panel.
+        d.polygon([(cx + 8, 270), (cx + 16, 266), (cx + 18, 296), (cx + 8, 300)], fill=side)
+        d.polygon([(cx - 22, 268), (cx + 8, 266), (cx + 8, 300), (cx - 22, 302)], fill=(34, 46, 68, 255))
+        chassis(front, 12)
+        d.rectangle((cx - 16, 262, cx + 4, 265), fill=gold_dim)
+        d.rectangle((cx - 16, 260, cx + 4, 263), fill=gold)
+        d.rounded_rectangle((sx0 - 3, sy0 - 2, sx1 + 3, sy1 + 3), radius=g["radius"] + 2, fill=deep)
+        d.line((sx0, sy0 - 1, sx1, sy0 - 1), fill=rim, width=1)
     elif name == "laptop":
-        im = Image.alpha_composite(im, _soft_shadow((ow, oh), (20, 16, ow - 24, oh - 18), 12, blur=7, alpha=120, dy=10))
+        im = Image.alpha_composite(im, _soft_shadow((ow, oh), (16, 286, 528, 304), 6, blur=5, alpha=120, dx=6, dy=4))
         d = ImageDraw.Draw(im)
-        # Base, wider at the near edge so the deck recedes toward the hinge.
-        d.polygon([(8, 294), (536, 284), (528, oh - 2), (2, oh - 1)], fill=deep)
-        d.polygon([(22, 258), (508, 250), (534, 292), (10, 300)], fill=(20, 28, 42, 255))
-        d.line((28, 258, 504, 251), fill=top, width=2)
+        # The base is the thick part. Its top plane recedes; the near face is LAPTOP_BASE tall.
+        d.polygon([(18, 288), (526, 280), (534, 304), (10, 304)], fill=deep)
+        d.polygon([(36, 254), (492, 250), (520, 286), (22, 292)], fill=(22, 32, 48, 255))
+        d.line((42, 256, 486, 252), fill=top, width=2)
         for row in range(3):
             for col in range(12):
-                u0, u1 = col / 12, (col + 1) / 12
-                v0, v1 = row / 3, (row + 0.72) / 3
-                def deck(u, v, y_far=(258, 250), y_near=(292, 284), x_far=(36, 496), x_near=(24, 522)):
-                    y = y_far[0] + (y_near[0] - y_far[0]) * v, y_far[1] + (y_near[1] - y_far[1]) * v
-                    x = x_far[0] + (x_near[0] - x_far[0]) * v, x_far[1] + (x_near[1] - x_far[1]) * v
-                    return (x[0] + (x[1] - x[0]) * u, y[0] + (y[1] - y[0]) * u)
-                k0, k1 = deck(u0 + 0.08, v0 + 0.08), deck(u1 - 0.08, v0 + 0.08)
-                k2, k3 = deck(u1 - 0.06, v1), deck(u0 + 0.06, v1)
-                d.polygon([k0, k1, k2, k3], fill=(8, 12, 22, 255) if row == 2 else side)
-                cap = 0.55 if row < 2 else 0.4
-                c0, c1 = deck(u0 + 0.08, v0 + 0.08), deck(u1 - 0.08, v0 + 0.08)
-                c2, c3 = deck(u1 - 0.07, v0 + cap), deck(u0 + 0.07, v0 + cap)
-                d.polygon([c0, c1, c2, c3], fill=(48, 62, 86, 255) if (row + col) % 5 else (62, 78, 104, 255))
-        # Trackpad, inset into the near edge of the deck.
-        d.polygon([(230, 286), (330, 282), (336, 296), (224, 300)], fill=deep)
-        d.polygon([(232, 286), (328, 283), (330, 288), (230, 291)], fill=lit)
-        # Lid: side wall, then the front, with the screen recessed in it.
-        d.polygon([(500, 16), (528, 6), (524, 236), (500, 246)], fill=side)
-        d.polygon([(500, 16), (528, 6), (524, 18), (500, 26)], fill=top)
-        d.rounded_rectangle((10, 6, 502, 246), radius=12, fill=navy)
-        d.rectangle((18, 6, 490, 13), fill=top)
-        d.line((14, 14, 14, 236), fill=(150, 168, 196, 255), width=2)
-        d.rounded_rectangle((sx0 - 7, sy0 - 5, sx1 + 7, sy1 + 8), radius=g["radius"] + 5, fill=deep)
-        d.line((sx0, sy0 - 3, sx1, sy0 - 3), fill=(170, 186, 210, 255), width=2)
-        d.rectangle((ow // 2 - 28, 242, ow // 2 + 28, 248), fill=(30, 40, 58, 255))
+                x, y = 54 + col * 36, 258 + row * 9
+                d.rectangle((x, y + 4, x + 28, y + 7), fill=side)
+                d.rectangle((x, y, x + 28, y + 4), fill=(52, 66, 90, 255))
+        d.polygon([(214, 276), (330, 274), (334, 286), (210, 288)], fill=deep)
+        d.line((218, 277, 326, 275), fill=top, width=1)
+        # Lid: a thin panel, only PANEL_EDGE of side wall. No thick extrusion.
+        chassis((64, 10, 480, 246), 8)
+        d.rectangle((ow // 2 - 22, 246, ow // 2 + 22, 250), fill=(28, 38, 54, 255))
+        d.rounded_rectangle((sx0 - 3, sy0 - 2, sx1 + 3, sy1 + 3), radius=g["radius"] + 2, fill=deep)
+        d.line((sx0, sy0 - 1, sx1, sy0 - 1), fill=rim, width=1)
     elif name == "phone":
-        im = Image.alpha_composite(im, _soft_shadow((ow, oh), (16, 12, ow - 18, oh - 14), 36, blur=8, alpha=120, dy=10))
+        front = (10, 16, 504, 288)
+        im = Image.alpha_composite(im, _soft_shadow((ow, oh), front, 30, blur=6, alpha=110, dx=6, dy=8))
         d = ImageDraw.Draw(im)
-        d.rounded_rectangle((18, 14, ow - 4, oh - 4), radius=40, fill=side)
-        d.rounded_rectangle((8, 6, ow - 16, oh - 12), radius=38, fill=navy)
-        d.arc((10, 8, ow - 18, 90), 200, 340, fill=top, width=3)
-        d.line((12, 40, 12, oh - 40), fill=(150, 168, 196, 255), width=3)
-        # Raised side button.
-        d.rounded_rectangle((2, oh // 2 - 8, 12, oh // 2 + 36), radius=3, fill=gold_dim)
-        d.rounded_rectangle((2, oh // 2 - 18, 12, oh // 2 + 22), radius=3, fill=gold)
-        d.line((4, oh // 2 - 14, 4, oh // 2 + 16), fill=gold_lit, width=2)
-        # Camera island on the left bezel, proud of the body.
-        d.rounded_rectangle((16, oh // 2 - 26, 40, oh // 2 + 34), radius=8, fill=deep)
-        d.rounded_rectangle((16, oh // 2 - 34, 38, oh // 2 + 24), radius=8, fill=(24, 32, 48, 255))
-        d.ellipse((20, oh // 2 - 22, 34, oh // 2 - 8), fill=(4, 6, 12, 255))
-        d.ellipse((23, oh // 2 - 19, 28, oh // 2 - 14), fill=(180, 200, 230, 180))
-        d.rounded_rectangle((sx0 - 6, sy0 - 5, sx1 + 8, sy1 + 8), radius=g["radius"] + 4, fill=deep)
-        d.line((sx0 + 8, sy0 - 3, sx1 - 8, sy0 - 3), fill=(170, 186, 210, 255), width=2)
+        chassis(front, 34)
+        # A slim side button, a couple of pixels proud of the body.
+        d.rounded_rectangle((6, oh // 2 - 6, 12, oh // 2 + 28), radius=2, fill=gold_dim)
+        d.rounded_rectangle((6, oh // 2 - 16, 12, oh // 2 + 16), radius=2, fill=gold)
+        d.line((8, oh // 2 - 12, 8, oh // 2 + 10), fill=gold_lit, width=1)
+        # Camera island on the left bezel, only a few pixels proud of the glass.
+        d.rounded_rectangle((18, oh // 2 - 22, 36, oh // 2 + 28), radius=6, fill=deep)
+        d.rounded_rectangle((18, oh // 2 - 26, 34, oh // 2 + 22), radius=6, fill=(24, 32, 48, 255))
+        d.ellipse((21, oh // 2 - 16, 31, oh // 2 - 6), fill=(4, 6, 12, 255))
+        d.ellipse((23, oh // 2 - 14, 27, oh // 2 - 10), fill=(180, 200, 230, 180))
+        d.rounded_rectangle((sx0 - 3, sy0 - 2, sx1 + 3, sy1 + 3), radius=g["radius"] + 2, fill=deep)
+        d.line((sx0 + 6, sy0 - 1, sx1 - 6, sy0 - 1), fill=rim, width=1)
     else:
-        im = Image.alpha_composite(im, _soft_shadow((ow, oh), (12, 8, ow - 16, oh - 20), 10, blur=7, alpha=120, dy=8))
+        front = (20, 8, 520, 284)
+        im = Image.alpha_composite(im, _soft_shadow((ow, oh), (140, 286, 400, 304), 4, blur=4, alpha=100, dx=6, dy=4))
         d = ImageDraw.Draw(im)
-        # Feet sit under the screen, each with a lit top and a dark front.
         for cx in (150, 330):
-            d.polygon([(cx - 8, 296), (cx + 54, 294), (cx + 62, 305), (cx, 305)], fill=deep)
-            d.polygon([(cx - 40, 284), (cx + 30, 280), (cx + 52, 296), (cx - 18, 300)], fill=(78, 98, 128, 255))
-            d.line((cx - 34, 286, cx + 26, 282), fill=(160, 178, 204, 255), width=2)
-        d.polygon([(ow - 22, 10), (ow - 4, 4), (ow - 2, 278), (ow - 22, 284)], fill=side)
-        d.polygon([(ow - 22, 10), (ow - 4, 4), (ow - 6, 14), (ow - 22, 18)], fill=top)
-        d.rounded_rectangle((2, 2, ow - 20, 284), radius=8, fill=navy)
-        d.rectangle((10, 2, ow - 28, 8), fill=top)
-        d.line((6, 8, 6, oh - 24), fill=(150, 168, 196, 255), width=2)
-        d.rounded_rectangle((sx0 - 4, sy0 - 3, sx1 + 5, sy1 + 2), radius=g["radius"] + 3, fill=deep)
-        d.line((sx0, sy0 - 2, sx1, sy0 - 2), fill=(190, 202, 220, 255), width=2)
-        d.ellipse((ow - 36, oh // 2 - 6, ow - 26, oh // 2 + 4), fill=gold_dim)
-        d.ellipse((ow - 36, oh // 2 - 8, ow - 26, oh // 2), fill=gold)
+            d.polygon([(cx - 8, 298), (cx + 52, 296), (cx + 58, 305), (cx, 305)], fill=deep)
+            d.polygon([(cx - 36, 286), (cx + 28, 282), (cx + 48, 298), (cx - 16, 302)], fill=(78, 98, 128, 255))
+            d.line((cx - 30, 288, cx + 24, 284), fill=top, width=2)
+        chassis(front, 6)
+        d.rounded_rectangle((sx0 - 2, sy0 - 1, sx1 + 2, sy1 + 2), radius=g["radius"] + 2, fill=deep)
+        d.line((sx0, sy0 - 1, sx1, sy0 - 1), fill=rim, width=1)
+        d.ellipse((514, 148, 520, 154), fill=gold_dim)
+        d.ellipse((514, 146, 520, 152), fill=gold)
     im = _punch_round(im, screen, g["radius"])
     im = _glass_sheen(im, screen, g["radius"])
     buf = _io.BytesIO()

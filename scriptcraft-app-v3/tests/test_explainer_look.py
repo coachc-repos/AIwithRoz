@@ -185,32 +185,55 @@ def check_page(xv) -> None:
     assert saved["host"]["windows"][0]["frame"] == "tv"
 
 
+def _run(im, x, y, dx, dy, pred) -> int:
+    n = 0
+    while 0 <= x < im.size[0] and 0 <= y < im.size[1] and pred(im.getpixel((x, y))):
+        n += 1
+        x += dx
+        y += dy
+    return n
+
+
 def check_depth(xv) -> None:
-    """The frames are shaded, the screen hole stays clear, and the bubble has a shadow."""
-    for name in xv.PIP_DEVICES:
-        im = Image.open(io.BytesIO(xv.device_png(name))).convert("RGBA")
-        ox, oy, ow, oh = xv.PIP_FRAME_GEOM[name]["outer"]
+    """Panel edges stay a few pixels; thickness sits in the base or the stand.
+
+    Light comes from the upper left, so the top edge is brighter than the
+    right-hand wall and the contact shadow falls down and to the right, the
+    same way a card's hard offset does.
+    """
+    devices = {name: Image.open(io.BytesIO(xv.device_png(name))).convert("RGBA") for name in xv.PIP_DEVICES}
+    for name, im in devices.items():
+        ox, oy = xv.PIP_FRAME_GEOM[name]["outer"][:2]
         sx, sy, sw, sh = xv.PIP_FRAME_GEOM[name]["screen"]
-        cx, cy = sx - ox + sw // 2, sy - oy + sh // 2
-        assert im.getpixel((cx, cy))[3] == 0, name
-        assert im.getpixel((cx, sy - oy + 4))[3] > 0, name  # glass sheen at the top of the screen
-    monitor = Image.open(io.BytesIO(xv.device_png("monitor"))).convert("RGBA")
-    lit, side = monitor.getpixel((272, 8)), monitor.getpixel((530, 40))
-    assert lit[3] == 255 and side[3] == 255
-    assert sum(lit[:3]) > sum(side[:3]) + 40
-    tv = Image.open(io.BytesIO(xv.device_png("tv"))).convert("RGBA")
-    foot_top, foot_front = tv.getpixel((160, 290)), tv.getpixel((160, 302))
-    assert sum(foot_top[:3]) > sum(foot_front[:3]) + 40
+        assert im.getpixel((sx - ox + sw // 2, sy - oy + sh // 2))[3] == 0, name
+        assert im.getpixel((sx - ox + sw // 2, sy - oy + 4))[3] > 0, name
+    # The side wall starts just past each panel's front face.
+    edges = {"laptop": (481, 120), "monitor": (497, 80), "phone": (505, 140), "tv": (521, 100)}
+    for name, (x, y) in edges.items():
+        assert _run(devices[name], x, y, 1, 0, lambda p: p[3] > 180) == xv.PANEL_EDGE, name
+    lap, mon, tv = devices["laptop"], devices["monitor"], devices["tv"]
+    dark = lambda p: p[3] > 180 and sum(p[:3]) < 40
+    base = _run(lap, 270, 290, 0, 1, dark)
+    assert base >= 4 * xv.PANEL_EDGE and base >= xv.LAPTOP_BASE - 2, base
+    stand = _run(mon, 272, 269, 0, 1, lambda p: p[3] > 180)
+    assert stand >= 4 * xv.PANEL_EDGE, stand
+    # Top edge lit, right wall in shadow.
+    assert sum(mon.getpixel((272, 8))[:3]) > sum(mon.getpixel((497, 80))[:3]) + 40
+    assert sum(lap.getpixel((200, 10))[:3]) > sum(lap.getpixel((481, 120))[:3]) + 40
+    assert sum(tv.getpixel((160, 290))[:3]) > sum(tv.getpixel((160, 302))[:3]) + 40
+    # The laptop's shadow sits under the base, not above the lid.
+    assert lap.getpixel((300, 305))[3] > 20
+    assert lap.getpixel((40, 4))[3] == 0
     bubble = Image.open(io.BytesIO(xv.bubble_png("AI stocks lost about two trillion")[0])).convert("RGBA")
     assert near(bubble.getpixel((410, 40)), PAPER)
-    assert bubble.getpixel((430, 165))[3] > 20  # contact shadow, off the paper
-    assert sum(bubble.getpixel((200, 168))[:3]) < sum(PAPER) - 30  # the bubble's thicker underside
+    assert bubble.getpixel((430, 165))[3] > 20
+    assert sum(bubble.getpixel((200, 168))[:3]) < sum(PAPER) - 30
 
 
 def check_stills(xv) -> None:
     monitor = Image.open(io.BytesIO(xv.look_still("monitor"))).convert("RGB")
     assert near(monitor.getpixel((1568, 832)), GOLD)
-    assert sum(monitor.getpixel((1568, 702))[:3]) > sum(monitor.getpixel((1826, 734))[:3]) + 40
+    assert sum(monitor.getpixel((1568, 702))[:3]) > sum(monitor.getpixel((1793, 774))[:3]) + 40
     plain = Image.open(io.BytesIO(xv.look_still("plain"))).convert("RGB")
     assert near(plain.getpixel((1568, 822)), GOLD)
     both = Image.open(io.BytesIO(xv.look_still("both"))).convert("RGB")
@@ -267,7 +290,7 @@ def check_runtime(xv) -> None:
     sx, sy, sw, sh = xv.PIP_FRAME_GEOM["monitor"]["screen"]
     assert im.getpixel((sx + sw // 2, sy + sh // 2))[3] == 0
     assert im.getpixel((sx + 30, sy + 6))[3] > 0  # the glass sheen, not a fog over the face
-    lit, wall = im.getpixel((1568, 702)), im.getpixel((1826, 734))
+    lit, wall = im.getpixel((1568, 702)), im.getpixel((1793, 774))
     assert lit[3] == 255 and wall[3] == 255 and sum(lit[:3]) > sum(wall[:3]) + 40
     assert near(im.getpixel((458, 888)), PAPER) and im.getpixel((458, 888))[3] == 255
     # The card's hard offset sits just outside its box and is darker than the empty frame.
