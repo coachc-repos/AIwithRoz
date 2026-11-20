@@ -49,6 +49,155 @@ from .script_writer_agent_client import ScriptWriterAgentClient
 from .script_review_agent_client import ScriptReviewAgentClient
 from .script_topic_assistant_agent_client import ScriptTopicAssistantAgentClient
 from .hook_and_summary_agent_client import HookAndSummaryAgentClient
+# Archetype-specific topic-assistant + writer pairs (predictions / Top-N list).
+# The teaching listicle keeps using the two base clients above.
+from .script_topic_assistant_predictions_agent_client import (
+    ScriptTopicAssistantPredictionsAgentClient,
+)
+from .script_writer_predictions_agent_client import (
+    ScriptWriterPredictionsAgentClient,
+)
+from .script_topic_assistant_list_agent_client import (
+    ScriptTopicAssistantListAgentClient,
+)
+from .script_writer_list_agent_client import ScriptWriterListAgentClient
+
+# Canonical archetype keys used end-to-end (UI → /create → workflow).
+SCRIPT_FORMAT_TEACHING = "teaching"
+SCRIPT_FORMAT_PREDICTIONS = "predictions"
+SCRIPT_FORMAT_LIST = "list"
+# "pro" = single-pass Claude Opus 5.5 (max effort) writer — writes the whole
+# script in one call and infers the archetype itself (list / predictions /
+# teaching / teardown). Does NOT use the Foundry topic-assistant + writer pair.
+SCRIPT_FORMAT_PRO = "pro"
+VALID_SCRIPT_FORMATS = (
+    SCRIPT_FORMAT_TEACHING,
+    SCRIPT_FORMAT_PREDICTIONS,
+    SCRIPT_FORMAT_LIST,
+    SCRIPT_FORMAT_PRO,
+)
+
+
+# Known acronyms preserved as-is when de-shouting (everything else that is
+# ALL-CAPS gets title-cased). Matched case-insensitively per letter run.
+_DESHOUT_KEEP = {
+    "AI", "API", "APIS", "ML", "LLM", "LLMS", "GPT", "UI", "UX", "SEO", "CSS",
+    "HTML", "SQL", "AWS", "GCP", "CPU", "GPU", "SDK", "CLI", "URL", "URI",
+    "HTTP", "HTTPS", "JSON", "XML", "IOT", "AR", "VR", "NLP", "RAG", "ROI",
+    "KPI", "CRM", "ERP", "SAAS", "PAAS", "IAAS", "IT", "PC", "OS", "DB", "ID",
+    "FAQ", "PDF", "CSV", "RAM", "SSD", "USB", "2D", "3D", "4K", "HD", "USA",
+    "UK", "EU", "CEO", "CTO", "CFO", "B2B", "B2C", "QA", "ETL", "VPN", "DNS",
+}
+
+
+def _deshout_text(text: str) -> str:
+    """Tone down ALL-CAPS 'shouting' so Azure's content filter doesn't reject
+    the topic plan / chapter titles as aggressive.
+
+    A whitespace token that is entirely upper-case (no lowercase letter) has
+    each of its letter runs title-cased, except runs that are a known acronym
+    (kept as-is). Tokens that already contain a lowercase letter are untouched.
+    Examples:
+        "BUILDING AI APPS WITH PYTHON" -> "Building AI Apps With Python"
+        "THE FUTURE OF WORK"           -> "The Future Of Work"
+        "AI-POWERED WORKFLOWS"         -> "AI-Powered Workflows"
+    """
+    if not text:
+        return text
+
+    def _fix_run(r: "re.Match") -> str:
+        run = r.group(0)
+        return run if run.upper() in _DESHOUT_KEEP else run.capitalize()
+
+    def _fix_token(m: "re.Match") -> str:
+        w = m.group(0)
+        if any(c.islower() for c in w):
+            return w  # already mixed/normal case -> not shouting
+        return re.sub(r"[A-Za-z]+", _fix_run, w)
+
+    return re.sub(r"\S+", _fix_token, text)
+
+
+# ---------------------------------------------------------------------------
+# Claude (Anthropic) fallback for chapter writing.
+#
+# The primary Script Writer runs on an Azure AI Foundry deployment whose model
+# is configured in the Foundry PORTAL (v2 = Claude Opus 5.5), not in this code.
+# A Foundry call can still fail (HTTP 429 "rate_limit_exceeded" under load, a
+# content-filter refusal, a timeout) and abort the whole script even though the
+# Topic Assistant already produced good chapters. When a chapter write fails for
+# ANY reason, we transparently re-write that one chapter here with Claude
+# (_CLAUDE_FALLBACK_MODEL) using the exact same request (which carries the full
+# format spec). For non-teaching archetypes this same path is the PRIMARY writer.
+#
+# Returns the chapter text, or None if Claude is unavailable or also fails.
+# Requires ANTHROPIC_API_KEY in the environment.
+# ---------------------------------------------------------------------------
+# Claude model used to write chapters (primary writer for non-teaching
+# archetypes; fallback writer for the teaching archetype). Opus 5.5 at MAX
+# reasoning effort for the highest-quality draft (user request).
+_CLAUDE_FALLBACK_MODEL = "claude-opus-5-5"
+# "high", NOT "max": effort="max" on opus-5-5 overthinks and can burn the whole
+# token budget on hidden reasoning, returning an empty chapter. "high" reasons
+# hard and still writes. (Same finding as the Pro single-pass writer.)
+_CLAUDE_WRITER_EFFORT = "high"  # low | medium | high | xhigh | max
+
+
+def _claude_chapter_fallback(script_request: str) -> Optional[str]:
+    """Write a single chapter with Claude when the primary writer fails."""
+    api_key = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
+    if not api_key:
+        print("   ⚠️ Claude chapter fallback unavailable: ANTHROPIC_API_KEY not set")
+        return None
+    try:
+        import anthropic
+    except ImportError:
+        print("   ⚠️ Claude chapter fallback unavailable: anthropic SDK not installed")
+        return None
+    system = (
+        "You are a professional video Script Writer. You write a SINGLE chapter "
+        "of a longer, continuous video script. Follow the requested FORMAT and "
+        "FORMATTING RULES in the user's message EXACTLY — including the heading, "
+        "the single '**Host:**' label, and any Visual Cue / Summary sections. "
+        "Output ONLY the chapter content in that format: no preamble, no "
+        "explanation, no commentary about your process, and no markdown code "
+        "fences around the whole thing."
+    )
+    try:
+        client = anthropic.Anthropic(api_key=api_key, timeout=300.0, max_retries=2)
+        base_kwargs = dict(
+            model=_CLAUDE_FALLBACK_MODEL,
+            max_tokens=16000,
+            system=system,
+            messages=[{"role": "user", "content": script_request}],
+        )
+        # MAX reasoning effort + adaptive thinking for the best draft (user
+        # request). effort/output_config and adaptive thinking are GA on recent
+        # Opus; if this model alias doesn't accept them, retry once plain so a
+        # chapter still comes back rather than erroring the whole run.
+        try:
+            resp = client.messages.create(
+                **base_kwargs,
+                output_config={"effort": _CLAUDE_WRITER_EFFORT},
+                thinking={"type": "adaptive"},
+            )
+        except (anthropic.BadRequestError, TypeError) as _be:
+            print(f"   ⚠️ Claude writer: effort/thinking rejected "
+                  f"({str(_be)[:80]}); retrying without them")
+            resp = client.messages.create(**base_kwargs)
+        parts = [
+            b.text for b in resp.content
+            if getattr(b, "type", None) == "text"
+        ]
+        text = "".join(parts).strip()
+        # Peel a markdown fence if the model wrapped the whole chapter in one.
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+            text = re.sub(r"\s*```$", "", text).strip()
+        return text or None
+    except Exception as e:
+        print(f"   ❌ Claude chapter fallback failed: {e}")
+        return None
 
 
 class LineDriveAgentModelClient(ChatCompletionClient):
@@ -250,16 +399,31 @@ class LineDriveAgentModelClient(ChatCompletionClient):
 class EnhancedAutoGenSystem:
     """Enhanced AutoGen system with multiple specialized agents"""
 
-    def __init__(self, verbose: bool = False):
+    def __init__(self, verbose: bool = False, script_format: str = SCRIPT_FORMAT_TEACHING):
         """Initialize the enhanced multi-agent system
 
         Args:
             verbose: If True, show detailed logging. If False, minimal output.
+            script_format: Which video archetype to generate. Selects the
+                topic-assistant + script-writer Foundry agent pair:
+                  - "teaching"    → Script-Topic-Assistant-Agent + Script-Writer-Agent
+                                     (the original "5 things" tutorial listicle)
+                  - "predictions" → ...-Predictions-Agent pair (bold/visionary)
+                  - "list"        → ...-List-Agent pair (Top-N ranked countdown)
+                Unknown values fall back to "teaching".
         """
         self.verbose = verbose
+        self.script_format = (
+            script_format if script_format in VALID_SCRIPT_FORMATS
+            else SCRIPT_FORMAT_TEACHING
+        )
         self._configure_logging()
 
-        if self.verbose:
+        if self.script_format == SCRIPT_FORMAT_PRO:
+            # Pro mode writes in one Claude pass and uses NO agents — keep the
+            # multi-agent initialization chatter out of the progress log.
+            print("🅿️ Pro mode — preparing the single-pass Claude Opus 5.5 writer")
+        elif self.verbose:
             print("🚀 Initializing Enhanced AutoGen Multi-Agent System...")
             print("🔧 AUTOGEN SYSTEM TRACE: Starting initialization")
         else:
@@ -277,17 +441,36 @@ class EnhancedAutoGenSystem:
         if self.verbose:
             print("   ✅ AITipsAgentClient initialized")
 
-        self.script_writer_client = ScriptWriterAgentClient()
+        # Select the topic-assistant + writer pair for the chosen archetype.
+        # Every other agent (review, hook-and-summary, …) is archetype-neutral
+        # and shared. The two model-client wrappers built below (lines ~413/425)
+        # wrap whichever pair we pick here, so the group-chat paths stay
+        # consistent with the sequential workflow.
+        if self.script_format == SCRIPT_FORMAT_PREDICTIONS:
+            self.script_writer_client = ScriptWriterPredictionsAgentClient()
+            self.script_topic_assistant_client = (
+                ScriptTopicAssistantPredictionsAgentClient()
+            )
+        elif self.script_format == SCRIPT_FORMAT_LIST:
+            self.script_writer_client = ScriptWriterListAgentClient()
+            self.script_topic_assistant_client = (
+                ScriptTopicAssistantListAgentClient()
+            )
+        else:
+            self.script_writer_client = ScriptWriterAgentClient()
+            self.script_topic_assistant_client = ScriptTopicAssistantAgentClient()
+
         if self.verbose:
-            print("   ✅ ScriptWriterAgentClient initialized")
+            print(f"   🎬 Script format: {self.script_format}")
+            print(f"   ✅ Writer agent: {self.script_writer_client.v2_agent_name}")
+            print(
+                "   ✅ Topic assistant: "
+                f"{self.script_topic_assistant_client.v2_agent_name}"
+            )
 
         self.script_review_client = ScriptReviewAgentClient()
         if self.verbose:
             print("   ✅ ScriptReviewAgentClient initialized")
-
-        self.script_topic_assistant_client = ScriptTopicAssistantAgentClient()
-        if self.verbose:
-            print("   ✅ ScriptTopicAssistantAgentClient initialized")
 
         # NEW: Hook-and-Summary Agent Client
         self.hook_and_summary_client = HookAndSummaryAgentClient()
@@ -330,7 +513,9 @@ class EnhancedAutoGenSystem:
         if self.verbose:
             print("   ✅ ScriptTopicAssistantAgent model client created")
 
-        if self.verbose:
+        if self.script_format == SCRIPT_FORMAT_PRO:
+            print("🅿️ Pro writer ready")
+        elif self.verbose:
             print("🎯 AUTOGEN SYSTEM TRACE: System fully initialized!")
         else:
             print("✅ AutoGen system initialized")
@@ -842,7 +1027,7 @@ class EnhancedAutoGenSystem:
 
         # Create properly formatted markdown document
         # Show only the final revised script (no duplicates)
-        formatted_result = f"""# Direct Video - {script_topic}
+        formatted_result = f"""Title: {script_topic}
 **Script Type:** Video
 **Duration:** {script_length}
 **Generated:** {timestamp}
@@ -869,6 +1054,7 @@ class EnhancedAutoGenSystem:
         script_length: str = "5-8 minutes (800-1200 words)",
         max_chapters: int = 8,
         hook_summary: bool = True,
+        script_format: str = SCRIPT_FORMAT_TEACHING,
     ) -> Dict[str, Any]:
         """
         Complete 4-Agent Sequential Workflow with Chapter-by-Chapter Script Writing
@@ -882,6 +1068,19 @@ class EnhancedAutoGenSystem:
         """
         import re
         from datetime import datetime
+
+        # Normalize the archetype; fall back to whatever the system was built
+        # with (its client pair), then to teaching.
+        script_format = (
+            script_format if script_format in VALID_SCRIPT_FORMATS
+            else getattr(self, "script_format", SCRIPT_FORMAT_TEACHING)
+        )
+        is_teaching = (script_format == SCRIPT_FORMAT_TEACHING)
+
+        # Raised to cleanly bypass teaching-only steps (review, quotes/stats)
+        # for the predictions / list archetypes — see STEP 3 and STEP 3.5.
+        class _StepSkipped(Exception):
+            pass
 
         def get_timestamp():
             return datetime.now().strftime("%H:%M:%S")
@@ -898,20 +1097,103 @@ class EnhancedAutoGenSystem:
 
         try:
             start_time = get_timestamp()
-            print(f"🚀 COMPLETE 4-AGENT SEQUENTIAL WORKFLOW: {script_topic}")
-            print(f"👥 Target Audience: {audience}")
-            print(f"💬 Tone: {tone}")
-            print(f"⏱️ Length: {script_length}")
-            print(f"🕐 Started at: {start_time}")
-            print("=" * 60)
-
-            if self.verbose:
-                print("🔧 WORKFLOW TRACE: Starting sequential execution")
+            if script_format == SCRIPT_FORMAT_PRO:
+                print("=" * 60)
+                print("🅿️  PRO SINGLE-PASS SCRIPT WRITER")
+                print(f"🎬 Title: {script_topic}")
+                print(f"👥 Audience: {audience}  |  💬 Tone: {tone}")
+                print("🤖 Model: Claude Opus 5.5 (effort high), one cohesive pass")
+                print("📐 Writes the hook, every chapter, the inline production "
+                      "/ Grok Imagine prompts, the VERIFY notes, the cheat-sheet "
+                      "overlay, and the trailing reference sections in ONE call")
+                print("⭐ Guided by the saved GOLDEN REFERENCE script")
+                print(f"🕐 Started at: {start_time}")
+                print("=" * 60)
+            else:
+                print(f"🚀 COMPLETE 4-AGENT SEQUENTIAL WORKFLOW: {script_topic}")
+                print(f"👥 Target Audience: {audience}")
+                print(f"💬 Tone: {tone}")
+                print(f"⏱️ Length: {script_length}")
+                print(f"🕐 Started at: {start_time}")
+                print("=" * 60)
+                if self.verbose:
+                    print("🔧 WORKFLOW TRACE: Starting sequential execution")
 
             # Initialize result containers
             topic_enhancement = ""
             all_chapter_scripts = []
             script_review = ""
+
+            # ----------------------------------------------------------------
+            # PRO single-pass path: write the ENTIRE script in ONE Claude Opus
+            # 5.5 (max effort) call and return. Skips the whole topic-assistant
+            # / per-chapter / review / quotes / hooks pipeline — the Pro writer
+            # produces the hook, chapters, inline production blocks, and the
+            # trailing reference sections itself (the way the user's best
+            # hand-made script was produced in the Claude app).
+            # ----------------------------------------------------------------
+            if script_format == SCRIPT_FORMAT_PRO:
+                from linedrive_azure.agents.pro_script_writer import (
+                    write_pro_script,
+                )
+                print("📥 Loading the golden reference script as the guide…")
+                print("✍️  Claude Opus 5.5 is writing the ENTIRE script in one "
+                      "pass. This runs ~3 to 5 minutes with no per-chapter steps "
+                      f"— progress prints as it writes. [{get_timestamp()}]")
+                print("-" * 50)
+                pro_text = write_pro_script(
+                    title=script_topic, brief=topic_description)
+                if pro_text and len(pro_text) >= 800:
+                    _n_ch = len(re.findall(
+                        r'(?mi)^\s*Heading:\s*Chapter\b', pro_text))
+                    _n_prod = len(re.findall(r'\[PRODUCTION BEGIN\]', pro_text))
+                    _n_img = len(re.findall(r'\[GROK IMAGINE', pro_text))
+                    _n_verify = len(re.findall(r'\[VERIFY', pro_text))
+                    print("-" * 50)
+                    print(f"✅ Pro script complete [{get_timestamp()}]")
+                    print(f"   📄 {len(pro_text.split())} words, {_n_ch} chapters")
+                    print(f"   🎬 {_n_prod} production blocks, {_n_img} Grok "
+                          f"Imagine prompts, {_n_verify} verify notes")
+                    print("   ⏭️  Skipped: topic planner, per-chapter writers, "
+                          "review, quotes, hook agents (all in the one pass)")
+                    return {
+                        "success": True,
+                        "script_content": pro_text,
+                        "workflow_type": "single_pass_pro_claude",
+                        "topic_enhancement": "",
+                        "chapter_scripts": [],
+                        "combined_script": pro_text,
+                        "script_review": "Single-pass Pro writer (no review)",
+                        "thumbnail_hook_text": "",
+                        "thumbnail_hook_text_options": [],
+                        "chapters_count": _n_ch,
+                        "target_minutes_per_chapter": 0,
+                        "comparison_file": None,
+                        "chapter_comparisons": None,
+                    }
+                return {
+                    "success": False,
+                    "error": "Pro single-pass writer returned no/short output "
+                             "(check ANTHROPIC_API_KEY and the claude-opus-5-5 "
+                             "model alias).",
+                }
+
+            # For predictions / Top-N list, honor the item count the user asked
+            # for (parsed from the title) and widen the chapter cap to N (+ intro
+            # + conclusion). quick_test (max_chapters == 1) is left untouched.
+            requested_count = None
+            if not is_teaching and max_chapters > 1:
+                _m = re.search(r"\b(\d{1,2})\b", script_topic or "")
+                requested_count = (
+                    int(_m.group(1)) if _m
+                    else (7 if script_format == SCRIPT_FORMAT_PREDICTIONS else 10)
+                )
+                requested_count = max(3, min(requested_count, 15))
+                max_chapters = requested_count + 2
+                print(
+                    f"🔢 {script_format} format: honoring {requested_count} "
+                    f"items → max_chapters={max_chapters}"
+                )
 
             # STEP 1: Topic Assistant
             step_start = get_timestamp()
@@ -949,10 +1231,24 @@ Required Output:
 1. LOGICAL chapter breakdown (5-8 chapters maximum for {script_length})
 2. Each chapter must have a SPECIFIC, DESCRIPTIVE title that reflects 
    the user's description requirements
-3. Key points and learning objectives per chapter (aligned with description)
+3. Key points per chapter, drawn from the description (aligned with description)
 4. Content flow and timing guidance
 5. Specific examples suitable for {audience}
 6. Tone guidelines to achieve {tone} style
+
+FIDELITY RULES (these override every other instruction):
+- If the description names specific events, products, people, companies,
+  quotes, dates or URLs, those are the SUBJECT of the script. Build the
+  chapters around THEM. Carry the specific names through into the chapter
+  titles and key points — do not abstract them into generic themes.
+- Do NOT convert the description into a generic "practical guide", "how-to",
+  tutorial, tips listicle, or business-strategy explainer unless the
+  description explicitly asks for one. If the description is a set of news
+  events, the script is about those events.
+- Do NOT introduce statistics, studies, surveys, reports or expert quotes that
+  are absent from the description. Never invent a source or a number.
+- If the description contains a block of constraints (for example
+  "NON-NEGOTIABLE FACTS"), treat every line of it as a hard requirement.
 
 CHAPTER STRUCTURE REQUIREMENTS:
 - Chapter 1: Introduction/Overview (hook the audience based on description)
@@ -965,8 +1261,58 @@ Chapter 1: [Specific descriptive title based on description]
 Chapter 2: [Different specific descriptive title based on description]
 etc.
 
-Remember: The USER'S DESCRIPTION is your primary guide. The topic title is 
+Remember: The USER'S DESCRIPTION is your primary guide. The topic title is
 secondary. Ensure every chapter serves the goals outlined in the description.
+"""
+
+            # Non-teaching archetypes (predictions / Top-N list) replace the
+            # teaching "5-8 chapters" plan request above with a count-honoring
+            # one. The archetype's own Foundry system prompt supplies the
+            # predictions-vs-countdown framing; this message just carries the
+            # brief, the exact item count, and the fidelity rules so it never
+            # fights that prompt (no "don't make a listicle", no "Chapters 2-6").
+            if not is_teaching:
+                _n = requested_count or max(1, max_chapters)
+                _kind = (
+                    "bold predictions"
+                    if script_format == SCRIPT_FORMAT_PREDICTIONS
+                    else "ranked list items"
+                )
+                topic_request = f"""
+TOPIC PLANNING REQUEST:
+
+{f'''USER'S DETAILED DESCRIPTION:
+{topic_description}
+
+The description above defines what this video must cover — follow it closely.
+''' if topic_description else "No detailed description provided — use the title as the guide."}
+
+Video Title: {script_topic}
+Target Audience: {audience}
+Desired Tone: {tone}
+Video Length: {script_length}
+Requested item count: {_n}
+
+YOUR TASK:
+Plan this video following YOUR system instructions for this format. Produce
+EXACTLY {_n} core {_kind}, one per chapter — honor that count, do not collapse
+or expand it. You may add a short Introduction chapter at the start and a
+Conclusion chapter at the end if it serves the piece.
+
+FIDELITY RULES (these override every other instruction):
+- If the description names specific events, products, people, companies,
+  quotes, dates or URLs, carry those specifics through into the chapter titles
+  and key points — do not abstract them into generic themes.
+- Do NOT introduce statistics, studies, surveys, reports or expert quotes that
+  are absent from the description. Never invent a source or a number.
+
+OUTPUT FORMAT:
+Use YOUR system instructions' output format EXACTLY — in particular, emit the
+"CHAPTER BREAKDOWN:" section with one `Chapter N: ...` line for EVERY chapter
+(the opening chapter, each of the {_n} items, and the closing chapter). The
+downstream script writer and the chapter parser read those `Chapter N:` lines,
+so they must be present for every chapter — do not replace them with only a
+summary list.
 """
 
             topic_result = self.script_topic_assistant_client.send_message(
@@ -979,6 +1325,12 @@ secondary. Ensure every chapter serves the goals outlined in the description.
             step_end = get_timestamp()
             if topic_result["success"]:
                 topic_enhancement = topic_result["response"]
+                # De-shout ALL-CAPS chapter titles / planning text. Azure's
+                # content filter flags shouting as aggressive and rejects the
+                # downstream chapter-writer calls, so normalize here — this
+                # fixes both the extracted chapter titles AND the full planning
+                # text passed to the writer agent.
+                topic_enhancement = _deshout_text(topic_enhancement)
                 print(
                     f"✅ Topic enhanced ({len(topic_enhancement)} chars) [{step_end}]"
                 )
@@ -988,9 +1340,12 @@ secondary. Ensure every chapter serves the goals outlined in the description.
 
                 # Pattern 1: Full format with title and timestamp
                 # "Chapter 1: Introduction - Hook (0:00-1:30)"
-                # Use non-greedy match and stop at newline to avoid capturing multiple chapters
+                # Use non-greedy match and stop at newline to avoid capturing multiple chapters.
+                # NOTE: use \s+ (not a literal space) after "Chapter" — the List
+                # topic agent emits a NARROW NO-BREAK SPACE (U+202F) there, which a
+                # literal " " does not match, silently yielding 0 chapters.
                 full_pattern_matches = re.findall(
-                    r"Chapter \d+[:\-]\s*([^\n(]+?)\s*\([^)]+\)",
+                    r"Chapter\s+\d+[:\-]\s*([^\n(]+?)\s*\([^)]+\)",
                     topic_enhancement,
                     re.IGNORECASE
                 )
@@ -1006,7 +1361,7 @@ secondary. Ensure every chapter serves the goals outlined in the description.
                 # Pattern 3: Simple chapter format
                 # "Chapter 1: Introduction"
                 simple_pattern_matches = re.findall(
-                    r"Chapter \d+[:\-]\s*([^\n(]+?)(?:\s*\(|\s*$)",
+                    r"Chapter\s+\d+[:\-]\s*([^\n(]+?)(?:\s*\(|\s*$)",
                     topic_enhancement,
                     re.IGNORECASE
                 )
@@ -1155,6 +1510,16 @@ Write a detailed script for CHAPTER {i} ONLY: "{chapter_topic}"
 
 CRITICAL REQUIREMENTS:
 1. Follow the USER'S DESCRIPTION above for tone, depth, and approach
+1a. FACTUAL FIDELITY — the description is the source of truth. Use the specific
+    events, products, people, companies, quotes, dates and URLs it names, by
+    name. Do NOT replace them with generic framing, a "practical guide", a
+    how-to, or business-strategy commentary. Do NOT introduce statistics,
+    studies, surveys, reports or expert quotes that are absent from the
+    description — if you need a number or a quote, it must come from the
+    description. Never invent or paraphrase-into-quotes a statement attributed
+    to a real person. If the description marks a quote as unavailable, describe
+    the event in your own words instead. If the description includes a
+    constraints block (e.g. "NON-NEGOTIABLE FACTS"), obey every line of it.
 2. Minimum {minutes_per_chapter} minutes of content ({words_per_chapter}+ words)
 3. Use {tone} tone appropriate for {audience}
 4. Include detailed, specific host dialogue (not summaries)
@@ -1188,6 +1553,148 @@ REMINDER: The USER'S DESCRIPTION is your guide for level of detail,
 specific points to cover, and overall approach. Honor their intent.
 """
 
+                # Non-teaching archetypes (predictions / Top-N list) get a punchy,
+                # brief-driven message instead of the teaching "detailed /
+                # comprehensive" one above (which produced tutorial voice, padding
+                # and only-partial coverage). We defer the archetype VOICE to the
+                # writer agent's own system prompt and only enforce: follow the
+                # brief, cover THIS item fully, stay tight, and (per the user) use
+                # NO em-dashes. The teaching 2-min/chapter floor also bloats a
+                # 12-item countdown to ~24 min, so target a punchy per-item length.
+                if not is_teaching:
+                    _is_first = (i == 1)
+                    _is_last = (i == len(chapters))
+                    _punchy_words = max(
+                        90, int((total_minutes * 150) / max(len(chapters), 1)))
+                    if script_format == SCRIPT_FORMAT_LIST:
+                        _beat = (
+                            "This chapter is ONE entry in a ranked countdown. In "
+                            "the host's own flowing speech (NOT labeled sections), "
+                            "hit three quick beats: what this item is GREAT at (its "
+                            "sweet spot), the ONE job where it quietly slips (its "
+                            "blind spot), and the ONE-LINE fix or check that makes it "
+                            "safe to use. Anchor it in ONE concrete everyday example "
+                            "(a flyer, a parent email, a booking sheet, a slide deck, "
+                            "a meeting). Frame every slip as a 'good to know', never a "
+                            "'gotcha'."
+                        )
+                    else:  # predictions
+                        _beat = (
+                            "This chapter is ONE bold prediction. Open on a vivid "
+                            "near-future scene, then say what changes and why it is "
+                            "plausible, grounded in a real signal happening today. "
+                            "Cinematic and visionary, not a how-to, not 'already here "
+                            "today' hedging."
+                        )
+                    if _is_first:
+                        _role = (
+                            "This is the OPENING chapter. Start with a fast, "
+                            "high-energy cold open that matches the brief (e.g. the "
+                            "rapid-fire 'ten failures in ten seconds' montage if the "
+                            "brief calls for it), state the one-sentence promise of "
+                            "the video, then roll STRAIGHT into the first entry. Keep "
+                            "the intro SHORT and punchy, no long throat-clearing. "
+                            + _beat
+                        )
+                    elif _is_last:
+                        _role = (
+                            "This is the FINAL chapter. Land the number-one / final "
+                            "entry, then close with a fast recap of the through-line "
+                            "and the core payoff from the brief. Be conclusive; do NOT "
+                            "tease future chapters. " + _beat
+                        )
+                    else:
+                        _role = _beat
+
+                    script_request = f"""
+CHAPTER SCRIPT WRITING REQUEST ({script_format} format):
+
+THE BRIEF IS THE BOSS — follow its tone, structure and language cues exactly:
+{topic_description if topic_description else "No brief provided — follow the title and the chapter plan below."}
+
+Video Title: {script_topic}
+Chapter {i} of {len(chapters)}: {chapter_topic}
+Target Audience: {audience}
+Desired Tone: {tone}
+Pacing: punchy and tight — around {_punchy_words} words. Prioritize energy and clarity over length. NO padding, NO filler, NO restating.
+
+CHAPTER PLAN FROM THE TOPIC ASSISTANT (ordering/context):
+{topic_enhancement}
+
+YOUR TASK:
+Write the spoken host narration for CHAPTER {i} ONLY: "{chapter_topic}".
+{_role}
+
+HARD RULES:
+- Follow YOUR system instructions for this video format. This is NOT a tutorial and NOT a warning label.
+- Cover THIS chapter's specific item fully. Do NOT summarize or list the other items here.
+- Use the real tools/items/examples named in the brief and the chapter plan, BY NAME. Do not invent items or swap in generic ones.
+- NO em-dashes anywhere (no "—", no "–"). Use short sentences, commas, or periods instead.
+- Continuous single-host video: no "Welcome back", no "Hey everyone", no per-chapter greeting.
+- Output EXACTLY one [Visual Cue: ...] line at the top, then ONE single **Host:** block.
+
+FORMAT:
+## Chapter {i}: {chapter_topic}
+
+Visual Cue: [what to show on screen]
+
+**Host:**
+[the spoken narration — the ONLY Host: label in this chapter]
+"""
+
+                def _fallback_or_fail(primary_error: str) -> Dict[str, Any]:
+                    """Re-write this chapter with Claude; only fail if that also fails.
+
+                    Lets a complete script come back even when the Azure writer
+                    is rate-limited (429) or refuses — the user's main ask.
+                    """
+                    print(
+                        f"   ⚠️ [parallel] Chapter {i}/{len(chapters)} primary writer "
+                        f"failed ({primary_error}). Trying Claude Opus 4.8 fallback…"
+                    )
+                    _ct = _claude_chapter_fallback(script_request)
+                    if _ct and len(_ct) >= 400:
+                        print(
+                            f"   ✅ [parallel] Chapter {i}/{len(chapters)} written by "
+                            f"Claude fallback ({len(_ct)} chars)"
+                        )
+                        return {
+                            "index": i, "chapter_topic": chapter_topic,
+                            "success": True, "response": _ct,
+                            "elapsed": time.time() - _start, "via": "claude_fallback",
+                        }
+                    print(
+                        f"   ❌ [parallel] Chapter {i}/{len(chapters)} Claude fallback "
+                        f"unavailable or too short — failing."
+                    )
+                    return {
+                        "index": i, "chapter_topic": chapter_topic,
+                        "success": False, "error": primary_error,
+                        "elapsed": time.time() - _start,
+                    }
+
+                # Non-teaching archetypes (list / predictions): write with Claude
+                # Opus 5.5 at MAX effort as the PRIMARY writer — it follows the
+                # brief and the no-em-dash rule far more reliably than the Foundry
+                # writer did on countdowns. The Foundry writer stays as the
+                # fallback below if Claude is unavailable or returns too little.
+                if not is_teaching:
+                    _primary = _claude_chapter_fallback(script_request)
+                    if _primary and len(_primary) >= 300:
+                        print(
+                            f"   ✅ [parallel] Chapter {i}/{len(chapters)} written by "
+                            f"Claude {_CLAUDE_FALLBACK_MODEL} (primary, {len(_primary)} chars)"
+                        )
+                        return {
+                            "index": i, "chapter_topic": chapter_topic,
+                            "success": True, "response": _primary,
+                            "elapsed": time.time() - _start, "via": "claude_primary",
+                        }
+                    print(
+                        f"   ⚠️ [parallel] Chapter {i}/{len(chapters)} Claude primary "
+                        f"unavailable/too short — falling back to the Foundry writer"
+                    )
+
                 try:
                     script_result = self.script_writer_client.send_message(
                         thread_id=script_thread_id,
@@ -1196,11 +1703,7 @@ specific points to cover, and overall approach. Honor their intent.
                         timeout=300,
                     )
                 except Exception as _e:
-                    return {
-                        "index": i, "chapter_topic": chapter_topic,
-                        "success": False, "error": f"send_message raised: {_e}",
-                        "elapsed": time.time() - _start,
-                    }
+                    return _fallback_or_fail(f"send_message raised: {_e}")
 
                 _elapsed = time.time() - _start
                 if script_result.get("success"):
@@ -1228,17 +1731,10 @@ specific points to cover, and overall approach. Honor their intent.
                                 f"   ⚠️ [parallel] Chapter {i}/{len(chapters)} hit content-filter refusal "
                                 f"({_orig_len}→{_new_len} chars). Marking as failed."
                             )
-                            return {
-                                "index": i, "chapter_topic": chapter_topic,
-                                "success": False,
-                                "error": (
-                                    "Chapter writer hit Azure content-filter refusal "
-                                    "('I'm sorry, but I cannot assist with that request.'). "
-                                    "Re-run script creation; if it keeps happening, soften "
-                                    "the chapter topic or audience prompt."
-                                ),
-                                "elapsed": _elapsed,
-                            }
+                            return _fallback_or_fail(
+                                "Chapter writer hit Azure content-filter refusal "
+                                "('I'm sorry, but I cannot assist with that request.')."
+                            )
                         # Otherwise just trim the trailing apology and keep the chapter.
                         print(
                             f"   ✂️ [parallel] Chapter {i}/{len(chapters)}: trimmed trailing "
@@ -1253,12 +1749,7 @@ specific points to cover, and overall approach. Honor their intent.
                         "index": i, "chapter_topic": chapter_topic,
                         "success": True, "response": _resp, "elapsed": _elapsed,
                     }
-                return {
-                    "index": i, "chapter_topic": chapter_topic,
-                    "success": False,
-                    "error": script_result.get("error", "unknown"),
-                    "elapsed": _elapsed,
-                }
+                return _fallback_or_fail(script_result.get("error", "unknown"))
 
             # Run all chapter writes in parallel. Cap concurrency to avoid
             # hammering the agent endpoint; for typical 3-8 chapter videos
@@ -1300,8 +1791,8 @@ specific points to cover, and overall approach. Honor their intent.
 
             # Combine all chapters into full script
             combined_script = f"""
-# Direct Video - {script_topic}
-**Script Type:** Video  
+Title: {script_topic}
+**Script Type:** Video
 **Duration:** {script_length}  
 **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
@@ -1326,6 +1817,15 @@ specific points to cover, and overall approach. Honor their intent.
             review_skipped = False
 
             try:
+                # Predictions and Top-N list archetypes skip the review pass
+                # entirely — the reviewer agent is tuned for the teaching
+                # "5 things" tutorial voice and would flatten the cinematic /
+                # countdown styling back toward that archetype.
+                if not is_teaching:
+                    print(
+                        f"⏭️  STEP 3: Script Review SKIPPED for "
+                        f"'{script_format}' format")
+                    raise _StepSkipped()
                 # Skip whole-document review (always times out)
                 # Go straight to chapter-by-chapter revision
                 print("🔄 Starting chapter-by-chapter revision (parallel)...")
@@ -1575,6 +2075,12 @@ Just provide the clean, production-ready revised chapter content above.
                     f"✅ All {len(chapters)} chapters revised individually and assembled"
                 )
 
+            except _StepSkipped:
+                # Intentional skip for non-teaching archetypes — use the
+                # combined (unreviewed) chapters directly.
+                review_skipped = True
+                complete_revised_script_content = combined_script
+                script_review = f"Review skipped for '{script_format}' format"
             except Exception as review_error:
                 # Script Review failed or timed out - skip and use combined chapters
                 review_skipped = True
@@ -1598,13 +2104,21 @@ Just provide the clean, production-ready revised chapter content above.
                 print(f"✅ Script Review completed [{review_end}]")
 
             # STEP 3.5: Quotes & Statistics Generation (NEW - after review, before hooks)
-            quotes_stats_start = get_timestamp()
-            print(
-                f"\n📊 STEP 3.5: Quotes & Statistics Generation [{quotes_stats_start}]")
-            print("-" * 50)
-
+            # Teaching-only step — the predictions / list archetypes do not
+            # append a "SUPPORTING RESEARCH" quotes/stats section.
             quotes_and_stats_text = ""
+            quotes_stats_start = get_timestamp()
+            if is_teaching:
+                print(
+                    f"\n📊 STEP 3.5: Quotes & Statistics Generation [{quotes_stats_start}]")
+                print("-" * 50)
+            else:
+                print(
+                    f"\n⏭️  STEP 3.5: Quotes & Statistics SKIPPED for "
+                    f"'{script_format}' format")
             try:
+                if not is_teaching:
+                    raise _StepSkipped()
                 from linedrive_azure.agents.quote_and_statistics_agent_client import (
                     ScriptQuotesAndStatisticsAgentClient
                 )
@@ -1629,6 +2143,8 @@ Just provide the clean, production-ready revised chapter content above.
                         f"⚠️  Quotes/Stats generation failed: {quotes_result.get('error', 'Unknown error')}")
                     print("✅ Continuing workflow without quotes/stats section")
 
+            except _StepSkipped:
+                pass  # non-teaching archetype — no quotes/stats section
             except Exception as quotes_error:
                 print(
                     f"⚠️  Exception in Quotes/Stats generation: {quotes_error}")

@@ -106,6 +106,15 @@ _DISABLED_VIEWS = {
     "api_save_outputs",
     "api_output_dir_get",
     "api_output_dir_save",
+    # macOS native file/folder pickers (osascript) + Finder reveal + local media
+    # preview — all require the local desktop and are meaningless in the cloud.
+    "api_youtube_pick_output_dir",
+    "api_youtube_pick_transcript",
+    "youtube_pick_video_path",
+    "youtube_pick_thumbnail_path",
+    "youtube_pick_srt_path",
+    "youtube_local_preview",
+    "youtube_reveal_path",
     # Local-disk video/audio downloads
     "download_heygen_video",
     "download_media_zip",

@@ -4,6 +4,7 @@ Generate HeyGen curl commands from the HeyGen Ready Script section.
 Creates one curl command per chapter with properly escaped content.
 """
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -74,7 +75,7 @@ def generate_curl_command(chapter_title, chapter_content, api_key, template_id):
     escaped_content = escape_for_bash_single_quotes(chapter_content)
     escaped_title = escape_for_bash_single_quotes(chapter_title)
     
-    curl_cmd = f"""curl --location 'https://api.heygen.com/v2/template/{template_id}/generate' \\
+    curl_cmd = f"""curl --location 'https://api.heygen.com/v3/templates/{template_id}' \\
      --header 'X-Api-Key: {api_key}' \\
      --header 'Content-Type: application/json' \\
      --data '{{
@@ -82,11 +83,8 @@ def generate_curl_command(chapter_title, chapter_content, api_key, template_id):
   "title": "{escaped_title}",
   "variables": {{
     "script": {{
-      "name": "script",
       "type": "text",
-      "properties": {{
-        "content": "{escaped_content}"
-      }}
+      "content": "{escaped_content}"
     }}
   }}
 }}'"""
@@ -95,7 +93,7 @@ def generate_curl_command(chapter_title, chapter_content, api_key, template_id):
 
 def main():
     # Configuration
-    API_KEY = "ZmExMjJmMTY2NmZmNGI4NDhiYjM3ZWViYzgyYmE3ZWItMTc1MzQ4OTA1Mw=="
+    API_KEY = os.environ.get("HEYGEN_API_KEY", "")
     TEMPLATE_ID = "92c09f8e9a1c4f078f7ae53886b7ad80"
     
     # Check for command line argument

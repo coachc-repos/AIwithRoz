@@ -45,7 +45,8 @@ TOKEN_PATH = SCRIPTCRAFT_DIR / "youtube_token.json"
 # scope is required to read and modify playlists (add the new video to one
 # or more of the channel's playlists).
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload",
-          "https://www.googleapis.com/auth/youtube"]
+          "https://www.googleapis.com/auth/youtube",
+          "https://www.googleapis.com/auth/youtube.force-ssl"]
 
 # YouTube category ID lookup (US defaults). We default to Science & Tech (28)
 # for the AI for Roz channel if the agent's recommendation is missing.
@@ -878,6 +879,79 @@ def list_my_playlists() -> List[Dict[str, Any]]:
         if not page_token:
             break
     out.sort(key=lambda p: p["title"].lower())
+    return out
+
+
+def list_published_videos(max_results: int = 100) -> List[Dict[str, Any]]:
+    """Return the authenticated channel's uploaded videos, newest first.
+
+    Reads the channel's "uploads" playlist via the YouTube Data API. Each
+    entry: {video_id, title, description, url, published_at, thumbnail,
+    privacy_status}. ``privacy_status`` is only populated for the videos the
+    extra videos().list lookup covers (batched, 50 at a time). Raises if the
+    channel is not yet authorized (callers should check is_authorized first).
+    """
+    service = _build_service()
+    # 1) Find the uploads playlist for the authenticated channel.
+    ch = service.channels().list(part="contentDetails", mine=True).execute()
+    items = ch.get("items", [])
+    if not items:
+        return []
+    uploads_id = (items[0].get("contentDetails", {})
+                  .get("relatedPlaylists", {}).get("uploads"))
+    if not uploads_id:
+        return []
+
+    # 2) Page through the uploads playlist (newest first) up to max_results.
+    out: List[Dict[str, Any]] = []
+    page_token: Optional[str] = None
+    while len(out) < max_results:
+        resp = service.playlistItems().list(
+            part="snippet,contentDetails",
+            playlistId=uploads_id,
+            maxResults=min(50, max_results - len(out)),
+            pageToken=page_token,
+        ).execute()
+        for it in resp.get("items", []):
+            sn = it.get("snippet", {})
+            cd = it.get("contentDetails", {})
+            vid = (cd.get("videoId")
+                   or sn.get("resourceId", {}).get("videoId") or "")
+            if not vid:
+                continue
+            thumbs = sn.get("thumbnails", {})
+            thumb = ((thumbs.get("medium") or thumbs.get("default") or {})
+                     .get("url", ""))
+            out.append({
+                "video_id": vid,
+                "title": sn.get("title", ""),
+                "description": sn.get("description", ""),
+                "url": f"https://youtu.be/{vid}",
+                "published_at": (cd.get("videoPublishedAt")
+                                 or sn.get("publishedAt") or ""),
+                "thumbnail": thumb,
+                "privacy_status": "",
+            })
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+
+    # 3) Batch-fetch privacy status so drafts/private uploads are flagged.
+    try:
+        ids = [v["video_id"] for v in out]
+        status_by_id: Dict[str, str] = {}
+        for i in range(0, len(ids), 50):
+            chunk = ids[i:i + 50]
+            vr = service.videos().list(
+                part="status", id=",".join(chunk)).execute()
+            for v in vr.get("items", []):
+                status_by_id[v.get("id", "")] = (
+                    v.get("status", {}).get("privacyStatus", ""))
+        for v in out:
+            v["privacy_status"] = status_by_id.get(v["video_id"], "")
+    except Exception as e:  # non-fatal — list still works without status
+        logger.warning(f"Could not fetch video privacy status: {e}")
+
     return out
 
 

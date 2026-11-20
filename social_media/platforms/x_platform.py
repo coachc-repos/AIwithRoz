@@ -37,7 +37,7 @@ class XPlatformHandler:
         
         # Initialize Twitter API v2 client
         self.client = tweepy.Client(
-            bearer_token=credentials['bearer_token'],
+            bearer_token=credentials.get('bearer_token'),
             consumer_key=credentials['api_key'],
             consumer_secret=credentials['api_key_secret'],
             access_token=credentials['access_token'],

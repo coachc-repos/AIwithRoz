@@ -349,6 +349,162 @@ class AzureDataLakeUploader:
 
         return results
 
+    # ------------------------------------------------------------------
+    # De-duplicated "master" upload
+    #
+    # Instead of writing a full snapshot every run (which piles up duplicate
+    # tournaments in the lake), maintain a single canonical, de-duplicated
+    # dataset at curated/tournaments_master.{json,csv}. Each run merges in
+    # only the tournaments not already present, so the lake holds exactly one
+    # copy of each unique tournament.
+    # ------------------------------------------------------------------
+    MASTER_JSON_BLOB = "curated/tournaments_master.json"
+    MASTER_CSV_BLOB = "curated/tournaments_master.csv"
+
+    @staticmethod
+    def dedupe_key(t: Dict) -> str:
+        """Stable identity for a tournament (records have no id/url field)."""
+        for f in ("id", "tournament_id", "event_id", "url", "website_url", "link"):
+            v = t.get(f)
+            if v:
+                return "id:" + str(v).strip().lower()
+        name = (t.get("name") or t.get("tournament_name") or "").strip().lower()
+        date = (t.get("start_date") or t.get("date") or t.get("dates") or "").strip().lower()
+        loc = (t.get("location") or t.get("city") or "").strip().lower()
+        return f"{name}|{date}|{loc}"
+
+    def _load_master(self) -> List[Dict]:
+        """Return the current de-duplicated tournament list, or [] if none."""
+        if not self.blob_service_client:
+            return []
+        try:
+            bc = self.blob_service_client.get_blob_client(
+                container=self.container_name, blob=self.MASTER_JSON_BLOB
+            )
+            raw = bc.download_blob().readall()
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                items = data.get("tournaments", [])
+            elif isinstance(data, list):
+                items = data
+            else:
+                items = []
+            return [t for t in items if isinstance(t, dict)]
+        except Exception:
+            # Missing master (first run) or unreadable → treat as empty.
+            return []
+
+    @staticmethod
+    def _to_csv(tournaments: List[Dict]) -> str:
+        """Loss-tolerant CSV over the union of all fields (stable column order)."""
+        import csv
+        import io
+
+        if not tournaments:
+            return ""
+        preferred = [
+            "name", "date", "location", "organizer", "age_groups",
+            "tournament_type", "is_texas", "has_youth_ages",
+        ]
+        keys = list(preferred)
+        for t in tournaments:
+            for k in t.keys():
+                if k not in keys:
+                    keys.append(k)
+        buf = io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=keys, extrasaction="ignore")
+        w.writeheader()
+        for t in tournaments:
+            row = {}
+            for k in keys:
+                v = t.get(k, "")
+                if isinstance(v, (list, dict)):
+                    v = json.dumps(v, default=str)
+                row[k] = v
+            w.writerow(row)
+        return buf.getvalue()
+
+    def upload_unique(
+        self, tournaments: List[Dict], run_type: str = "automated"
+    ) -> Dict[str, Optional[object]]:
+        """Merge only NEW tournaments into the canonical de-duplicated master.
+
+        Returns: {new, total_unique, raw_url, processed_url, skipped}
+        """
+        result = {
+            "new": 0,
+            "total_unique": 0,
+            "skipped": 0,
+            "raw_url": None,
+            "processed_url": None,
+        }
+        if not self.blob_service_client:
+            logging.warning("⚠️ Azure Data Lake not available - skipping upload")
+            return result
+
+        incoming = [t for t in (tournaments or []) if isinstance(t, dict)]
+        existing = self._load_master()
+        result["total_unique"] = len(existing)
+
+        seen = {self.dedupe_key(t) for t in existing}
+        new_items = []
+        for t in incoming:
+            k = self.dedupe_key(t)
+            if k in seen:
+                continue
+            seen.add(k)
+            new_items.append(t)
+
+        result["skipped"] = len(incoming) - len(new_items)
+
+        if not new_items:
+            logging.info(
+                f"🟰 No new tournaments (all {len(incoming)} already stored). "
+                f"Master unchanged at {len(existing)} unique."
+            )
+            return result
+
+        merged = existing + new_items
+        payload = {
+            "metadata": {
+                "updated_at": datetime.now().isoformat(),
+                "run_type": run_type,
+                "unique_count": len(merged),
+                "added_this_run": len(new_items),
+                "data_format": "deduped_master",
+            },
+            "tournaments": merged,
+        }
+        try:
+            jbc = self.blob_service_client.get_blob_client(
+                container=self.container_name, blob=self.MASTER_JSON_BLOB
+            )
+            jbc.upload_blob(
+                json.dumps(payload, indent=2, default=str).encode("utf-8"),
+                overwrite=True, content_type="application/json",
+            )
+            result["raw_url"] = jbc.url
+
+            cbc = self.blob_service_client.get_blob_client(
+                container=self.container_name, blob=self.MASTER_CSV_BLOB
+            )
+            cbc.upload_blob(
+                self._to_csv(merged).encode("utf-8"),
+                overwrite=True, content_type="text/csv",
+            )
+            result["processed_url"] = cbc.url
+
+            result["new"] = len(new_items)
+            result["total_unique"] = len(merged)
+            logging.info(
+                f"✅ Master updated: +{len(new_items)} new, "
+                f"{result['skipped']} duplicates skipped, "
+                f"{len(merged)} unique total."
+            )
+        except Exception as e:
+            logging.error(f"❌ Failed to update de-duplicated master: {e}")
+        return result
+
     def test_connection(self) -> bool:
         """Test connection to Azure Data Lake"""
         if not self.blob_service_client:

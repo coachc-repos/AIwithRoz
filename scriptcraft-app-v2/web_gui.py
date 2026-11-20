@@ -36,8 +36,20 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(1, str(REPO_ROOT))
     print(f"✅ Added to sys.path: {REPO_ROOT}")
 
+# Load all API keys from the single root .env (GOOGLE_API_KEY, XAI_API_KEY,
+# HEYGEN_API_KEY, HEYGEN_VOICE_ID, X_* ...). Does not override anything already
+# set in the real environment, so per-shell overrides still win.
+try:
+    from dotenv import load_dotenv
+    _env_file = REPO_ROOT / ".env"
+    if _env_file.exists():
+        load_dotenv(_env_file)
+        print(f"🔧 Loaded environment variables from {_env_file}")
+except ImportError:
+    pass  # python-dotenv not installed; rely on the real environment
 
-VERSION = "15.34-quotes-progress-mapping"
+
+VERSION = "15.39-broll-regenerate"
 
 # Verify Google API key availability for thumbnail generation.
 if "GOOGLE_API_KEY" in os.environ and os.environ.get("GOOGLE_API_KEY"):
@@ -88,6 +100,12 @@ def _hydrate_env_from_settings() -> None:
             "heygen_api_key": "HEYGEN_API_KEY",
             "heygen_voice_id": "HEYGEN_VOICE_ID",
             "grok_api_key": "XAI_API_KEY",
+            "anthropic_api_key": "ANTHROPIC_API_KEY",
+            "x_api_key": "X_API_KEY",
+            "x_api_secret": "X_API_SECRET",
+            "x_access_token": "X_ACCESS_TOKEN",
+            "x_access_secret": "X_ACCESS_SECRET",
+            "x_bearer_token": "X_BEARER_TOKEN",
         }
         for setting_key, env_var in mapping.items():
             val = (s.get(setting_key) or "").strip()
@@ -98,6 +116,40 @@ def _hydrate_env_from_settings() -> None:
 
 
 _hydrate_env_from_settings()
+
+
+# ---- API key masking ----
+# The browser never gets a full API key. Pages and /api/keys return a masked
+# hint (4 dots + last 4 chars); routes that receive a key from the browser
+# swap a blank or masked value for the saved/env key on the server.
+_KEY_MASK_PREFIX = "\u2022" * 4
+
+
+def _mask_key(val: str) -> str:
+    val = (val or "").strip()
+    if not val:
+        return ""
+    return (_KEY_MASK_PREFIX + val[-4:]) if len(val) >= 8 else _KEY_MASK_PREFIX
+
+
+def _is_masked_key(val: str) -> bool:
+    return (val or "").strip().startswith(_KEY_MASK_PREFIX)
+
+
+def _saved_or_env_key(setting_key: str, env_var: str) -> str:
+    try:
+        saved = (_load_scriptcraft_settings().get(setting_key) or "").strip()
+    except Exception:
+        saved = ""
+    return saved or os.getenv(env_var, "").strip()
+
+
+def _effective_key(provided, setting_key: str, env_var: str) -> str:
+    """Key the browser sent, unless blank or masked; then the saved/env key."""
+    val = (provided or "").strip()
+    if not val or _is_masked_key(val):
+        return _saved_or_env_key(setting_key, env_var)
+    return val
 
 
 def _get_output_parent_dir() -> Path:
@@ -263,6 +315,226 @@ def _save_broll_table_as_docx(broll_table_md: str, out_path: Path) -> bool:
     except Exception as e:
         logger.error(f"❌ Failed to save broll docx: {e}")
         return False
+
+
+def _script_excerpt_for_row(script: str, row: dict, idx: int, total: int,
+                            wpm: int = 150, window_words: int = 80) -> str:
+    """Return the ~160-word slice of the script the given b-roll row illustrates,
+    so the Grok prompt engineer can ground the visual in the ACTUAL moment (not a
+    generic stock version). Locates the moment by the row's timecode → word index
+    (at `wpm`), falling back to the row's chronological position. Best-effort;
+    returns "" when there's no script."""
+    if not script or not script.strip():
+        return ""
+    words = script.split()
+    n = len(words)
+    if n == 0:
+        return ""
+    center = None
+    tc = (row.get("timecode") or "").strip()
+    m = re.match(r'(\d+):(\d+):(\d+)', tc)
+    if m:
+        secs = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+        center = int((secs / 60.0) * wpm)
+    if not center or center <= 0:
+        center = int(((idx + 0.5) / max(1, total)) * n)
+    center = max(0, min(center, n - 1))
+    lo = max(0, center - window_words)
+    hi = min(n, center + window_words)
+    return " ".join(words[lo:hi]).strip()
+
+
+def _grok_prompts_for_broll_rows(parsed_data, theme: str = "", max_workers: int = 8,
+                                 builder=None, script: str = "") -> dict:
+    """Generate a grok-imagine-friendly video prompt for every parsed b-roll row
+    via Claude (Opus 4.8), so the saved B-roll table carries a ready-to-use,
+    copy-paste prompt for regenerating any scene whose Grok clip didn't turn out.
+
+    ``builder`` picks the style: default ``_grok_build_video_prompt`` (cinematic /
+    photoreal-or-motion-graphics), or pass ``_grok_build_chalk_prompt`` for
+    the chalk column. ``script`` (the full script text) grounds each prompt in the
+    exact scene it illustrates. Returns ``{row_index: prompt}``. Best-effort —
+    a failing row yields an empty string rather than breaking the batch.
+    """
+    prompts: dict = {}
+    if not parsed_data:
+        return prompts
+    _builder = builder or _grok_build_video_prompt
+    total = len(parsed_data)
+
+    def _one(item):
+        idx, row = item
+        desc = (row.get("description") or "").strip()
+        if not desc:
+            return idx, ""
+        excerpt = _script_excerpt_for_row(script, row, idx, total)
+        try:
+            return idx, (_builder(
+                desc, row.get("scene_context", ""), theme,
+                script_excerpt=excerpt) or "")
+        except Exception as e:
+            logger.warning(f"⚠️ Grok table prompt failed (row {idx}): {e}")
+            return idx, ""
+
+    items = list(enumerate(parsed_data))
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        workers = max(1, min(max_workers, len(items)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for idx, prompt in ex.map(_one, items):
+                prompts[idx] = prompt
+    except Exception as e:
+        logger.warning(
+            f"⚠️ Grok prompt batch failed ({e}); running sequentially")
+        for item in items:
+            idx, prompt = _one(item)
+            prompts[idx] = prompt
+    return prompts
+
+
+def _save_broll_table_with_prompts_as_docx(
+    parsed_data,
+    grok_prompts: dict,
+    out_path: Path,
+    search_string: str = "",
+    chalk_prompts: "Optional[dict]" = None,
+) -> bool:
+    """Build a Word doc of the B-roll table with copy-paste Grok prompt columns:
+    a cinematic 'Grok Imagine Prompt' and a 'Grok Chalk Prompt' (clean 2D/3D
+    animated business graphic) for each scene. Returns True on success, False if
+    python-docx is missing or there are no rows.
+    """
+    try:
+        from docx import Document
+    except ImportError as e:
+        logger.error(f"❌ python-docx not available for broll docx: {e}")
+        return False
+    if not parsed_data:
+        return False
+    chalk_prompts = chalk_prompts or {}
+
+    has_timecode = any((r.get("timecode") or "").strip() for r in parsed_data)
+    headers = (["Timecode"] if has_timecode else []) + [
+        "Search Term", "Description", "Scene Context",
+        "Grok Imagine Prompt", "Grok Chalk Prompt"]
+
+    doc = Document()
+    doc.add_heading("B-Roll Table", level=1)
+    note = doc.add_paragraph()
+    note.add_run(
+        "'Grok Imagine Prompt' is a ready-to-use cinematic grok-imagine-video "
+        "prompt; 'Grok Chalk Prompt' is a rough white-chalk-on-black hand-drawn "
+        "sketch version of the same scene. Copy either cell to (re)generate "
+        "that clip."
+    ).italic = True
+
+    table = doc.add_table(rows=1 + len(parsed_data), cols=len(headers))
+    try:
+        table.style = 'Light Grid Accent 1'
+    except Exception:
+        pass
+    for c, h in enumerate(headers):
+        cell = table.rows[0].cells[c]
+        cell.text = h
+        for para in cell.paragraphs:
+            for run in para.runs:
+                run.bold = True
+    for r, row in enumerate(parsed_data, start=1):
+        vals = []
+        if has_timecode:
+            vals.append(row.get("timecode", "") or "")
+        vals.extend([
+            row.get("search_term", "") or "",
+            row.get("description", "") or "",
+            row.get("scene_context", "") or "",
+            grok_prompts.get(r - 1, "") or "",
+            chalk_prompts.get(r - 1, "") or "",
+        ])
+        for c, val in enumerate(vals):
+            if c < len(headers):
+                table.rows[r].cells[c].text = val
+
+    if (search_string or "").strip():
+        doc.add_paragraph()
+        p = doc.add_paragraph()
+        p.add_run("Stock Footage Search String: ").bold = True
+        p.add_run(search_string.strip())
+
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        doc.save(str(out_path))
+        return True
+    except Exception as e:
+        logger.error(f"❌ Failed to save broll docx: {e}")
+        return False
+
+
+def _persist_broll_table_artifacts(
+    broll_table: str,
+    parsed_data,
+    broll_dir: Path,
+    theme: str = "",
+    script: str = "",
+) -> None:
+    """Persist the B-roll table into ``broll_dir`` as broll_table.md (raw) plus
+    broll_table.docx enriched with a Claude-generated 'Grok Imagine Prompt'
+    column. This is the same folder Grok videos are saved to, so the Word table
+    sits next to the clips and its prompts can be copied to regenerate any weak
+    scene. ``script`` (the full script text) grounds each Grok prompt in the exact
+    scene it illustrates. Best-effort — logs and swallows errors so generation
+    never breaks.
+    """
+    # 1) Generate the Grok Imagine prompts and attach one to each row (in place)
+    #    FIRST, independent of any disk write. This runs even when local-fs
+    #    writes are disabled (e.g. the cloud container), so the UI still receives
+    #    a grok_prompt per row in the broll_rows payload to show + copy.
+    grok_prompts: dict = {}
+    chalk_prompts: dict = {}
+    if parsed_data:
+        try:
+            grok_prompts = _grok_prompts_for_broll_rows(
+                parsed_data, theme, script=script)
+            # Chalk = the SAME cinematic visual, redrawn in chalk, so the two
+            # columns always match (one idea, two styles).
+            chalk_prompts = _grok_chalk_prompts_from_cinematic(grok_prompts)
+            for i, row in enumerate(parsed_data):
+                if not isinstance(row, dict):
+                    continue
+                if not (row.get("grok_prompt") or "").strip():
+                    row["grok_prompt"] = grok_prompts.get(i, "") or ""
+                if not (row.get("grok_chalk_prompt") or "").strip():
+                    row["grok_chalk_prompt"] = \
+                        chalk_prompts.get(i, "") or ""
+        except Exception as e:
+            logger.warning(f"⚠️ Grok prompt generation for broll rows failed: {e}")
+
+    # 2) Persist md + docx to disk (best-effort; may be a no-op in the container).
+    try:
+        broll_dir.mkdir(parents=True, exist_ok=True)
+        md_path = broll_dir / "broll_table.md"
+        md_path.write_text(broll_table or "", encoding="utf-8")
+        logger.info(f"💾 Saved broll table md → {md_path}")
+
+        docx_path = broll_dir / "broll_table.docx"
+        if parsed_data:
+            # Pull the "Stock Footage Search String" tail (if any) for the docx.
+            search_string = ""
+            m = re.search(
+                r"\*\*Stock Footage Search String:\*\*\s*(.+)",
+                broll_table or "", flags=re.DOTALL)
+            if m:
+                search_string = m.group(1).strip()
+            if _save_broll_table_with_prompts_as_docx(
+                    parsed_data, grok_prompts, docx_path, search_string,
+                    chalk_prompts=chalk_prompts):
+                logger.info(
+                    f"💾 Saved broll table docx (+Grok prompts) → {docx_path}")
+                return
+        # Fallback: no parsed rows — save the plain markdown table as docx.
+        if _save_broll_table_as_docx(broll_table, docx_path):
+            logger.info(f"💾 Saved broll table docx → {docx_path}")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to persist broll table artifacts: {e}")
 
 
 def _copy_to_output_subfolder(src, subfolder: str, script_title: Optional[str] = None) -> Optional[Path]:
@@ -901,6 +1173,9 @@ def _extract_script_title_for_output(script_text: str, fallback: str = "Untitled
             continue
         if line.startswith(("#", "*", "-", "[")):
             continue
+        # Never treat the machine id lines as a title.
+        if _SCRIPT_ID_RE.match(line) or _SCRIPT_VERSION_RE.match(line):
+            continue
         if all(c in "_=-~" for c in line):
             continue
         if len(line) > 150:
@@ -908,6 +1183,79 @@ def _extract_script_title_for_output(script_text: str, fallback: str = "Untitled
         return line
 
     return fallback
+
+
+# --- Script identity: permanent collection id + per-processing version -------
+# Both live as plain labeled lines directly under the Title: line so they
+# survive Word export / round-trips. Script-ID is assigned once and never
+# changes (Grok videos accumulate under it). Script-Version bumps on every
+# processing run; all other artifacts are tied to the current version.
+_SCRIPT_ID_RE = re.compile(
+    r'^[ \t]*\**[ \t]*Script-ID[ \t]*\**[ \t]*:[ \t]*\**[ \t]*([A-Za-z0-9\-]+)',
+    re.MULTILINE | re.IGNORECASE,
+)
+_SCRIPT_VERSION_RE = re.compile(
+    r'^[ \t]*\**[ \t]*Script-Version[ \t]*\**[ \t]*:[ \t]*\**[ \t]*([A-Za-z0-9\-]+)',
+    re.MULTILINE | re.IGNORECASE,
+)
+_TITLE_LINE_RE = re.compile(
+    r'^[ \t]*\**[ \t]*Title[ \t]*\**[ \t]*:', re.IGNORECASE)
+
+
+def _new_ld_id(prefix: str) -> str:
+    """Short, URL/blob-safe id, e.g. 'ld-9f3a1c7b22' or 'v-4b8e0a17de'."""
+    return f"{prefix}-{uuid.uuid4().hex[:10]}"
+
+
+def _parse_script_ids(text: str) -> "tuple[Optional[str], Optional[str]]":
+    """Return (script_id, version_id) found in the script, else (None, None)."""
+    t = text or ""
+    sid = _SCRIPT_ID_RE.search(t)
+    vid = _SCRIPT_VERSION_RE.search(t)
+    return (sid.group(1) if sid else None, vid.group(1) if vid else None)
+
+
+def _ensure_script_ids(
+    text: str,
+    bump_version: bool = False,
+    script_id: "Optional[str]" = None,
+    version_id: "Optional[str]" = None,
+) -> "tuple[str, str, str]":
+    """Ensure Script-ID (permanent) + Script-Version lines sit directly under
+    the Title: line. Returns (new_text, script_id, version_id).
+
+    - script_id/version_id, when given, are forced onto the text (used to
+      re-stamp a script after agents may have stripped the lines, keeping the
+      ids stable across a processing run).
+    - Otherwise: missing Script-ID -> a fresh permanent id; missing
+      Script-Version or bump_version=True -> a fresh version (processing runs
+      pass bump_version=True; manual edits never reach here).
+    Existing id lines are rewritten in place (de-duplicated).
+    """
+    t = text or ""
+    cur_id, cur_version = _parse_script_ids(t)
+    script_id = script_id or cur_id or _new_ld_id("ld")
+    if version_id:
+        pass
+    elif bump_version or not cur_version:
+        version_id = _new_ld_id("v")
+    else:
+        version_id = cur_version
+
+    lines = t.split("\n")
+    # Drop any existing id lines so we reinsert a single clean pair.
+    kept = [ln for ln in lines
+            if not _SCRIPT_ID_RE.match(ln) and not _SCRIPT_VERSION_RE.match(ln)]
+
+    # Insert right after the Title: line if present, else at the very top.
+    insert_at = 0
+    for i, ln in enumerate(kept[:40]):
+        if _TITLE_LINE_RE.match(ln):
+            insert_at = i + 1
+            break
+    id_lines = [f"Script-ID: {script_id}", f"Script-Version: {version_id}"]
+    new_lines = kept[:insert_at] + id_lines + kept[insert_at:]
+    return ("\n".join(new_lines), script_id, version_id)
 
 
 async def _save_script_md_and_docx(script_title: str, script_content: str) -> tuple[Optional[str], Optional[str]]:
@@ -1231,6 +1579,20 @@ class ConsoleCapture:
         elif "All 6 agents initialized successfully" in message:
             return 10
 
+        # ========== PRO single-pass path (8-90%) ==========
+        elif "Pro mode" in message:
+            return 8
+        elif "PRO SINGLE-PASS SCRIPT WRITER" in message:
+            return 12
+        elif ("writing the ENTIRE script" in message
+              or "Pro writer:" in message
+              or "Loading the golden reference" in message):
+            return 18
+        elif "📝 writing" in message:  # streaming word-count ticks
+            return 55
+        elif "Pro script complete" in message:
+            return 90
+
         # ========== STEP 1: TOPIC ENHANCEMENT (10-20%) ==========
         elif "STEP 1: Topic Enhancement" in message or "Topic Enhancement & Chapter Planning" in message:
             return 12
@@ -1462,7 +1824,8 @@ async def process_script_creation(session_id, topic, audience, tone,
                                   video_length, production_type, goals,
                                   quick_test=False, checkboxes=None,
                                   heygen_template_id="", heygen_api_key="",
-                                  heygen_voice_id="", grok_api_key=""):
+                                  heygen_voice_id="", grok_api_key="",
+                                  description="", script_format="teaching"):
     """Clean script creation with only console capture"""
     logger.info(f"🎬 SCRIPT CREATION STARTED: session={session_id}")
     if quick_test:
@@ -1505,10 +1868,19 @@ async def process_script_creation(session_id, topic, audience, tone,
             streamer.send_update(
                 "🧪 Console capture test - starting script creation", 5)
 
-            # Initialize system (this will be captured)
-            print("🔧 Creating EnhancedAutoGenSystem...")
-            system = EnhancedAutoGenSystem(verbose=True)
-            print("🔧 All 6 agents initialized successfully")
+            # Initialize system (this will be captured). Pro mode uses no
+            # agents, so run it quietly (verbose=False) and print a Pro-specific
+            # line instead of the multi-agent initialization chatter.
+            _is_pro = (script_format == "pro")
+            if _is_pro:
+                system = EnhancedAutoGenSystem(
+                    verbose=False, script_format=script_format)
+            else:
+                print("🔧 Creating EnhancedAutoGenSystem...")
+                system = EnhancedAutoGenSystem(
+                    verbose=True, script_format=script_format)
+                print(f"🔧 All 6 agents initialized successfully "
+                      f"(format: {script_format})")
 
             # Run the workflow with timeout to prevent hanging
             print("🚀 Starting script workflow with 20-minute timeout...")
@@ -1522,17 +1894,33 @@ async def process_script_creation(session_id, topic, audience, tone,
             print(
                 f"🔍 DEBUG: ConsoleCapture active: {isinstance(sys.stdout, ConsoleCapture)}")
 
+            # Style memory: prepend recent saved scripts as a style reference so
+            # the Script Writer keeps new scripts consistent in voice, structure,
+            # and pacing. Built into a LOCAL copy of the brief only — the pure
+            # `description` is what gets persisted, so style refs never
+            # recursively feed themselves back into future generations.
+            topic_description = description or ""
+            try:
+                _style_block = _build_style_context_block()
+                if _style_block:
+                    topic_description = (
+                        (topic_description + _style_block)
+                        if topic_description else _style_block.strip())
+            except Exception as _e:
+                logger.warning(f"⚠️ style context build failed: {_e}")
+
             try:
                 print("🔍 DEBUG: Calling asyncio.wait_for with async method")
                 result = await asyncio.wait_for(
                     system.run_complete_script_workflow_sequential(
                         script_topic=topic,
-                        topic_description="",
+                        topic_description=topic_description,
                         audience=audience,
                         tone=tone,
                         script_length=video_length,
                         max_chapters=1 if quick_test else 8,
                         hook_summary=checkboxes.get("hook_summary", False),
+                        script_format=script_format,
                     ),
                     # 20 minutes - accounts for Script Writer (~5min) + Script Review (~12min)
                     timeout=1200
@@ -1594,8 +1982,11 @@ async def process_script_creation(session_id, topic, audience, tone,
             print(f"✅ Script Reviewed by Script Reviewer")
             print(f"✅ Sequential Workflow Completed Successfully")
 
-            # Use script content directly (no boilerplate intro).
-            raw_script_content = result["script_content"]
+            # Use script content directly (no boilerplate intro). Tidy the raw
+            # writer output first: drop [Visual Cue: …] blocks (visuals are added
+            # later by the Grok Imagine stage) and collapse the blank lines the
+            # writer puts between every sentence into single-spaced Host blocks.
+            raw_script_content = _tidy_generated_script(result["script_content"])
 
             # Enhanced script with bold tool formatting (EXACT COPY - NO TIMEOUTS!)
             from console_ui.text_processing import (
@@ -1623,6 +2014,8 @@ async def process_script_creation(session_id, topic, audience, tone,
                     _target_words = int(round(_target_minutes * _wpm))
 
                     def _host_word_count_create(text: str) -> int:
+                        # Ignore production-only [PRODUCTION …] notes entirely.
+                        text = _PRODUCTION_BLOCK_RE.sub(" ", text)
                         blocks = _re_short.findall(
                             r"(?:^|\n)\s*(?:#{1,6}\s*)?\**\s*host\s*\**\s*:\s*\**\s*([\s\S]*?)(?="
                             r"\n\s*(?:#{1,6}\s+\S|(?:#{1,6}\s*)?(?:\*\*[^*\n]{1,40}\*\*\s*:|host\s*:|heading\s*:|chapter\s+\d|visual\s+cue\s*:|b-?roll\s*:)|---+|===+)"
@@ -1654,8 +2047,11 @@ async def process_script_creation(session_id, topic, audience, tone,
                             ScriptShortenAgentClient,
                         )
                         _agent = ScriptShortenAgentClient()
+                        # Shield [PRODUCTION …] blocks from the shorten agent.
+                        _short_masked, _short_blocks = _mask_production_blocks(
+                            final_script_content)
                         _r = _agent.shorten_to_target(
-                            script_content=final_script_content,
+                            script_content=_short_masked,
                             target_minutes=_target_minutes,
                             wpm=_wpm,
                             timeout=600,
@@ -1668,7 +2064,8 @@ async def process_script_creation(session_id, topic, audience, tone,
                             _short = _re_short.sub(r"^```[a-zA-Z]*\n", "", _short)
                             _short = _re_short.sub(r"\n```\s*$", "", _short)
                             if _short:
-                                final_script_content = _short
+                                final_script_content = _restore_or_keep(
+                                    _short, _short_blocks, final_script_content)
                                 _after = _host_word_count_create(final_script_content)
                                 streamer.send_update(
                                     f"✅ Shortened: Host words {_before_host} → {_after}",
@@ -1740,7 +2137,7 @@ async def process_script_creation(session_id, topic, audience, tone,
                         script_content=final_script_content,
                         script_title=topic,
                         words_per_minute=150,  # Adjust based on speaking pace
-                        timeout=180
+                        timeout=300  # denser 48-60 row table needs more time
                     )
 
                     if broll_result.get("success", False):
@@ -1753,22 +2150,20 @@ async def process_script_creation(session_id, topic, audience, tone,
                         streamer.send_update(
                             "✅ B-roll table generated", 98.5)
 
-                        # Persist the raw broll table (md + docx) to {run}/broll/
+                        # Persist the broll table to {run}/broll/ (the same
+                        # folder Grok videos are saved to): broll_table.md (raw)
+                        # + broll_table.docx enriched with a Grok Imagine Prompt
+                        # column so weak clips can be regenerated by copying the
+                        # scene's prompt.
                         try:
-                            broll_dir = run_output_dir / "broll"
-                            broll_dir.mkdir(parents=True, exist_ok=True)
-                            broll_md_path = broll_dir / "broll_table.md"
-                            broll_md_path.write_text(
-                                broll_table, encoding="utf-8")
-                            print(
-                                f"💾 Saved broll table md → {broll_md_path}")
-                            broll_docx_path = broll_dir / "broll_table.docx"
-                            if _save_broll_table_as_docx(broll_table, broll_docx_path):
-                                print(
-                                    f"💾 Saved broll table docx → {broll_docx_path}")
-                        except Exception as save_err:
-                            print(
-                                f"⚠️ Failed to save broll table files: {save_err}")
+                            streamer.send_update(
+                                "🎨 Writing B-roll Word doc + Grok prompts...", 98.7)
+                        except Exception:
+                            pass
+                        _persist_broll_table_artifacts(
+                            broll_table, parsed_data,
+                            run_output_dir / "broll", theme=topic,
+                            script=final_script_content)
 
                         # Append B-roll table to script
                         broll_section = f"\n\n{'=' * 80}\n"
@@ -1965,15 +2360,17 @@ async def process_script_creation(session_id, topic, audience, tone,
                         scrub_heygen_text,
                     )
 
-                    heygen_script = extract_heygen_host_script(
-                        final_script_content)
+                    # Strip [PRODUCTION …] editing notes so the avatar never
+                    # narrates them.
+                    _hg_src = _strip_production_blocks(final_script_content)
+                    heygen_script = extract_heygen_host_script(_hg_src)
 
                     # Fallback: if no Host: markers found, scrub the raw script
                     # (strips title, metadata, chapter headings, stage directions, etc.)
                     if not heygen_script:
                         print(
                             "⚠️ No Host: markers found - scrubbing full script for HeyGen section")
-                        heygen_script = scrub_heygen_text(final_script_content)
+                        heygen_script = scrub_heygen_text(_hg_src)
 
                     if heygen_script:
                         heygen_section = f"\n\n{'=' * 80}\n"
@@ -1994,7 +2391,8 @@ async def process_script_creation(session_id, topic, audience, tone,
 
                                 print("\n🔨 Generating HeyGen curl commands...")
                                 curl_commands = generate_heygen_curl_commands(
-                                    final_script_with_tools,
+                                    _strip_production_blocks(
+                                        final_script_with_tools),
                                     topic,  # script_title
                                     heygen_api_key,
                                     heygen_template_id,
@@ -2095,8 +2493,11 @@ async def process_script_creation(session_id, topic, audience, tone,
                     from linedrive_azure.agents import ScriptRepeatAndFlowAgentClient
 
                     flow_agent = ScriptRepeatAndFlowAgentClient()
+                    # Shield [PRODUCTION …] blocks from the flow agent.
+                    _flow_masked, _flow_blocks = _mask_production_blocks(
+                        final_script_with_tools)
                     flow_result = flow_agent.analyze_and_improve_flow(
-                        script_content=final_script_with_tools,
+                        script_content=_flow_masked,
                         script_title=topic,
                         target_audience=audience,
                         timeout=300
@@ -2134,7 +2535,9 @@ async def process_script_creation(session_id, topic, audience, tone,
                             flow_analysis_report = analysis_section
 
                             # Update final_script_with_tools to improved version (WITHOUT analysis appended)
-                            final_script_with_tools = improved_script
+                            final_script_with_tools = _restore_or_keep(
+                                improved_script, _flow_blocks,
+                                final_script_with_tools)
 
                             streamer.send_update(
                                 f"✅ Flow analysis complete - script improved ({len(improved_script)} chars)",
@@ -2350,6 +2753,11 @@ async def process_script_creation(session_id, topic, audience, tone,
                 finally:
                     thumbnail_cancel_events.pop(session_id, None)
 
+            # Stamp a permanent Script-ID + initial Script-Version into the
+            # script so every downstream artifact can be tied back to it.
+            final_script_with_tools, _new_script_id, _new_script_version = (
+                _ensure_script_ids(final_script_with_tools))
+
             saved_markdown_path, saved_docx_path = await _save_script_md_and_docx(
                 resolved_script_title,
                 final_script_with_tools,
@@ -2359,6 +2767,11 @@ async def process_script_creation(session_id, topic, audience, tone,
                 "success": True,
                 "enhanced_script": final_script_with_tools,
                 "script_title": resolved_script_title,
+                "script_id": _new_script_id,
+                "script_version": _new_script_version,
+                # The creative brief that steered this run, persisted alongside
+                # the script so it can be pulled back from the cloud later.
+                "brief": description,
                 "demo_packages": demo_packages,
                 "youtube_details": youtube_upload_details,
                 "thumbnail_results": thumbnail_results,
@@ -2381,6 +2794,16 @@ async def process_script_creation(session_id, topic, audience, tone,
                 "markdown_path": saved_markdown_path,
                 "docx_path": saved_docx_path,
             }
+
+            # Persist every artifact of this version so the script restores its
+            # tabs when reopened later (Grok videos persist separately by id).
+            try:
+                _persist_version_artifacts(
+                    _new_script_id, _new_script_version, streamer.result,
+                    resolved_script_title)
+            except Exception as _e:
+                logger.warning(
+                    f"⚠️ version artifact persist (create) failed: {_e}")
 
             # Debug: Log what's in the result
             print(
@@ -2458,6 +2881,17 @@ async def process_existing_script(
                 "🧹 Stripped legacy 'AI Digital Twin' boilerplate intro from script_content")
             script_content = _new.lstrip()
 
+    # Every processing run bumps the Script-Version (a no-op-bump is impossible
+    # here since manual edits don't reach this path). The permanent Script-ID is
+    # preserved if present, else assigned. We fix both ids for the whole run so
+    # all artifacts produced below can be tied to this exact version, then
+    # re-stamp the final script with the same ids at the end (agents may strip
+    # the lines while rewriting).
+    script_content, proc_script_id, proc_script_version = _ensure_script_ids(
+        script_content, bump_version=True)
+    logger.info(
+        f"🆔 Processing run: Script-ID={proc_script_id} Version={proc_script_version}")
+
     try:
         # Initialize EDL variables
         edl_content = None
@@ -2476,6 +2910,7 @@ async def process_existing_script(
             checkboxes.get("flow_analysis", False),
             checkboxes.get("grok_videos", False),
             checkboxes.get("shorten_script", False),
+            checkboxes.get("grok_imagine", False),
         ])
 
         if total_steps == 0:
@@ -2617,7 +3052,10 @@ async def process_existing_script(
 
         # Clean the script
         streamer.send_update("🧹 Cleaning script formatting...", 10)
-        cleaned_script = script_content
+        # Drop [Visual Cue: …] blocks (added later via Grok Imagine) and collapse
+        # between-sentence blank lines into single-spaced Host blocks before the
+        # house-format pass below.
+        cleaned_script = _tidy_generated_script(script_content)
 
         # Remove separator lines
         cleaned_script = re.sub(r'^[_\-=~]+\s*$', '', cleaned_script,
@@ -2678,6 +3116,8 @@ async def process_existing_script(
                 _target_words = int(round(_target_minutes * _wpm))
 
                 def _host_word_count(text: str) -> int:
+                    # Ignore production-only [PRODUCTION …] notes entirely.
+                    text = _PRODUCTION_BLOCK_RE.sub(" ", text)
                     blocks = re.findall(
                         r"(?:^|\n)\s*(?:#{1,6}\s*)?\**\s*host\s*\**\s*:\s*\**\s*([\s\S]*?)(?="
                         r"\n\s*(?:#{1,6}\s+\S|(?:#{1,6}\s*)?(?:\*\*[^*\n]{1,40}\*\*\s*:|host\s*:|heading\s*:|chapter\s+\d|visual\s+cue\s*:|b-?roll\s*:)|---+|===+)"
@@ -2712,8 +3152,11 @@ async def process_existing_script(
                         ScriptShortenAgentClient,
                     )
                     _shorten_agent = ScriptShortenAgentClient()
+                    # Shield [PRODUCTION …] blocks from the shorten agent.
+                    _short_masked, _short_blocks = _mask_production_blocks(
+                        cleaned_script)
                     _short_result = _shorten_agent.shorten_to_target(
-                        script_content=cleaned_script,
+                        script_content=_short_masked,
                         target_minutes=_target_minutes,
                         wpm=_wpm,
                         timeout=600,
@@ -2727,7 +3170,8 @@ async def process_existing_script(
                         _shortened = re.sub(r"^```[a-zA-Z]*\n", "", _shortened)
                         _shortened = re.sub(r"\n```\s*$", "", _shortened)
                         if _shortened:
-                            cleaned_script = _shortened
+                            cleaned_script = _restore_or_keep(
+                                _shortened, _short_blocks, cleaned_script)
                             _after_host_words = _host_word_count(cleaned_script)
                             streamer.send_update(
                                 f"✅ Shortened: Host words {_before_host_words} → {_after_host_words} "
@@ -2815,6 +3259,25 @@ async def process_existing_script(
                 logger.error(f"❌ Shorten step error: {_shorten_err}")
                 streamer.send_update(f"⚠️ Shorten step error: {_shorten_err}", 14)
 
+        # OPTIONAL: Add 3-4 Grok Imagine still-image prompts per chapter, inline,
+        # so they can be copy-pasted into Grok Imagine. Runs after Shorten so the
+        # prompts match the final wording; tops up chapters that already have some.
+        if checkboxes.get("grok_imagine", False):
+            try:
+                streamer.send_update(
+                    "🖼️ Adding Grok Imagine prompts per chapter…", 13)
+                cleaned_script, _gi_added = _inject_grok_imagine_prompts(
+                    cleaned_script, video_title=script_title)
+                streamer.send_update(
+                    f"✅ Added {_gi_added} Grok Imagine prompt(s) across chapters"
+                    if _gi_added else
+                    "ℹ️ Grok Imagine: no chapters needed prompts (already at target)",
+                    14)
+            except Exception as _gi_err:
+                logger.warning(f"⚠️ Grok Imagine step error: {_gi_err}")
+                streamer.send_update(
+                    f"⚠️ Grok Imagine step error: {_gi_err}", 14)
+
         # HOOK-ONLY MODE: when only the Hook checkbox is set (no other section
         # generators), we generate 3 hook options and return them to the UI for
         # interactive selection. The user picks one in a modal, then
@@ -2822,7 +3285,7 @@ async def process_existing_script(
         # section and strips any prior OPENING HOOK OPTIONS block.
         _section_flags = [
             "youtube_details", "broll", "broll_images", "heygen", "curl",
-            "demo", "thumbnails", "flow_analysis", "grok_videos",
+            "demo", "thumbnails", "flow_analysis", "grok_videos", "grok_imagine",
         ]
         _hook_only_mode = (
             checkboxes.get("hook_summary", False)
@@ -3228,6 +3691,15 @@ async def process_existing_script(
                             except Exception as edl_error:
                                 logger.error(f"❌ EDL error: {edl_error}")
 
+                        # Persist the B-roll table (md + Word doc with a Grok
+                        # Imagine Prompt column) into {run}/broll/, next to any
+                        # Grok videos, so weak clips can be regenerated by
+                        # copying the scene's prompt.
+                        _persist_broll_table_artifacts(
+                            broll_table, broll_rows,
+                            run_output_dir / "broll", theme=script_title,
+                            script=cleaned_script)
+
                         completed_steps += 1
                         progress = 15 + (completed_steps * progress_per_step)
                         streamer.send_update(
@@ -3443,15 +3915,17 @@ async def process_existing_script(
                 # Extract from the cleaned source script ONLY (not final_output) so the
                 # HeyGen text never includes the prepended OPENING HOOK OPTIONS block,
                 # the OPTION 1/2/3 "Host:" hooks, the opening statement, or any
-                # generated headers added below.
-                heygen_script = extract_heygen_host_script(cleaned_script)
+                # generated headers added below. Strip [PRODUCTION …] editing notes
+                # first so the avatar never narrates them.
+                _hg_src = _strip_production_blocks(cleaned_script)
+                heygen_script = extract_heygen_host_script(_hg_src)
                 # Fallback: if no Host: markers found, scrub the cleaned script
                 # down to dialogue-only (strip title, chapter headings, metadata,
                 # stage directions, hook/summary headers, separators).
                 if not heygen_script:
                     logger.info(
                         "⚠️ No Host: markers found - scrubbing cleaned script for HeyGen")
-                    heygen_script = scrub_heygen_text(cleaned_script)
+                    heygen_script = scrub_heygen_text(_hg_src)
                 if heygen_script:
                     heygen_section = f"\n\n{'=' * 80}\n"
                     heygen_section += "# 🎬 HEYGEN READY SCRIPT\n"
@@ -3479,14 +3953,17 @@ async def process_existing_script(
                     scrub_heygen_text,
                 )
 
+                # Strip [PRODUCTION …] editing notes so curl content the avatar
+                # reads never includes them.
+                _hg_curl_src = _strip_production_blocks(cleaned_script)
                 if not heygen_script:
-                    heygen_script = extract_heygen_host_script(cleaned_script)
+                    heygen_script = extract_heygen_host_script(_hg_curl_src)
 
                 # Fallback: if no Host: markers found, scrub for dialogue only.
                 if not heygen_script:
                     logger.info(
                         "⚠️ No Host: markers found - scrubbing cleaned script for curl generation")
-                    heygen_script = scrub_heygen_text(cleaned_script)
+                    heygen_script = scrub_heygen_text(_hg_curl_src)
 
                 if heygen_script:
                     heygen_with_header = (
@@ -3496,7 +3973,9 @@ async def process_existing_script(
                     # Extract a FINAL HOOK section (if present in cleaned_script
                     # or final_output) so we can emit a dedicated `{short}-hook`
                     # curl command alongside the chapter curls.
-                    _hook_search_text = f"{final_output}\n{cleaned_script}"
+                    _hook_search_text = (
+                        f"{_strip_production_blocks(final_output)}\n"
+                        f"{_hg_curl_src}")
                     _final_hook_text = ""
                     _hm = re.search(
                         r"\*{0,2}\s*(?:🎯\s*)?(?:FINAL\s+|OPENING\s+)?HOOK\s*:?\s*\*{0,2}\s*"
@@ -3623,7 +4102,7 @@ async def process_existing_script(
                     # and let the curl generator strip stage-direction lines
                     # from each chapter's content itself.
                     curl_source = (
-                        f"# 🎬 HEYGEN READY SCRIPT\n{'=' * 80}\n\n{cleaned_script}"
+                        f"# 🎬 HEYGEN READY SCRIPT\n{'=' * 80}\n\n{_hg_curl_src}"
                     )
 
                     curl_commands = generate_heygen_curl_commands(
@@ -3808,8 +4287,10 @@ async def process_existing_script(
                 from linedrive_azure.agents import ScriptRepeatAndFlowAgentClient
 
                 flow_agent = ScriptRepeatAndFlowAgentClient()
+                # Shield [PRODUCTION …] blocks from the flow agent.
+                _flow_masked, _flow_blocks = _mask_production_blocks(final_output)
                 flow_result = flow_agent.analyze_and_improve_flow(
-                    script_content=final_output,
+                    script_content=_flow_masked,
                     script_title=script_title,
                     target_audience=audience,
                     timeout=300
@@ -3843,7 +4324,9 @@ async def process_existing_script(
                             analysis_section += f"{flow_improvements}\n\n"
 
                         # Replace the script with improved version and add analysis at end
-                        final_output = improved_script + analysis_section
+                        final_output = _restore_or_keep(
+                            improved_script, _flow_blocks, final_output
+                        ) + analysis_section
 
                         completed_steps += 1
                         progress = 15 + (completed_steps * progress_per_step)
@@ -3860,6 +4343,11 @@ async def process_existing_script(
             except Exception as e:
                 logger.error(f"❌ Flow analysis error: {e}")
 
+        # Re-stamp the final script with the SAME ids fixed at the start of the
+        # run (agents may have stripped the lines while rewriting the script).
+        final_output, _, _ = _ensure_script_ids(
+            final_output, script_id=proc_script_id, version_id=proc_script_version)
+
         # Complete — save files and set result BEFORE sending done=True so the
         # SSE handler always finds a valid streamer.result when it reads on progress==100.
         saved_markdown_path, saved_docx_path = await _save_script_md_and_docx(
@@ -3872,6 +4360,8 @@ async def process_existing_script(
             "enhanced_script": final_output,  # SSE handler expects "enhanced_script" key
             "script": final_output,  # Also include "script" for compatibility
             "script_title": script_title,
+            "script_id": proc_script_id,
+            "script_version": proc_script_version,
             "thumbnail_results": thumbnail_results,
             "thumbnail_hook_text": thumbnail_hook_text,
             "thumbnail_hook_text_options": thumbnail_hook_text_options,
@@ -3886,6 +4376,13 @@ async def process_existing_script(
             "markdown_path": saved_markdown_path,
             "docx_path": saved_docx_path,
         }
+        # Persist every artifact of this version so the script restores its tabs
+        # when reopened later (Grok videos are persisted separately by Script-ID).
+        try:
+            _persist_version_artifacts(
+                proc_script_id, proc_script_version, streamer.result, script_title)
+        except Exception as _e:
+            logger.warning(f"⚠️ version artifact persist (process) failed: {_e}")
         logger.info("✅ Script processing completed successfully")
         # Send done=True AFTER result is set so the SSE handler always finds a valid result.
         streamer.send_update("✅ Script processing complete!", 100)
@@ -4066,25 +4563,2591 @@ def index():
         version=VERSION,
         agent_mode=(os.environ.get("FOUNDRY_API_MODE") or "v2").lower(),
         container_mode=bool(app.config.get("CONTAINER_MODE", False)),
-        saved_grok_api_key=_resolve("grok_api_key", "XAI_API_KEY"),
-        saved_heygen_api_key=_resolve("heygen_api_key", "HEYGEN_API_KEY"),
+        saved_grok_api_key=_mask_key(_resolve("grok_api_key", "XAI_API_KEY")),
+        saved_heygen_api_key=_mask_key(_resolve("heygen_api_key", "HEYGEN_API_KEY")),
         saved_heygen_voice_id=_resolve("heygen_voice_id", "HEYGEN_VOICE_ID"),
-        saved_google_api_key=_resolve("google_api_key", "GOOGLE_API_KEY"),
+        saved_google_api_key=_mask_key(_resolve("google_api_key", "GOOGLE_API_KEY")),
     )
 
 
 @app.route("/api/agent-mode", methods=["GET", "POST"])
 def agent_mode_api():
-    """Get or set the active Foundry agent API mode (v1=classic Assistants, v2=new Foundry)."""
+    """Get the active Foundry agent API mode. v1 (classic Assistants) is retired —
+    the app is Foundry v2 only, so this always reports 'v2' and rejects any attempt
+    to switch to v1."""
     if request.method == "POST":
         data = request.get_json(silent=True) or {}
         requested = (data.get("mode") or "").strip().lower()
-        if requested not in ("v1", "v2"):
-            return jsonify({"success": False, "error": "mode must be 'v1' or 'v2'"}), 400
-        os.environ["FOUNDRY_API_MODE"] = requested
-        logger.info(f"\U0001F500 Agent API mode switched to: {requested}")
-    current = (os.environ.get("FOUNDRY_API_MODE") or "v2").lower()
-    return jsonify({"success": True, "mode": current})
+        if requested and requested != "v2":
+            return jsonify({
+                "success": False,
+                "error": "v1 (classic Assistants) is disabled. This app runs on "
+                         "Foundry v2 only.",
+            }), 400
+        os.environ["FOUNDRY_API_MODE"] = "v2"
+    return jsonify({"success": True, "mode": "v2"})
+
+
+# ---------------------------------------------------------------------------
+# Idea Generator (Claude Opus 5 + web search)
+#
+# Brainstorm video-episode ideas from a free-text request, then expand the
+# chosen idea into a full creative brief in the channel's house format. Uses
+# ANTHROPIC_API_KEY from the root .env (loaded at startup). Web search is
+# enabled so "trending / last month" style requests are grounded in real,
+# current events rather than the model's training cutoff.
+# ---------------------------------------------------------------------------
+
+ANTHROPIC_MODEL = "claude-opus-4-8"
+# Highest-quality Claude for the interactive Refine feature and the single-pass
+# "Pro" script writer. Opus 5.5 is this environment's top alias (also used by
+# IDEA_MODEL / GROK_IMAGINE_MODEL) and accepts output_config.effort + adaptive
+# thinking. Run both at effort="max" per the user's explicit request.
+REFINE_MODEL = "claude-opus-5-5"
+
+# Model used specifically by the Idea Generator (idea brainstorm + brief). Claude
+# Opus 5.5 — the newest Opus tier — for the strongest creative/title ideation.
+# Kept separate from ANTHROPIC_MODEL so other Claude features are unaffected.
+IDEA_MODEL = "claude-opus-5-5"
+
+# The Idea Generator also brainstorms with Grok (xAI) alongside Claude, so each
+# batch carries two independent model perspectives (grouped in the UI). Override
+# with IDEA_GROK_MODEL in .env. grok-4.5 is the default: it's a fast (~10s),
+# capable tier — the newer grok-4.6/4.7 are reasoning-heavy and take 45s–3min,
+# which would gate the whole request. Grok is best-effort — if it fails, Claude's
+# ideas are still returned.
+IDEA_GROK_MODEL = os.getenv("IDEA_GROK_MODEL", "grok-4.5").strip() or "grok-4.5"
+
+# --- Idea Generator content lanes -------------------------------------------
+# Historically the Idea Generator hard-coded a "careers / resumes / layoffs"
+# weighting into its system prompt, so *every* batch drifted back to job-hunting
+# ideas no matter what was asked. The lane is now a per-request choice. "auto"
+# (the default) applies NO thematic weighting at all — the topic box and the
+# live trend signal decide the subject.
+IDEA_LANES = {
+    "auto": "",
+    "careers": (
+        "CONTENT LANE — CAREERS & WORK: weight ideas toward helping regular "
+        "people AI-proof and accelerate their careers (avoid layoffs, better "
+        "interviews/resumes, earn more, save time), while keeping range.\n\n"
+    ),
+    "everyday": (
+        "CONTENT LANE — EVERYDAY LIFE: weight ideas toward using AI in daily "
+        "life outside of work — home, money, family, health, travel, learning, "
+        "hobbies, admin drudgery. Do NOT default to job/resume/career ideas.\n\n"
+    ),
+    "news": (
+        "CONTENT LANE — AI NEWS & BIG MOVES: weight ideas toward reacting to "
+        "real, current, named AI events — launches, announcements, public "
+        "statements by major figures, industry shake-ups. Anchor every idea in "
+        "a specific verifiable thing that actually happened, name the people "
+        "and products involved, and explain what it means for a normal viewer. "
+        "Do NOT default to job/resume/career ideas.\n\n"
+    ),
+    "tools": (
+        "CONTENT LANE — TOOLS & HOW-TO: weight ideas toward hands-on demos, "
+        "comparisons, workflows and step-by-steps with specific named AI "
+        "tools. Do NOT default to job/resume/career ideas.\n\n"
+    ),
+}
+IDEA_LANE_DEFAULT = "auto"
+
+
+# Model used for the optional "final polish" pass on a finished script. Claude
+# Fable 5 is Anthropic's newest storytelling-tuned model; it rewrites the script
+# to be punchier, more current, and more advanced without changing the format.
+# Falls back to ANTHROPIC_MODEL automatically if it isn't available on the key.
+POLISH_MODEL = "claude-fable-5"
+
+
+def _web_search_tool(max_uses: int = 4) -> dict:
+    """Web search tool capped at `max_uses` calls to bound latency."""
+    return {
+        "type": "web_search_20260209",
+        "name": "web_search",
+        "max_uses": max_uses,
+    }
+
+# The exact house format for a script brief — given to the model so the
+# generated description matches what the script generator expects downstream.
+IDEA_BRIEF_EXAMPLE = (
+    "AI just crossed a line most people missed: it stopped being a chatbot you "
+    "talk to and became an assistant that does things for you. In this episode "
+    "we stand at that turning point and look at what it actually means for your "
+    "everyday life — the assistant that plans the trip, clears the inbox, and "
+    "watches your calendar while you live your day. We'll show you why mid-2026 "
+    "is the single best on-ramp regular people will ever get, and why being here "
+    "now means you're early, not late. You'll leave excited about exactly one "
+    "thing you can switch on this week.\n\n"
+    "TONE: Energizing, optimistic, momentum-building — TED-talk meets morning "
+    "pump-up. Short punchy lines mixed with longer rhythmic ones. The listener "
+    "should feel they're standing at the edge of an opportunity, not a cliff.\n"
+    "CORE MESSAGE: AI just stopped being a chatbot you talk to and became an "
+    "assistant that does things for you. This episode shows where the technology "
+    "actually is in 2026 and why the next 12 months are the best on-ramp regular "
+    "people will ever get — you are early, not late.\n"
+    "LANGUAGE CUES: \"unlock,\" \"your new superpower,\" \"lean in,\" \"this is "
+    "for you,\" \"more time for what matters.\" Grounded but electric. No "
+    "hype-bro clichés.\n"
+    "2026 TOUCHPOINTS: Agentic assistants (Gemini Spark, ChatGPT's agent, "
+    "Perplexity Comet) acting on your behalf; AI moving into Gmail/Docs/Sheets "
+    "and your phone; the shift from 'ask' to 'do.'"
+)
+
+
+def _get_anthropic_client(timeout: float = 60.0):
+    """Return an Anthropic client, or None if the key/SDK is unavailable."""
+    api_key = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
+    if not api_key:
+        logger.error("ANTHROPIC_API_KEY not set — add it to the root .env")
+        return None
+    try:
+        import anthropic
+    except ImportError:
+        logger.error("anthropic SDK not installed — run: pip install anthropic")
+        return None
+    # Minimal retries so a stalled web-search call fails fast and we can fall
+    # back to a no-search generation instead of appearing hung. `timeout` is
+    # tunable per caller: short for quick drafts, longer for a full-script
+    # polish where web search over a long input legitimately takes a while.
+    return anthropic.Anthropic(api_key=api_key, timeout=timeout, max_retries=1)
+
+
+def _anthropic_complete(system: str, user: str, max_tokens: int = 4000,
+                        use_web_search: bool = True, max_searches: int = 4,
+                        model: str = None, timeout: float = 60.0,
+                        documents=None, effort: str = None,
+                        thinking: bool = False) -> str:
+    """Run one Claude turn, draining the server-side web_search loop.
+
+    `model` defaults to ANTHROPIC_MODEL (Opus 4.8). `timeout` (seconds) bounds
+    each request — raise it for long inputs where web search takes a while.
+    `documents` is an optional list of content blocks (e.g. a base64 PDF
+    document block) prepended to the user turn so Claude can ground its output
+    in an uploaded file. Returns the concatenated text of the final assistant
+    message. If a request with web search fails (e.g. the tool isn't enabled on
+    the account), it retries once without tools. Raises on hard failures.
+    """
+    _model = model or ANTHROPIC_MODEL
+    client = _get_anthropic_client(timeout=timeout)
+    if client is None:
+        raise RuntimeError(
+            "Claude is not configured. Set ANTHROPIC_API_KEY in the root .env "
+            "and ensure the anthropic package is installed."
+        )
+    import anthropic
+
+    # When documents are supplied, the user turn becomes a block list:
+    # [<document blocks…>, {"type":"text","text": user}]. Otherwise it stays a
+    # plain string (fully backward-compatible with every existing caller).
+    if documents:
+        user_content = list(documents) + [{"type": "text", "text": user}]
+    else:
+        user_content = user
+
+    def _run(with_tools: bool, with_extras: bool = True):
+        # The server runs the web_search loop and returns pause_turn if it hits
+        # its iteration cap; re-send to resume. Cap our own resumes as a guard.
+        messages = [{"role": "user", "content": user_content}]
+        resp = None
+        logger.info(
+            "🤖 Claude %s | web_search=%s | effort=%s | calling…",
+            _model, "on" if with_tools else "off",
+            (effort if (with_extras and effort) else "default"),
+        )
+        for attempt in range(1, 7):
+            kwargs = dict(
+                model=_model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=messages,
+            )
+            if with_tools:
+                kwargs["tools"] = [_web_search_tool(max_searches)]
+            # Reasoning effort + adaptive thinking (GA on recent Opus). Stripped
+            # on a BadRequestError below if a model/endpoint rejects them.
+            if with_extras and effort:
+                kwargs["output_config"] = {"effort": effort}
+            if with_extras and thinking:
+                kwargs["thinking"] = {"type": "adaptive"}
+            resp = client.messages.create(**kwargs)
+            # Surface what the model actually did this round-trip.
+            searches = [
+                getattr(b, "input", {}).get("query", "")
+                for b in resp.content
+                if getattr(b, "type", None) == "server_tool_use"
+            ]
+            for q in searches:
+                logger.info("   🔎 web search: %s", q)
+            u = getattr(resp, "usage", None)
+            logger.info(
+                "   ↩︎ round %d | stop=%s | searches=%d | out_tokens=%s",
+                attempt, resp.stop_reason, len(searches),
+                getattr(u, "output_tokens", "?"),
+            )
+            if resp.stop_reason != "pause_turn":
+                break
+            logger.info("   ⏸ pause_turn — resuming the search loop…")
+            messages = messages + [{"role": "assistant", "content": resp.content}]
+        return resp
+
+    try:
+        resp = _run(use_web_search)
+    except anthropic.BadRequestError as e:
+        _msg = str(e).lower()
+        if (effort or thinking) and (
+            "effort" in _msg or "output_config" in _msg or "thinking" in _msg
+        ):
+            # Model/endpoint doesn't accept effort/thinking — retry without them.
+            logger.warning(
+                "Claude: effort/thinking rejected (%s); retrying without them",
+                str(e)[:100],
+            )
+            try:
+                resp = _run(use_web_search, with_extras=False)
+            except Exception:
+                resp = _run(False, with_extras=False)
+        elif use_web_search:
+            logger.warning(
+                "Claude bad request on search path (%s); retrying WITHOUT "
+                "web search", str(e)[:100])
+            resp = _run(False)
+        else:
+            raise
+    except Exception as e:
+        # Web search can stall or rate-limit. On ANY failure of the search
+        # path (timeout, rate limit, connection), fall back to a fast
+        # no-search generation so the request still returns useful output.
+        if use_web_search:
+            logger.warning(
+                "Claude web_search path failed (%s: %s); retrying WITHOUT "
+                "web search", type(e).__name__, e,
+            )
+            resp = _run(False)
+        else:
+            raise
+
+    # With web search the response interleaves narration text, server_tool_use,
+    # and web_search_tool_result blocks. Only the final run of text blocks (after
+    # the last tool activity) is the actual answer — keep that, drop the
+    # "Let me search…" preamble by resetting whenever a non-text block appears.
+    parts = []
+    for b in resp.content:
+        if getattr(b, "type", None) == "text":
+            parts.append(b.text)
+        else:
+            parts = []
+    return "".join(parts).strip()
+
+
+def _json_loads_lenient(s: str):
+    """json.loads, but also tolerating trailing commas (,] or ,}). None on fail."""
+    try:
+        return json.loads(s)
+    except Exception:
+        try:
+            return json.loads(re.sub(r",\s*([\]}])", r"\1", s))
+        except Exception:
+            return None
+
+
+def _json_coerce_array(data):
+    """Return a list from a bare array or a {"ideas": [...]}-style wrapper."""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for k in ("ideas", "episodes", "results", "items", "data"):
+            v = data.get(k)
+            if isinstance(v, list):
+                return v
+        for v in data.values():
+            if isinstance(v, list):
+                return v
+    return None
+
+
+def _iter_balanced_spans(s: str, open_c: str, close_c: str):
+    """Yield each top-level balanced open_c..close_c span, ignoring brackets
+    that appear inside JSON string literals."""
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            continue
+        if ch == open_c:
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == close_c and depth > 0:
+            depth -= 1
+            if depth == 0 and start != -1:
+                yield s[start:i + 1]
+
+
+def _parse_json_array(text: str) -> list:
+    """Best-effort extraction of a JSON array of objects from model output.
+
+    Tolerates markdown code fences, conversational preamble/suffix (even when it
+    contains stray brackets like "[trends]"), a {"ideas": [...]} wrapper, and
+    trailing commas — all of which the model occasionally emits despite being
+    told to return only a bare array."""
+    if not text:
+        return []
+    t = text.strip()
+    # Prefer the contents of a fenced code block if one is present anywhere.
+    fence = re.search(r"```(?:json|javascript|js)?\s*(.*?)```", t,
+                      re.DOTALL | re.IGNORECASE)
+    if fence:
+        t = fence.group(1).strip()
+    # 1) Whole-string parse (bare array or wrapper object).
+    arr = _json_coerce_array(_json_loads_lenient(t))
+    if arr is not None:
+        return arr
+    # 2) Scan for balanced [...] arrays anywhere; keep the largest that parses.
+    best = None
+    for span in _iter_balanced_spans(t, "[", "]"):
+        cand = _json_coerce_array(_json_loads_lenient(span))
+        if cand and (best is None or len(cand) > len(best)):
+            best = cand
+    if best is not None:
+        return best
+    # 3) Last resort: pull individual {…} objects that look like ideas.
+    objs = []
+    for m in re.finditer(r"\{[^{}]*\}", t, re.DOTALL):
+        d = _json_loads_lenient(m.group(0))
+        if isinstance(d, dict) and ("title" in d or "angle" in d):
+            objs.append(d)
+    return objs
+
+
+# Conversational lead-ins the model sometimes prepends after web search, even
+# when told not to. Specific enough not to clip a real opening sentence.
+_PREAMBLE_MARKERS = (
+    "here's the creative brief", "here is the creative brief",
+    "here's the brief", "here is the brief",
+    "here's your creative brief", "here is your creative brief",
+    "here's a creative brief", "here is a creative brief",
+    "i have everything i need", "i have what i need",
+    "i'll research", "i will research", "let me research",
+    "i now have", "i have enough",
+)
+
+
+def _strip_preamble(text: str) -> str:
+    """Peel leading meta sentences (e.g. 'Here's the brief.') one at a time.
+
+    Only a single leading sentence is removed per pass, and only if it matches
+    a known lead-in marker — so a real opening sentence that happens to share a
+    line/paragraph with the lead-in is preserved.
+    """
+    if not text:
+        return text
+    t = text.lstrip()
+    for _ in range(4):  # peel a few stacked lead-ins
+        # A leading sentence: up to the first . ! ? on the same line.
+        m = re.match(r"^([^.!?\n]*[.!?]+)(\s+)(.*)$", t, re.DOTALL)
+        if not m:
+            break
+        sentence = m.group(1).strip().lower()
+        if any(k in sentence for k in _PREAMBLE_MARKERS):
+            t = m.group(3).lstrip()
+            continue
+        break
+    return t
+
+
+def _extract_brief(text: str) -> str:
+    """Pull the brief out of its ===BRIEF=== / ===END=== sentinels.
+
+    Falls back to stripping conversational preamble if the model omitted the
+    markers (or only one of them).
+    """
+    if not text:
+        return text
+    m = re.search(r"===BRIEF===\s*(.*?)\s*===END===", text, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    # Only the opening marker present — take everything after it.
+    m = re.search(r"===BRIEF===\s*(.*)$", text, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    return _strip_preamble(text)
+
+
+# Persist generated idea batches so they survive restarts and can be reloaded
+# next time the Idea Generator panel is opened. Stored alongside the app's
+# other settings in ~/.scriptcraft/.
+_IDEAS_HISTORY_PATH = Path.home() / ".scriptcraft" / "idea_generator.json"
+_IDEAS_HISTORY_MAX = 25
+
+
+def _load_idea_history() -> list:
+    try:
+        if _IDEAS_HISTORY_PATH.exists():
+            with open(_IDEAS_HISTORY_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.warning(f"⚠️ Could not load idea history: {e}")
+    return []
+
+
+def _find_idea_batch(batch_id: str):
+    """Return the saved batch dict with this id, or None."""
+    bid = (batch_id or "").strip()
+    if not bid:
+        return None
+    for b in _load_idea_history():
+        if b.get("id") == bid:
+            return b
+    return None
+
+
+def _save_idea_batch(user_request: str, ideas: list,
+                     source_document: dict = None) -> dict:
+    """Prepend a new {id, request, ideas, created_at} batch; cap the history.
+
+    `source_document`, when a file was attached, is {name, text} — the extracted
+    document text (trimmed) so it can later ground the brief and be injected into
+    the Topic Assistant / Script Writer prompts."""
+    batch = {
+        "id": str(uuid.uuid4()),
+        "request": user_request,
+        "ideas": ideas,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    if source_document and (source_document.get("text") or "").strip():
+        batch["source_document"] = {
+            "name": (source_document.get("name") or "attachment")[:200],
+            "text": source_document["text"][:_IDEA_DOC_STORE_CHARS],
+        }
+    history = [batch] + _load_idea_history()
+    history = history[:_IDEAS_HISTORY_MAX]
+    try:
+        _IDEAS_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_IDEAS_HISTORY_PATH, "w", encoding="utf-8") as f:
+            json.dump(history, f, indent=2)
+    except Exception as e:
+        logger.error(f"❌ Could not save idea history: {e}")
+    return batch
+
+
+def _save_brief_to_batch(batch_id: str, title: str, brief: str,
+                         idea_format: str = "") -> None:
+    """Persist a generated brief back onto its idea in the saved history, so
+    recalling the batch brings the brief back (no regeneration needed)."""
+    bid = (batch_id or "").strip()
+    if not bid or not (brief or "").strip():
+        return
+    try:
+        history = _load_idea_history()
+        changed = False
+        for b in history:
+            if b.get("id") != bid:
+                continue
+            for idea in (b.get("ideas") or []):
+                if (idea.get("title") or "").strip() == (title or "").strip():
+                    idea["brief"] = brief
+                    if idea_format:
+                        idea["brief_format"] = idea_format
+                    b["last_brief_title"] = title
+                    changed = True
+                    break
+            break
+        if changed:
+            with open(_IDEAS_HISTORY_PATH, "w", encoding="utf-8") as f:
+                json.dump(history, f, indent=2)
+            logger.info("💾 Saved brief onto idea %r in batch %s", title, bid)
+    except Exception as e:
+        logger.warning(f"⚠️ could not save brief to batch: {e}")
+
+
+def _extract_youtube_id(url: str):
+    """Pull the 11-char video id out of any YouTube URL (or a bare id)."""
+    u = (url or "").strip()
+    if not u:
+        return None
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", u):
+        return u
+    m = re.search(r"(?:v=|/shorts/|youtu\.be/|/embed/|/live/)([A-Za-z0-9_-]{11})", u)
+    return m.group(1) if m else None
+
+
+def _youtube_adjacency_context(urls, limit: int = 4,
+                               transcript_chars: int = 2000) -> list:
+    """For each YouTube URL, fetch its title (oEmbed) + transcript excerpt.
+
+    These are the videos the user wants to be "the natural next watch" to. Used
+    to steer idea/title/description generation toward suggested-adjacency. Title
+    comes from oEmbed (no API key, works anywhere); transcript from
+    youtube-transcript-api (best-effort — YouTube often blocks datacenter IPs,
+    so cloud runs may get title-only). Returns [{url, video_id, title, channel,
+    transcript}]. Never raises.
+    """
+    out = []
+    seen = set()
+    for raw in (urls or []):
+        vid = _extract_youtube_id(raw)
+        if not vid or vid in seen:
+            continue
+        seen.add(vid)
+        watch = f"https://www.youtube.com/watch?v={vid}"
+        title, channel = "", ""
+        try:
+            import requests as _rq
+            r = _rq.get("https://www.youtube.com/oembed",
+                        params={"url": watch, "format": "json"}, timeout=10)
+            if r.status_code == 200:
+                j = r.json()
+                title = (j.get("title") or "").strip()
+                channel = (j.get("author_name") or "").strip()
+        except Exception as e:
+            logger.info("oEmbed failed for %s: %s", vid, e)
+        transcript = ""
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+            snips = YouTubeTranscriptApi().fetch(vid, languages=["en"])
+            parts = []
+            for s in snips:
+                t = getattr(s, "text", None)
+                if t is None and isinstance(s, dict):
+                    t = s.get("text")
+                if t:
+                    parts.append(t)
+            transcript = " ".join(parts).strip()[:transcript_chars]
+        except Exception as e:
+            logger.info("transcript fetch failed for %s: %s", vid, e)
+        if title or transcript:
+            out.append({"url": watch, "video_id": vid, "title": title,
+                        "channel": channel, "transcript": transcript})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _adjacency_prompt_block(adj: list) -> str:
+    """Build the ADJACENCY TARGETS instruction block from fetched context."""
+    if not adj:
+        return ""
+    lines = []
+    for i, v in enumerate(adj, 1):
+        entry = f"  {i}. Title: \"{v.get('title') or '(untitled)'}\""
+        if v.get("channel"):
+            entry += f" — by {v['channel']}"
+        if v.get("transcript"):
+            entry += f"\n     Transcript excerpt: {v['transcript']}"
+        lines.append(entry)
+    return (
+        "ADJACENCY TARGETS — the creator specifically wants OUR video to be the "
+        "\"natural next watch\" to these videos, so YouTube suggests ours right "
+        "next to them and we inherit their audience. For each idea, take a "
+        "response / deeper-dive / specific-application / contrarian / \"part 2\" "
+        "angle on these; mirror their topic and title language (same semantic "
+        "cluster) WITHOUT copying, and keep our practical AI-for-everyday-life "
+        "voice. Prioritize these over the generic trending list below.\n"
+        + "\n".join(lines) + "\n\n"
+    )
+
+
+def _fetch_top_youtube_ai_titles(limit: int = 10) -> list:
+    """Return the current top AI videos on YouTube as [{title, channel}].
+
+    "Top" = most-viewed AI videos uploaded in roughly the last 45 days, so the
+    signal reflects what's resonating right NOW. Tries the YouTube Data API v3
+    with GOOGLE_API_KEY first (no OAuth, works headless/cloud); falls back to
+    the channel's cached OAuth service if a token already exists. Returns [] on
+    any failure so idea generation still works without it.
+    """
+    from datetime import timezone, timedelta
+    published_after = (
+        datetime.now(timezone.utc) - timedelta(days=45)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    params = {
+        "part": "snippet",
+        "q": "artificial intelligence",
+        "type": "video",
+        "order": "viewCount",
+        "maxResults": limit,
+        "relevanceLanguage": "en",
+        "regionCode": "US",
+        "videoCategoryId": "28",    # Science & Technology (filters craft/music/etc.)
+        "videoDuration": "medium",  # 4-20 min — excludes Shorts spam
+        "publishedAfter": published_after,
+    }
+
+    def _titles_from_items(items):
+        out = []
+        for it in items or []:
+            sn = it.get("snippet", {}) or {}
+            title = (sn.get("title") or "").strip()
+            if title:
+                out.append({"title": title,
+                            "channel": (sn.get("channelTitle") or "").strip()})
+        return out[:limit]
+
+    # 1) API-key path (simplest; no OAuth; works in the cloud container).
+    api_key = (os.getenv("GOOGLE_API_KEY") or "").strip()
+    if api_key:
+        try:
+            import requests as _rq
+            r = _rq.get("https://www.googleapis.com/youtube/v3/search",
+                        params={**params, "key": api_key}, timeout=12)
+            if r.status_code == 200:
+                out = _titles_from_items((r.json() or {}).get("items"))
+                if out:
+                    return out
+            else:
+                logger.info("YouTube Data API (key) %s: %s",
+                            r.status_code, r.text[:180])
+        except Exception as e:
+            logger.info("YouTube Data API (key) failed: %s", e)
+
+    # 2) OAuth service path — only if a token is already cached (never trigger
+    #    an interactive auth flow just to fetch titles).
+    try:
+        import youtube_publisher as yp
+        tok = getattr(yp, "TOKEN_PATH", None)
+        if tok is not None and Path(tok).exists():
+            service = yp._build_service()
+            resp = service.search().list(**params).execute()
+            out = _titles_from_items(resp.get("items"))
+            if out:
+                return out
+    except Exception as e:
+        logger.info("YouTube Data API (oauth) failed: %s", e)
+
+    return []
+
+
+# Attachments the Idea Generator accepts as the basis for the brainstorm.
+# PDFs go to Claude as a native document block (it reads them directly, no
+# text-extraction lib needed on SDK >=0.30); plain-text/markdown are sent as a
+# text document block. Capped so a huge upload can't blow the request budget.
+_IDEA_DOC_MAX_BYTES = 32 * 1024 * 1024   # 32 MB (Anthropic PDF request cap)
+_IDEA_TEXT_EXT = {".txt", ".md", ".markdown", ".rtf", ".csv"}
+# How much of the extracted document text we (a) persist on the saved idea
+# batch, and (b) inject into the Topic Assistant / Script Writer prompt. The
+# Foundry agents take plain text and have finite context, so the excerpt is
+# trimmed hard; the full text still powers the Claude idea/brief passes.
+_IDEA_DOC_STORE_CHARS = 60000     # cap kept in idea_generator.json per batch
+_IDEA_DOC_EXCERPT_CHARS = 8000    # cap injected into the script workflow
+
+
+def _extract_pdf_text(raw: bytes) -> str:
+    """Best-effort plain-text extraction from PDF bytes via pypdf. Returns ""
+    if pypdf is missing or the PDF has no extractable text (e.g. scanned)."""
+    try:
+        import io
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(raw))
+        parts = []
+        for page in reader.pages:
+            try:
+                parts.append(page.extract_text() or "")
+            except Exception:
+                continue
+        return "\n".join(p for p in parts if p).strip()
+    except Exception as e:
+        logger.info("PDF text extraction unavailable/failed: %s", e)
+        return ""
+
+
+def _idea_document_block(storage):
+    """Turn an uploaded Werkzeug file into an Anthropic content block.
+
+    Returns (block, filename, text) where `text` is a best-effort plain-text
+    rendering of the document for reuse by the text-based Topic Assistant /
+    Script Writer agents (empty string if none could be extracted). Raises
+    ValueError with a user-facing message on an empty file, an oversize file,
+    or an unsupported type.
+    """
+    import base64 as _b64
+    name = (getattr(storage, "filename", "") or "attachment").strip()
+    raw = storage.read()
+    if not raw:
+        raise ValueError("The attached file is empty.")
+    if len(raw) > _IDEA_DOC_MAX_BYTES:
+        mb = _IDEA_DOC_MAX_BYTES // (1024 * 1024)
+        raise ValueError(f"Attachment is too large (max {mb} MB).")
+    ext = os.path.splitext(name)[1].lower()
+    ctype = (getattr(storage, "mimetype", "") or "").lower()
+    is_pdf = ext == ".pdf" or ctype == "application/pdf"
+    if is_pdf:
+        block = {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": _b64.standard_b64encode(raw).decode("ascii"),
+            },
+            "title": name[:200],
+            "citations": {"enabled": False},
+        }
+        return block, name, _extract_pdf_text(raw)
+    if ext in _IDEA_TEXT_EXT or ctype.startswith("text/"):
+        try:
+            text = raw.decode("utf-8", "replace")
+        except Exception:
+            raise ValueError("Could not read the text attachment.")
+        block = {
+            "type": "document",
+            "source": {"type": "text", "media_type": "text/plain",
+                       "data": text},
+            "title": name[:200],
+            "citations": {"enabled": False},
+        }
+        return block, name, text.strip()
+    raise ValueError(
+        "Unsupported attachment type. Upload a PDF or a text/markdown file.")
+
+
+def _grok_complete(system: str, user: str, model: str = None,
+                   temperature: float = 0.8) -> str:
+    """Run one Grok (xAI) chat turn and return its text. Raises on failure.
+
+    Used by the Idea Generator so Grok brainstorms alongside Claude. `model`
+    defaults to IDEA_GROK_MODEL. Grok has no server-side web-search loop here, so
+    the caller grounds it through the prompt (the live trend list, adjacency
+    context, and any attached document's text) — the same signals Claude gets.
+    """
+    api_key = _resolve_xai_api_key()
+    if not api_key:
+        raise RuntimeError(
+            "xAI/Grok is not configured. Set XAI_API_KEY (or GROK_API_KEY) in "
+            "the root .env.")
+    try:
+        import xai_sdk
+        from xai_sdk.chat import system as _xai_system, user as _xai_user
+    except ImportError as e:
+        raise RuntimeError(f"xai_sdk is not installed: {e}")
+    _model = model or IDEA_GROK_MODEL
+    logger.info("🤖 Grok %s | calling…", _model)
+    client = xai_sdk.Client(api_key=api_key)
+    chat = client.chat.create(model=_model, temperature=temperature)
+    chat.append(_xai_system(system))
+    chat.append(_xai_user(user))
+    resp = chat.sample()
+    out = (getattr(resp, "content", "") or "").strip()
+    logger.info("✅ Grok %s returned %d chars", _model, len(out))
+    return out
+
+
+@app.route("/api/ideas/generate", methods=["POST"])
+def api_ideas_generate():
+    """Brainstorm 10 distinct video-episode ideas, grounded by default in the
+    current top AI videos on YouTube (request box optional). An optional file
+    attachment (PDF or text) can be uploaded as the basis for the ideas."""
+    # Accept EITHER application/json (no attachment) OR multipart/form-data
+    # (idea request fields + an optional file). Normalize both into `data`.
+    idea_doc = None
+    idea_doc_name = ""
+    idea_doc_text = ""
+    if request.files and request.files.get("file"):
+        data = {
+            "request": request.form.get("request", ""),
+            "adjacency_urls": request.form.get("adjacency_urls", ""),
+            "lane": request.form.get("lane", ""),
+            "idea_format": request.form.get("idea_format", ""),
+        }
+        try:
+            idea_doc, idea_doc_name, idea_doc_text = _idea_document_block(
+                request.files["file"])
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+    else:
+        data = request.get_json(silent=True) or {}
+    user_request = (data.get("request") or "").strip()
+    # Did the producer actually type a specific topic OR attach a file? Either
+    # becomes the HARD anchor for all 10 ideas (vary angle/format, never the
+    # subject). If neither, we fall back to a trend-driven brainstorm.
+    has_doc = idea_doc is not None
+    has_request = bool(user_request) or has_doc
+
+    # Content lane — which thematic bucket to weight toward. Defaults to "auto"
+    # (no weighting) so the generator no longer silently drags every batch back
+    # to the careers/resume lane.
+    lane_key = (data.get("lane") or IDEA_LANE_DEFAULT).strip().lower()
+    if lane_key not in IDEA_LANES:
+        lane_key = IDEA_LANE_DEFAULT
+    lane_block = IDEA_LANES[lane_key]
+
+    # Optional adjacency targets: YouTube links the creator wants to be the
+    # "natural next watch" to. We fetch each title + transcript and steer the
+    # ideas to ride them (suggested-adjacency). Accept a list or newline string.
+    adj_raw = data.get("adjacency_urls")
+    if isinstance(adj_raw, str):
+        adj_urls = [u for u in re.split(r"[\s,]+", adj_raw) if u.strip()]
+    elif isinstance(adj_raw, list):
+        adj_urls = [str(u).strip() for u in adj_raw if str(u).strip()]
+    else:
+        adj_urls = []
+    adjacency = _youtube_adjacency_context(adj_urls) if adj_urls else []
+
+    # By default, ground the brainstorm in the CURRENT top AI videos on YouTube
+    # (pulled live at generation time). The request box is now optional.
+    top_videos = _fetch_top_youtube_ai_titles(10)
+    if top_videos:
+        _listing = "\n".join(
+            f"  {i}. {v['title']}" + (f"  — {v['channel']}" if v.get('channel') else "")
+            for i, v in enumerate(top_videos, 1)
+        )
+        if has_request:
+            # A topic was given — trends are CONTEXT ONLY (tone/timeliness), they
+            # must NOT pull ideas off the requested topic.
+            trend_block = (
+                "CURRENT TOP AI VIDEOS ON YOUTUBE (context only, pulled just "
+                "now):\n" + _listing + "\n\n"
+                "Use these ONLY to keep the framing timely and click-worthy. Do "
+                "NOT let them steer the ideas away from the requested topic "
+                "below — the topic wins.\n\n"
+            )
+        else:
+            trend_block = (
+                "CURRENT TOP AI VIDEOS ON YOUTUBE (most-viewed recent uploads, "
+                "pulled just now):\n" + _listing + "\n\n"
+                "Treat these as a live signal of what's resonating right now. "
+                "Propose fresh, distinct episode ideas that ride these trends or "
+                "fill the gaps between them — do NOT simply restate these "
+                "titles.\n\n"
+            )
+    elif has_request:
+        trend_block = ""
+    else:
+        trend_block = (
+            "Use web search to find the CURRENT top/trending AI videos on "
+            "YouTube right now and ground your ideas in what's resonating.\n\n"
+        )
+    if not user_request and not has_doc:
+        user_request = ("Trending AI episode ideas based on the current top AI "
+                        "videos on YouTube")
+
+    system = (
+        "You are the creative producer for @AIwithRoz, a YouTube channel of "
+        "punchy, optimistic explainer videos about using AI in real life "
+        "(2026, general audience). The brand is broad — 'AI for "
+        "everyday life'.\n\n"
+        + lane_block +
+        "Bias every idea toward one of these PROVEN breakout formats:\n"
+        "  • 'I Let AI ___ for a Week' (experiment/challenge — built-in suspense)\n"
+        "  • 'AI Teardown' (rebuild something of the viewer's, before→after)\n"
+        "  • 'What This Means for YOU' (react to a fresh AI drop, everyday-life lens)\n"
+        "  • 'The 5-Minute AI Fix' (one annoying problem solved fast)\n"
+        "  • 'Can AI Actually Do This?' (skeptic tests a bold claim)\n"
+        "  • 'Who Actually Wins/Loses' (follow the consequences of a real AI move)\n\n"
+        "TITLE CRAFT (this is what drives clicks): open a curiosity gap or real "
+        "stakes, be specific, use a number when natural, keep the word 'AI' "
+        "visible, aim for ~50–60 characters, and front-load the benefit. Every "
+        "idea must have a strong cold-open hook and be genuinely different from "
+        "the others — no near-duplicates. Use web search to ground ideas in "
+        "real, current 2026 events, products, and announcements."
+    )
+    if has_request and not has_doc:
+        # Topic lock: the producer's topic is the subject of ALL ideas. The brand
+        # lane / formats / trends are only styling — never swap the subject.
+        system += (
+            "\n\nTOPIC LOCK: The producer has given a SPECIFIC TOPIC for this "
+            "batch (below). Every one of the 10 ideas MUST be directly and "
+            "obviously about THAT topic. The brand lane, breakout formats, and "
+            "trending videos are ONLY styling and framing — never swap the "
+            "subject for a different lane or for whatever is trending. "
+            "Vary the angle and format across the 10 ideas; never the subject. "
+            "If the topic is narrow, go DEEPER (sub-angles, objections, "
+            "use-cases, comparisons, step-by-steps, myths, mistakes) rather than "
+            "broadening into unrelated AI topics."
+        )
+
+    if has_doc:
+        # A file is the basis. Tell the model to read it and anchor every idea
+        # in its content. Works alone or alongside a typed topic (which then
+        # narrows the focus within the document).
+        system += (
+            "\n\nSOURCE DOCUMENT: The producer has ATTACHED a file (shown at the "
+            "start of the message) as the basis for this batch. Read it "
+            "carefully and ground ALL 10 ideas in its actual content — its "
+            "facts, arguments, examples, data, and story. Do not invent details "
+            "that contradict it. Pull the most video-worthy hooks, surprises, "
+            "and takeaways FROM the document and shape them into episodes."
+            + (" The typed topic below narrows which part of the document to "
+               "focus on." if user_request else "")
+        )
+
+    # Optional idea FORMAT (structure). Forces every idea — and its downstream
+    # brief — into a list / "N levels of" shape. "auto" leaves format free.
+    idea_format = (data.get("idea_format") or "auto").strip().lower()
+    if idea_format == "list":
+        system += (
+            "\n\nFORMAT REQUIREMENT — RANKED LIST / COUNTDOWN (this overrides "
+            "format variety): EVERY one of the 10 ideas MUST be a ranked list or "
+            "countdown video. Each title names a specific number and reads like "
+            "'Top 10 AI Tools …', 'The 7 Best …', or '10 AI … Ranked'. Vary the "
+            "number (5, 7, 10, 12) and the noun across ideas, but the SHAPE is "
+            "always a list of concrete, real, nameable items."
+        )
+    elif idea_format == "levels":
+        system += (
+            "\n\nFORMAT REQUIREMENT — 'N LEVELS OF' (this overrides format "
+            "variety): EVERY one of the 10 ideas MUST be a tiered 'levels' video "
+            "that escalates from basic to advanced. Each title reads like 'The 7 "
+            "Levels of …', 'The 5 Stages of …', or 'AI …: From Level 1 to Level "
+            "7'. Vary N (5, 7) and the subject across ideas."
+        )
+
+    if has_doc:
+        src = f' (titled "{idea_doc_name}")' if idea_doc_name else ""
+        topic_line = (
+            f"SOURCE (REQUIRED): base every one of the 10 ideas on the attached "
+            f"document{src} at the start of this message.\n"
+        )
+        if user_request:
+            topic_line += (f"FOCUS within the document: {user_request}\n")
+        topic_directive = topic_line + "\n"
+        diversity_directive = (
+            "Generate exactly 10 video episode ideas, ALL grounded in the "
+            "attached document's content. Map each to one of the breakout "
+            "formats and make the set diverse across FORMATS and ANGLES drawn "
+            "from the document — do not drift to unrelated AI topics or replace "
+            "the document's subject with a trending one."
+        )
+    elif has_request:
+        topic_directive = (
+            "TOPIC (REQUIRED — every one of the 10 ideas MUST be directly about "
+            f"this, and nothing else):\n{user_request}\n\n"
+        )
+        diversity_directive = (
+            "Generate exactly 10 video episode ideas, ALL squarely about the "
+            "topic above. Map each to one of the breakout formats and make the "
+            "set diverse across FORMATS and ANGLES (not subjects). Do not drift "
+            "to unrelated AI topics and do not replace the topic with a trending "
+            "one."
+        )
+    else:
+        topic_directive = f"Request: {user_request}\n\n"
+        diversity_directive = (
+            "Generate exactly 10 video episode ideas. Map each to one of the "
+            "breakout formats above, make the set genuinely diverse across "
+            "formats and topics, and where it fits, ride the momentum of the "
+            "current top AI videos listed"
+        )
+    user = (
+        _adjacency_prompt_block(adjacency) +
+        trend_block +
+        topic_directive +
+        diversity_directive
+        + (" — and especially the ADJACENCY TARGETS above"
+           if adjacency else "") + ". Respond with ONLY a JSON "
+        "array (no prose, no markdown fences) of 10 objects, each with:\n"
+        '  "title": a scroll-stopping, click-worthy title (~50–60 chars, keep "AI" visible)\n'
+        '  "angle": one sentence naming the format + the cold-open hook / why it earns the click\n'
+        "Return only the JSON array."
+    )
+    logger.info("💡 Idea generation requested: %r (lane=%s, top_youtube=%d, adjacency=%d, doc=%s)",
+                user_request, lane_key, len(top_videos), len(adjacency),
+                idea_doc_name or "-")
+
+    # Brainstorm with BOTH Claude Opus 5.5 and Grok (xAI), concurrently, so each
+    # batch carries two independent model perspectives (grouped by source in the
+    # UI). Each returns up to 10 ideas. Either model failing is non-fatal — we
+    # return whatever the other produced, and surface the failure as a warning.
+    _CLAUDE_SOURCE = "Claude Opus 5.5"
+    _GROK_SOURCE = "Grok"
+
+    def _clean_ideas(raw_text: str, source: str) -> list:
+        parsed = _parse_json_array(raw_text)
+        return [
+            {"title": str(i.get("title", "")).strip(),
+             "angle": str(i.get("angle", "")).strip(),
+             "source": source}
+            for i in parsed
+            if isinstance(i, dict) and str(i.get("title", "")).strip()
+        ][:10]
+
+    def _gen_claude():
+        # Claude gets the PDF as a native document block (best grounding).
+        raw = _anthropic_complete(system, user, max_tokens=4000,
+                                  use_web_search=True, max_searches=4,
+                                  model=IDEA_MODEL,
+                                  documents=[idea_doc] if idea_doc else None,
+                                  timeout=120.0 if idea_doc else 60.0)
+        return _clean_ideas(raw, _CLAUDE_SOURCE), raw
+
+    def _gen_grok():
+        # Grok can't take the PDF block, so inline the extracted text (if any)
+        # into its prompt so it's grounded in the same source as Claude.
+        grok_user = user
+        if has_doc and idea_doc_text.strip():
+            grok_user = (
+                f'SOURCE DOCUMENT (titled "{idea_doc_name or "attachment"}") — '
+                'base every idea on this:\n"""\n'
+                + idea_doc_text[:_IDEA_DOC_STORE_CHARS]
+                + '\n"""\n\n' + user)
+        raw = _grok_complete(system, grok_user, model=IDEA_GROK_MODEL)
+        return _clean_ideas(raw, _GROK_SOURCE), raw
+
+    import concurrent.futures as _futures
+    claude_ideas, grok_ideas = [], []
+    warnings = []
+    claude_raw = grok_raw = ""
+    with _futures.ThreadPoolExecutor(max_workers=2) as _ex:
+        _fut_c = _ex.submit(_gen_claude)
+        _fut_g = _ex.submit(_gen_grok)
+        try:
+            claude_ideas, claude_raw = _fut_c.result()
+        except Exception as e:
+            logger.error(f"❌ Claude idea generation failed: {e}")
+            warnings.append(f"Claude Opus 5.5 failed: {e}")
+        try:
+            grok_ideas, grok_raw = _fut_g.result()
+        except Exception as e:
+            logger.error(f"❌ Grok idea generation failed: {e}")
+            warnings.append(f"Grok failed: {e}")
+
+    # Claude group first, then Grok — the UI groups by source in this order.
+    clean = claude_ideas + grok_ideas
+    if not clean:
+        # Log a head + tail sample of the raw model output so a recurrence is
+        # diagnosable without guessing (parser hardened, but keep the receipts).
+        _raw = (claude_raw or grok_raw or "")
+        logger.warning(
+            "⚠️ Idea generation returned no parseable ideas "
+            "(raw %d chars). HEAD=%r TAIL=%r",
+            len(_raw), _raw[:400], _raw[-200:])
+        return jsonify({
+            "success": False,
+            "error": ("Idea generation failed. " + " ".join(warnings)) if warnings
+            else "No parseable ideas were returned. Please try again.",
+        }), 502
+    source_document = (
+        {"name": idea_doc_name, "text": idea_doc_text}
+        if (has_doc and idea_doc_text.strip()) else None
+    )
+    batch = _save_idea_batch(user_request, clean, source_document=source_document)
+    logger.info("✅ Idea generation produced %d ideas (Claude=%d, Grok=%d; batch %s%s)",
+                len(clean), len(claude_ideas), len(grok_ideas), batch["id"][:8],
+                f", doc={idea_doc_name}" if source_document else "")
+    return jsonify({
+        "success": True, "ideas": clean, "batch_id": batch["id"],
+        "top_youtube": top_videos,
+        "warnings": warnings,
+        # Tell the UI whether this batch carries a forwardable source document
+        # (present only when text could be extracted — e.g. not a scanned PDF).
+        "source_document": ({"name": idea_doc_name} if source_document else None),
+        "adjacency": [{"url": v["url"], "title": v["title"],
+                       "channel": v["channel"],
+                       "has_transcript": bool(v.get("transcript"))}
+                      for v in adjacency],
+    })
+
+
+@app.route("/api/ideas/history", methods=["GET"])
+def api_ideas_history():
+    """Return saved idea batches, newest first."""
+    return jsonify({"success": True, "batches": _load_idea_history()})
+
+
+@app.route("/api/ideas/history/clear", methods=["POST"])
+def api_ideas_history_clear():
+    """Delete all saved idea batches."""
+    try:
+        if _IDEAS_HISTORY_PATH.exists():
+            _IDEAS_HISTORY_PATH.unlink()
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    return jsonify({"success": True})
+
+
+@app.route("/api/ideas/describe", methods=["POST"])
+def api_ideas_describe():
+    """Expand a chosen idea into a full creative brief in the house format."""
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    angle = (data.get("angle") or "").strip()
+    user_request = (data.get("request") or "").strip()
+    if not title:
+        return jsonify({"success": False, "error": "Missing idea title."}), 400
+
+    # If this idea came from a batch that was grounded in an uploaded document,
+    # feed that document to Claude too so the brief is anchored in its content
+    # (facts, examples, story) — not just the title/angle.
+    src_batch = _find_idea_batch(data.get("batch_id"))
+    src_doc = (src_batch or {}).get("source_document") or {}
+    src_doc_text = (src_doc.get("text") or "").strip()
+    src_doc_name = (src_doc.get("name") or "").strip()
+    doc_blocks = None
+    if src_doc_text:
+        doc_blocks = [{
+            "type": "document",
+            "source": {"type": "text", "media_type": "text/plain",
+                       "data": src_doc_text},
+            "title": (src_doc_name or "source document")[:200],
+            "citations": {"enabled": False},
+        }]
+
+    # Optional adjacency targets carried over from generation, so the brief is
+    # also inspired by (and positioned next to) the videos the creator picked.
+    adj_raw = data.get("adjacency_urls")
+    if isinstance(adj_raw, str):
+        adj_urls = [u for u in re.split(r"[\s,]+", adj_raw) if u.strip()]
+    elif isinstance(adj_raw, list):
+        adj_urls = [str(u).strip() for u in adj_raw if str(u).strip()]
+    else:
+        adj_urls = []
+    adjacency = _youtube_adjacency_context(adj_urls) if adj_urls else []
+
+    # Format carried from idea generation — make the brief a list / levels video.
+    idea_format = (data.get("idea_format") or "auto").strip().lower()
+    fmt_block = ""
+    if idea_format == "list":
+        fmt_block = (
+            "FORMAT (REQUIRED): This is a RANKED LIST / COUNTDOWN episode. The "
+            "brief MUST make that explicit — state the exact number of items "
+            "(from the title), that the video lists or counts down ALL of them, "
+            "one item per segment, each with what it is, who it is for, and the "
+            "one catch. Name real, specific items. This is a list, not a general "
+            "explainer.\n\n"
+        )
+    elif idea_format == "levels":
+        fmt_block = (
+            "FORMAT (REQUIRED): This is an 'N LEVELS OF' episode. The brief MUST "
+            "make that explicit — state the number of levels (from the title), "
+            "that it escalates from basic to advanced, one level per segment, "
+            "each a clear step up from the last.\n\n"
+        )
+
+    system = (
+        "You are a creative director writing a production brief for an "
+        "energizing, optimistic YouTube explainer video about AI/technology "
+        "aimed at a general 2026 audience. Match the example's exact structure "
+        "and voice precisely."
+        + (
+            "\n\nSOURCE DOCUMENT: A file (shown at the start of the message) is "
+            "the basis for this episode. Ground the brief in its actual content "
+            "— its facts, arguments, examples, data, and story — and pull the "
+            "core message and 2026 touchpoints from it. Do not contradict it."
+            if doc_blocks else ""
+        )
+    )
+    user = (
+        _adjacency_prompt_block(adjacency) +
+        (f"SOURCE DOCUMENT provided at the start of this message"
+         f'{f" (titled \"{src_doc_name}\")" if src_doc_name else ""} — anchor '
+         f"the brief in it.\n" if doc_blocks else "") +
+        f"Original request: {user_request}\n"
+        f"Chosen episode title: {title}\n"
+        f"Angle: {angle}\n\n"
+        + fmt_block +
+        "Write a detailed creative brief for this episode.\n\n"
+        "Wrap your output EXACTLY like this — a line containing only "
+        "===BRIEF===, then the brief, then a line containing only ===END===. "
+        "Output NOTHING before ===BRIEF=== or after ===END=== (no "
+        "acknowledgement, no narration, no commentary about your process).\n\n"
+        "Between the markers, use EXACTLY this structure, with no markdown "
+        "headers other than the capitalized labels shown:\n"
+        "1. An opening paragraph (4–6 sentences) describing the episode in an "
+        "energizing, optimistic, momentum-building voice.\n"
+        "2. A blank line, then these four labeled blocks, each starting with the "
+        "label in caps followed by a colon, in this order: TONE, CORE MESSAGE, "
+        "LANGUAGE CUES, 2026 TOUCHPOINTS.\n\n"
+        "Follow this example format closely (do not copy its content):\n\n"
+        + IDEA_BRIEF_EXAMPLE
+    )
+    logger.info("✍️ Brief requested for: %r%s", title,
+                f" (grounded in {src_doc_name or 'source doc'})" if doc_blocks else "")
+    try:
+        text = _anthropic_complete(system, user, max_tokens=2000,
+                                   use_web_search=False, model=IDEA_MODEL,
+                                   documents=doc_blocks,
+                                   timeout=120.0 if doc_blocks else 60.0)
+        text = _extract_brief(text)
+    except Exception as e:
+        logger.error(f"❌ Idea brief generation failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    if not text:
+        logger.warning("⚠️ Brief generation returned empty text")
+        return jsonify({
+            "success": False,
+            "error": "Claude returned an empty brief. Please try again.",
+        }), 502
+    logger.info("✅ Brief generated (%d chars)", len(text))
+    # Persist the brief back onto its idea so recalling the batch brings it back.
+    _save_brief_to_batch(data.get("batch_id"), title, text, idea_format)
+    return jsonify({"success": True, "title": title, "description": text})
+
+
+# ---------------------------------------------------------------------------
+# X (Twitter) posting — promote published YouTube episodes + standalone posts.
+#
+# Posts from the @AIwithRoz account using OAuth 1.0a user tokens (X_API_KEY,
+# X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET in the root .env). The post
+# text is drafted by Claude Opus 4.8 (reuses _anthropic_complete). Requires the
+# `tweepy` package. All calls degrade gracefully when keys are absent so the
+# rest of the app is unaffected.
+# ---------------------------------------------------------------------------
+X_ACCOUNT_HANDLE = "AIwithRoz"
+
+
+def _x_credentials():
+    """Return the @AIwithRoz OAuth1 credentials, or None if incomplete.
+
+    Same resolution as the HeyGen key: a value saved in the API Keys dialog
+    (settings file) wins, then the process env / root .env. Read on every call,
+    so a save in the dialog takes effect without a restart."""
+    try:
+        settings = _load_scriptcraft_settings()
+    except Exception:
+        settings = {}
+
+    def _r(setting_key, env_var):
+        return ((settings.get(setting_key) or "").strip()
+                or (os.getenv(env_var) or "").strip())
+
+    creds = {
+        "api_key": _r("x_api_key", "X_API_KEY"),
+        "api_secret": _r("x_api_secret", "X_API_SECRET"),
+        "access_token": _r("x_access_token", "X_ACCESS_TOKEN"),
+        "access_secret": _r("x_access_secret", "X_ACCESS_SECRET"),
+    }
+    if all(creds.values()):
+        creds["bearer_token"] = _r("x_bearer_token", "X_BEARER_TOKEN") or None
+        return creds
+    return None
+
+
+def _x_client():
+    """Build a tweepy v2 client for @AIwithRoz, or raise a clear error."""
+    creds = _x_credentials()
+    if not creds:
+        raise RuntimeError(
+            "X (@AIwithRoz) credentials are not configured. Add X API Key, "
+            "X API Secret, X Access Token, and X Access Secret in the API Keys "
+            "dialog (🔑), or set X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, and "
+            "X_ACCESS_SECRET in the root .env (the X app must have Read AND "
+            "Write permission)."
+        )
+    try:
+        import tweepy
+    except ImportError:
+        raise RuntimeError(
+            "The 'tweepy' package is not installed. Run: pip install tweepy"
+        )
+    return tweepy.Client(
+        bearer_token=creds.get("bearer_token"),
+        consumer_key=creds["api_key"],
+        consumer_secret=creds["api_secret"],
+        access_token=creds["access_token"],
+        access_token_secret=creds["access_secret"],
+        wait_on_rate_limit=True,
+    )
+
+
+def _generate_x_post(mode: str, title: str = "", youtube_url: str = "",
+                     topic: str = "") -> str:
+    """Draft a promo/standalone X post with Claude. mode: 'episode' | 'random'.
+
+    The YouTube link (if any) is appended AFTER the model writes the copy, so
+    the model never wastes characters on the URL and can't mangle it. X wraps
+    every link to ~23 chars, so we reserve ~24 from the 280 budget.
+    """
+    link = (youtube_url or "").strip()
+    budget = 280 - (24 if link else 0)
+    if mode == "episode":
+        ctx = f'New YouTube video title: "{title}".'
+        if topic:
+            ctx += f"\nExtra context: {topic}"
+        instruction = (
+            "Write an upbeat, engaging X (Twitter) post promoting this brand-new "
+            "YouTube video for the @AIwithRoz channel (AI/tech explainers for a "
+            "general audience). Hook the reader, tease the value, and add 1-3 "
+            "relevant hashtags. Do NOT include the video link — it is appended "
+            f"automatically. Keep it under {budget} characters."
+        )
+    else:
+        ctx = f"Topic / what to post about: {topic or title}"
+        instruction = (
+            "Write an engaging standalone X (Twitter) post for the @AIwithRoz "
+            "channel (AI/tech explainers for a general audience) about the topic "
+            "below. Make it punchy and shareable with 1-3 relevant hashtags. "
+            f"Keep it under {budget} characters."
+            + (" You may reference the linked video; the link is appended "
+               "automatically." if link else "")
+        )
+    system = (
+        "You are the social media manager for the @AIwithRoz YouTube channel. "
+        "You write short, high-energy X posts. Output ONLY the post text — no "
+        "surrounding quotes, no preamble, no explanation, no markdown."
+    )
+    user = f"{instruction}\n\n{ctx}"
+    text = _anthropic_complete(system, user, max_tokens=400,
+                               use_web_search=False).strip()
+    # Strip wrapping quotes the model sometimes adds.
+    if len(text) >= 2 and text[0] in "\"'" and text[-1] == text[0]:
+        text = text[1:-1].strip()
+    if len(text) > budget:
+        text = text[:budget].rstrip()
+    if link:
+        text = f"{text}\n{link}"
+    return text
+
+
+@app.route("/api/x/status", methods=["GET"])
+def api_x_status():
+    """Report whether @AIwithRoz X posting is configured (keys present)."""
+    return jsonify({
+        "success": True,
+        "configured": _x_credentials() is not None,
+        "account": X_ACCOUNT_HANDLE,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Final polish pass — take the finished script from the Azure agents and run it
+# through Claude Fable 5 for one more spin: sharper hooks, current references,
+# punchier lines. The house format (chapters, Host:/VISUAL CUE:/HEYGEN blocks)
+# is preserved verbatim so all downstream tooling keeps working.
+# ---------------------------------------------------------------------------
+
+def _strip_reminder_tags(text: str) -> str:
+    """Remove injected reminder/warning XML blocks that occasionally leak into
+    web-search responses (e.g. <search_reminders>…</search_reminders>)."""
+    if not text:
+        return text
+    # Paired blocks whose tag name mentions "reminder" or "warning".
+    text = re.sub(
+        r"<([a-zA-Z_]*(?:reminder|warning)[a-zA-Z_]*)\b[^>]*>.*?</\1>",
+        "", text, flags=re.DOTALL | re.IGNORECASE,
+    )
+    # Any stray self-closing / unpaired reminder-ish tags.
+    text = re.sub(
+        r"</?[a-zA-Z_]*(?:reminder|warning)[a-zA-Z_]*\b[^>]*>",
+        "", text, flags=re.IGNORECASE,
+    )
+    return text.strip()
+
+
+_POLISH_SYSTEM = (
+    "You are a senior script doctor for a high-energy AI/tech YouTube show. You "
+    "receive a COMPLETE, already-written video script and perform one final "
+    "polish-and-elevate pass. The draft is competent but vanilla — your job is "
+    "to make it noticeably sharper and more alive without changing its "
+    "substance or structure.\n\n"
+    "GOALS:\n"
+    "• Punchier — tighten flabby sentences, kill filler, vary rhythm (short "
+    "punchy lines against longer rhythmic ones), and make the hooks and "
+    "transitions land harder.\n"
+    "• More current — where the script references AI tools, models, products, "
+    "or trends, update them to what is actually true and notable right now "
+    "(use web search to verify). Replace stale or generic name-drops with "
+    "specific, real, 2026-accurate examples.\n"
+    "• More advanced — raise the ceiling of insight: add a sharper framing, a "
+    "non-obvious angle, or a crisper 'why this matters' where the draft is "
+    "surface-level. Sound like an expert, not a summarizer.\n"
+    "• More relevant — keep it tightly on-topic and speak to the audience.\n"
+    "• Voiceable by a HeyGen AI avatar — this script is READ ALOUD by a HeyGen "
+    "text-to-speech avatar, which struggles with intonation, emphasis, sarcasm, "
+    "and irony (it can't 'perform' a line the way a human would). Rewrite so the "
+    "MEANING lands from the words alone, not from vocal delivery: prefer short, "
+    "clear declarative sentences; put the emphasis in word choice and order "
+    "rather than relying on stressed words; avoid sarcasm, rhetorical irony, and "
+    "jokes that need a knowing tone; avoid tongue-twisters, hard consonant "
+    "clusters, and ambiguous phrasing the TTS may mispronounce or run together; "
+    "use punctuation (periods, commas, dashes) to build in natural pauses and "
+    "pacing; spell out or simplify things TTS mangles (symbols, unusual "
+    "acronyms, large numbers) into speakable form. The goal is a script that "
+    "sounds natural and clear when spoken by the avatar.\n\n"
+    "HARD CONSTRAINTS — do not break these:\n"
+    "• Preserve the EXACT structure and formatting of the input: same chapters "
+    "and headings, same 'Host:', 'VISUAL CUE:', 'HEYGEN', b-roll, and any other "
+    "labeled sections, in the same order. Rewrite the words inside them; never "
+    "add, drop, reorder, or rename sections.\n"
+    "• Keep roughly the same length and pacing (±15%). This is a polish, not a "
+    "rewrite from scratch.\n"
+    "• Keep it truthful. Do not invent products, quotes, stats, or events. If "
+    "you can't verify a specific claim, keep it general rather than fabricate.\n"
+    "• NEVER touch production-only sections. Any content between a "
+    "'[PRODUCTION BEGIN]' and '[PRODUCTION END]' marker (and the markers "
+    "themselves) must be reproduced VERBATIM — do not polish, summarize, "
+    "reorder, or drop it. Only rewrite the Host narration OUTSIDE those "
+    "markers.\n"
+    "• Preserve the show's optimistic, energizing voice.\n\n"
+    "OUTPUT: Return ONLY the full polished script text, ready to drop back in. "
+    "No preamble, no commentary, no explanation of what you changed, no code "
+    "fences."
+)
+
+
+# Production-only blocks the polish pass must NEVER touch. Everything between
+# [PRODUCTION BEGIN] and [PRODUCTION END] (production notes, not spoken Host:
+# narration) is pulled out before polishing and restored verbatim afterward, so
+# only the host sections OUTSIDE these tags are ever rewritten. Case-insensitive
+# and tolerant of extra whitespace inside the tags; DOTALL so a block can span
+# many lines.
+_PRODUCTION_BLOCK_PATTERN = r"\[PRODUCTION\s+BEGIN\].*?\[PRODUCTION\s+END\]"
+_PRODUCTION_BLOCK_RE = re.compile(
+    _PRODUCTION_BLOCK_PATTERN, re.IGNORECASE | re.DOTALL)
+_PRODUCTION_BLOCK_SPLIT_RE = re.compile(
+    "(" + _PRODUCTION_BLOCK_PATTERN + ")", re.IGNORECASE | re.DOTALL)
+
+
+def _strip_production_blocks(text: str) -> str:
+    """Remove every [PRODUCTION BEGIN]…[PRODUCTION END] block outright (the
+    user's editing-only notes) so downstream spoken output — the HeyGen narration
+    and the HeyGen curl `content` the avatar reads — never contains them.
+    Collapses the extra blank lines the removal leaves behind. Used at the HeyGen
+    call boundaries only, so the saved script itself keeps the blocks."""
+    if not text:
+        return text
+    out = _PRODUCTION_BLOCK_RE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", out)
+
+
+def _mask_production_blocks(script: str):
+    """Replace every [PRODUCTION BEGIN]…[PRODUCTION END] block with an opaque
+    ``[[PRODUCTION_BLOCK_N]]`` sentinel so the polish model never sees (or can
+    alter) it. Returns ``(masked_script, blocks)`` where ``blocks[i]`` is the
+    verbatim original for sentinel ``i``."""
+    blocks = []
+
+    def _repl(m):
+        idx = len(blocks)
+        blocks.append(m.group(0))
+        return f"[[PRODUCTION_BLOCK_{idx}]]"
+
+    return _PRODUCTION_BLOCK_RE.sub(_repl, script), blocks
+
+
+def _restore_production_blocks(text: str, blocks) -> tuple:
+    """Drop each verbatim production block back where its sentinel sits. Returns
+    ``(restored_text, missing_indices)``; ``missing_indices`` lists any sentinel
+    the model dropped/mangled so the caller can fall back."""
+    missing = []
+    for idx, block in enumerate(blocks):
+        token = f"[[PRODUCTION_BLOCK_{idx}]]"
+        if token in text:
+            text = text.replace(token, block)
+        else:
+            missing.append(idx)
+    return text, missing
+
+
+def _split_by_production(script: str):
+    """Split a script into ordered ``(kind, text)`` segments where ``kind`` is
+    ``'production'`` for a [PRODUCTION BEGIN]…[PRODUCTION END] block and
+    ``'host'`` for everything else. Concatenating the texts reproduces the input
+    exactly (no characters added or lost)."""
+    parts = _PRODUCTION_BLOCK_SPLIT_RE.split(script)
+    segs = []
+    for i, p in enumerate(parts):
+        if not p:
+            continue
+        # split() with one capturing group yields production blocks at odd idx.
+        segs.append(("production" if i % 2 == 1 else "host", p))
+    return segs
+
+
+def _restore_or_keep(rewritten: str, blocks, original: str) -> str:
+    """Put masked [PRODUCTION …] blocks back into an agent-rewritten script.
+
+    Used to shield the shorten/flow agent stages the same way polish is: the
+    script is masked before the agent runs, then blocks are restored here. If the
+    rewriter dropped any sentinel (LLM agents may not preserve them), return
+    ``original`` unchanged so a production block is NEVER lost — that stage just
+    becomes a safe no-op for that script. With no blocks, returns ``rewritten``.
+    """
+    if not blocks:
+        return rewritten
+    restored, missing = _restore_production_blocks(rewritten, blocks)
+    if missing:
+        logger.warning(
+            "⚠️ script rewrite dropped %d [PRODUCTION …] block sentinel(s); "
+            "keeping the pre-rewrite script to preserve your editing notes",
+            len(missing))
+        return original
+    return restored
+
+
+# ---- Grok Imagine still-image prompts (literal subject of the spoken beat) ----
+# A Script Processing stage that injects [GROK IMAGINE / RESOLVE] production blocks
+# so the user can copy-paste them into Grok Imagine: one for the hook and 3-4 per
+# chapter. Each prompt is a literal shot of the paragraph beside it. A named
+# public figure may be an illustrative portrait, and a party may be its established
+# emblem (the Democratic donkey). When a beat cites a quotable source (a
+# social media post, statement, testimony, or a named study/stat), the same block
+# also carries a [QUOTE CARD / RESOLVE] overlay line.
+from linedrive_azure.agents.grok_imagine_literals import (
+    GROK_IMAGINE_SYSTEM,
+    ensure_literal_image_prompt,
+    grok_imagine_beat_instruction,
+    scene_for_beat,
+)
+from linedrive_azure.agents.pro_script_writer import (
+    GROK_IMAGINE_STYLE_TAG as GROK_IMAGINE_STYLE_SUFFIX,
+)
+
+# Model used to author Grok Imagine prompts. Opus 5.5 (the newest Opus on this
+# account) writes noticeably more concrete, entity-grounded editorial scenes than
+# 4.8 for this task. Scoped to this feature so it doesn't change every other call.
+GROK_IMAGINE_MODEL = "claude-opus-5-5"
+
+_GROK_IMAGINE_TAG = "[GROK IMAGINE"
+
+# A line that starts a chapter: "Heading: …" or "Chapter N …" (optionally
+# markdown-#/bold prefixed).
+_CH_BOUNDARY_RE = re.compile(
+    r'^[ \t]*(?:#{1,6}[ \t]*)?\*{0,2}[ \t]*Heading[ \t]*:'
+    r'|^[ \t]*(?:#{1,6}[ \t]*)?\*{0,2}[ \t]*Chapter[ \t]+\d+\b',
+    re.IGNORECASE)
+
+# Trailing non-spoken metadata sections (=== SECTION ===, SUPPORTING RESEARCH,
+# etc.) — injection stops here so prompts land only in real chapters.
+_GI_META_BOUNDARY_RE = re.compile(
+    r'^[ \t]*={3,}[ \t]*[A-Za-z]'
+    r'|^[ \t]*(?:SUPPORTING[ \t]+RESEARCH|FINAL[ \t]+PACKAGING'
+    r'|STRATEGY[ \t]+NOTES|YOUTUBE[ \t]+VIDEO[ \t]+DESCRIPTION'
+    r'|ARTICLES[ \t]+MENTIONED)\b',
+    re.IGNORECASE | re.MULTILINE)
+
+# Title of the trailing, non-spoken section that collects every URL lifted out of
+# the spoken dialogue. The leading "=== … ===" form is deliberately chosen: the
+# HeyGen/curl extractor (text_processing._meta_cut) cuts any "=== SECTION ==="
+# header and everything after it, so the avatar never reads these links aloud and
+# they never reach the curl `content`.
+_ARTICLES_SECTION_TITLE = "=== ARTICLES MENTIONED IN THE SCRIPT ==="
+
+# Inline links the Script Writer sometimes embeds in spoken dialogue — most often
+# Claude web-search citations like "([webapps.ilo.org](https://…))". Matched in
+# three forms, stripped from the narration, and relocated to the Articles section.
+_CITATION_LINK_RE = re.compile(
+    r'\s*\(\s*\[([^\]]+)\]\((https?://[^)\s]+)\)\s*\)')   # ([label](url))
+_MD_LINK_RE = re.compile(r'\[([^\]]+)\]\((https?://[^)\s]+)\)')   # [label](url)
+_BARE_URL_RE = re.compile(r'<?(https?://[^\s<>)\]]+)>?')          # bare http(s)://…
+
+
+def _lift_links_from_spoken(text: str, sink: list) -> str:
+    """Strip every URL/citation from one spoken line, recording ``(label, url)``
+    pairs in ``sink`` (order preserved). Returns the cleaned, speakable text.
+
+    - ``([label](url))`` citations are removed whole (label is just a domain).
+    - ``[label](url)`` keeps the human-readable label, drops the link.
+    - bare ``http(s)://…`` URLs are removed outright.
+    """
+    def _cite(m):
+        sink.append((m.group(1).strip(), m.group(2).strip()))
+        return ''
+    def _md(m):
+        sink.append((m.group(1).strip(), m.group(2).strip()))
+        return m.group(1)
+    def _bare(m):
+        url = m.group(1).rstrip('.,;:')
+        sink.append((url, url))
+        return ''
+    text = _CITATION_LINK_RE.sub(_cite, text)
+    text = _MD_LINK_RE.sub(_md, text)
+    text = _BARE_URL_RE.sub(_bare, text)
+    # Repair the gaps the removals leave behind.
+    text = re.sub(r'\(\s*\)', '', text)             # empty "()" left by a citation
+    text = re.sub(r'[ \t]{2,}', ' ', text)          # collapsed double spaces
+    text = re.sub(r'\s+([.,;:!?])', r'\1', text)    # space before punctuation
+    return text.strip()
+
+
+def _voice_safe_punctuation(text: str) -> str:
+    """Replace punctuation HeyGen's TTS voices badly — em-dashes, en-dashes, and
+    arrows — with voice-friendly equivalents, so the avatar never trips on a dash.
+
+    Deterministic enforcement of the "voice-friendly punctuation" rule that lives
+    in every Script-Writer agent prompt but that the models do NOT reliably obey
+    (the teaching, list, and predictions prompts all forbid em-dashes, yet the
+    output still contains them). Applied to SPOKEN host dialogue only, so URLs,
+    production blocks, and the research/quotes tail are untouched.
+
+      "9–5"              -> "9 to 5"      (number range)
+      "A → B"            -> "A to B"      (arrow)
+      "tools — ChatGPT"  -> "tools, ChatGPT"  (spaced dash = pause)
+      "neural—network"   -> "neural-network"  (compound word)
+    """
+    if not text:
+        return text
+    t = text
+    # Arrows → "to"
+    t = re.sub(r'\s*[→➔➡⇒]\s*', ' to ', t)
+    # Number ranges joined by a figure/en/em dash → "to"
+    t = re.sub(r'(?<=\d)\s*[‒–—―]\s*(?=\d)', ' to ', t)
+    # Spaced em/en dash used as a parenthetical or pause → comma
+    t = re.sub(r'\s+[‒–—―]+\s+', ', ', t)
+    # Any remaining em/en/figure dash (e.g. a compound word) → plain hyphen
+    t = re.sub(r'[‒–—―]+', '-', t)
+    # Clean up any comma doubling we may have introduced
+    t = re.sub(r'\s*,\s*,', ',', t)
+    return t
+
+
+def _tidy_generated_script(script: str) -> str:
+    """Tidy a freshly-written script into the house format:
+
+      1. Drop ``[Visual Cue: …]`` blocks — visuals are added later by the Grok
+         Imagine stage, so the written script should not carry them.
+      2. Collapse the blank lines the Script Writer puts between every sentence
+         so each Host block reads as one single-spaced paragraph (one sentence
+         per line) — the same shape the processed / beat format expects. Chapter
+         headings, trailing metadata sections, and bracketed production blocks
+         (``[GROK IMAGINE …]``, ``[PRODUCTION …]``) keep their own spacing.
+      3. Lift every inline URL/citation out of the spoken dialogue (the avatar
+         must never read a link aloud) into a trailing ``=== ARTICLES MENTIONED
+         IN THE SCRIPT ===`` section, which the HeyGen/curl extractor excludes.
+         Links inside the quotes/research tail and production blocks are left
+         where they are.
+
+    Best-effort — returns the input unchanged on any error.
+    """
+    if not script or not script.strip():
+        return script
+    try:
+        # 1) Remove [Visual Cue: …] blocks (may wrap across lines; a cue never
+        #    contains its own ']', so a non-greedy match stops at its close).
+        text = re.sub(r'[ \t]*\[\s*Visual\s+Cue\s*:.*?\]',
+                      '', script, flags=re.IGNORECASE | re.DOTALL)
+        # …and any bare 'VISUAL CUE:' / '**Visual Cue:**' label lines.
+        text = re.sub(r'(?im)^[ \t]*\**[ \t]*visual\s+cue[ \t]*:.*$', '', text)
+
+        # 2) Collapse between-sentence blank lines inside Host blocks only, and
+        #    3) lift inline URLs out of spoken lines into `links`.
+        lines = text.split("\n")
+        out, in_spoken, in_bracket = [], False, False
+        links = []
+        for ln in lines:
+            stripped = ln.strip()
+            # Keep multi-line bracketed blocks ([GROK IMAGINE …], [PRODUCTION …])
+            # verbatim and never collapse inside them.
+            if in_bracket:
+                out.append(ln)
+                if "]" in ln:
+                    in_bracket = False
+                continue
+            if _CH_BOUNDARY_RE.match(ln) or _GI_META_BOUNDARY_RE.match(ln):
+                in_spoken = False
+                while out and out[-1].strip() == "":
+                    out.pop()
+                if out:
+                    out.append("")            # exactly one blank before a section
+                out.append(ln)
+                continue
+            # A pure "===" fence or a non-chapter "#" heading also ends the spoken
+            # region (e.g. the "=== … ===" / "# 📊 SUPPORTING RESEARCH" quote-tail
+            # fence) — so links in that tail are left alone, not lifted.
+            if re.match(r'^\s*={3,}\s*$', ln) or re.match(r'^\s*#{1,6}\s+\S', ln):
+                in_spoken = False
+                out.append(ln)
+                continue
+            if re.match(r'^\s*\*{0,2}\s*Host\s*\*{0,2}\s*:\s*\*{0,2}\s*$', ln,
+                        re.IGNORECASE):
+                in_spoken = True
+                out.append(ln)
+                continue
+            if stripped.startswith("["):       # a production / grok block
+                out.append(ln)
+                if stripped.count("[") > stripped.count("]"):
+                    in_bracket = True
+                continue
+            if in_spoken:
+                if stripped == "":
+                    continue                   # drop between-sentence blanks
+                cleaned = _lift_links_from_spoken(stripped, links)
+                # Scrub em-dashes / en-dashes / arrows the avatar would mis-voice.
+                cleaned = _voice_safe_punctuation(cleaned)
+                if cleaned:                    # drop lines that were ONLY a link
+                    out.append(cleaned)
+            else:
+                out.append(ln)
+        text = "\n".join(out)
+        text = re.sub(r'\n{3,}', '\n\n', text).strip() + "\n"
+
+        # 3b) Append the collected links as a trailing, non-spoken section (unless
+        #     one is already present — keeps re-processing idempotent).
+        if links and _ARTICLES_SECTION_TITLE not in text:
+            seen, uniq = set(), []
+            for label, url in links:
+                if url in seen:
+                    continue
+                seen.add(url)
+                uniq.append((label, url))
+            rows = [
+                (f"- [{label}]({url})" if label and label != url else f"- {url}")
+                for label, url in uniq
+            ]
+            text = (text.rstrip() + "\n\n" + _ARTICLES_SECTION_TITLE + "\n\n"
+                    + "Sources referenced in the script (not read aloud by the "
+                    "avatar):\n" + "\n".join(rows) + "\n")
+        return text
+    except Exception as e:
+        logger.warning(f"⚠️ _tidy_generated_script failed: {e}")
+        return script
+
+# Non-spoken label lines to skip when picking beats: script metadata, hook/host
+# labels, and stage-direction tags. (Host is handled separately so an inline
+# "Host: <text>" line still counts as spoken.)
+_GI_SKIP_LABEL_RE = re.compile(
+    r'^\**\s*(?:Title|Script-?ID|Script-?Version|Script\s+Type|Duration|'
+    r'Generated|Audience|Tone|Heading|FINAL\s+HOOK|HOOK|Summary|Chapter\s+\d+|'
+    r'GROK\s+IMAGINE|QUOTE\s+CARD|PROMPT\s+OVERLAY|COLD\s+OPEN|PRODUCTION|'
+    r'VERIFY|VISUAL|B-?ROLL)\b',
+    re.IGNORECASE)
+
+
+def _gi_is_host_label(p: str) -> bool:
+    return bool(re.match(r'^\*{0,2}\s*Host\s*\*{0,2}\s*:?\s*\*{0,2}\s*$',
+                         (p or "").strip(), re.IGNORECASE))
+
+
+def _gi_is_spoken(p: str) -> bool:
+    """A spoken beat line eligible for a prompt: not a label/metadata/stage line,
+    not a separator, and long enough to be real dialogue."""
+    s = (p or "").strip()
+    if not s or _gi_is_host_label(s):
+        return False
+    if s.startswith("[") or s.startswith("==") or s.startswith("__"):
+        return False
+    if _GI_SKIP_LABEL_RE.match(s):
+        return False
+    # A leading "Host: " label doesn't disqualify the sentence after it.
+    body = re.sub(r'^\*{0,2}\s*Host\s*\*{0,2}\s*:\s*\*{0,2}\s*', '', s,
+                  flags=re.IGNORECASE)
+    return len(body.split()) >= 12
+
+
+def _gi_beat_text(p: str) -> str:
+    """Strip a leading Host: label so the model sees only the spoken sentence."""
+    return re.sub(r'^\*{0,2}\s*Host\s*\*{0,2}\s*:\s*\*{0,2}\s*', '',
+                  (p or "").strip(), flags=re.IGNORECASE).strip()
+
+
+def _grok_imagine_assets_for_beat(beat_text: str, section_title: str = "",
+                                  video_title: str = "") -> tuple:
+    """Return (image_prompt, quote_card_or_None, on_screen_or_None).
+
+    The prompt is a literal shot of this beat. A named person can be a portrait
+    and a party can be its emblem. A failed model call still returns a
+    deterministic prompt so the paragraph keeps a picture. on_screen is the
+    editor overlay for a correction / bear-market definition, otherwise None.
+    """
+    base = (beat_text or "").strip()
+    if not base:
+        return "", None
+    parts = []
+    if video_title:
+        parts.append(f"VIDEO TITLE: {video_title}")
+    if section_title:
+        parts.append(f"SECTION: {section_title}")
+    parts.append(grok_imagine_beat_instruction(base[:600]))
+    out = ""
+    try:
+        out = _anthropic_complete(
+            GROK_IMAGINE_SYSTEM, "\n".join(parts), max_tokens=1000,
+            use_web_search=False, timeout=60.0, model=GROK_IMAGINE_MODEL)
+    except Exception as e:
+        logger.warning(f"⚠️ Grok Imagine assets failed: {e}")
+        out = ""
+    raw = (out or "").strip()
+    raw = re.sub(r'^```[a-zA-Z]*\n', '', raw)
+    raw = re.sub(r'\n```\s*$', '', raw).strip()
+    img, quote = "", None
+    try:
+        mobj = re.search(r'\{.*\}', raw, re.DOTALL)
+        data = json.loads(mobj.group(0) if mobj else raw)
+        img = (data.get("image_prompt") or "").strip()
+        q = data.get("quote_card")
+        if q and str(q).strip().lower() not in ("null", "none", ""):
+            quote = str(q).strip()
+    except Exception:
+        # JSON was malformed/truncated. Recover the field values by regex rather
+        # than dumping the raw JSON text into the prompt.
+        if '"image_prompt"' in raw:
+            m_img = re.search(r'"image_prompt"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+            img = (m_img.group(1).encode().decode('unicode_escape')
+                   if m_img else "")
+            m_q = re.search(r'"quote_card"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+            if m_q:
+                qv = m_q.group(1).encode().decode('unicode_escape').strip()
+                if qv and qv.lower() not in ("null", "none"):
+                    quote = qv
+        else:
+            img = raw.strip('"').strip()  # non-JSON reply: treat as the prompt
+    img = (img or "").strip().strip('"').strip()
+    if img and not img.endswith((".", "!", "?")):
+        img += "."
+    # Literal subject of THIS beat. A symbolic model reply is replaced here,
+    # and a failed model call still gets a prompt so the paragraph stays aligned.
+    _scene, on_screen = scene_for_beat(base)
+    return ensure_literal_image_prompt(img, base), quote, on_screen
+
+
+def _new_grok_imagine_block(image_prompt: str, quote_card: str = None,
+                            on_screen: str = None) -> str:
+    """Format the copy-paste production block: a GROK IMAGINE line, plus an
+    editor overlay when the beat is a market definition, plus a QUOTE CARD line
+    when the beat cited a quotable source."""
+    out = ["[PRODUCTION BEGIN]", f"[GROK IMAGINE / RESOLVE] {image_prompt}"]
+    if on_screen:
+        out.append(on_screen)
+    if quote_card:
+        out.append(f"[QUOTE CARD / RESOLVE] {quote_card}")
+    out.append("[PRODUCTION END]")
+    return "\n".join(out)
+
+
+def _gi_inject_hook(preamble_lines: list, video_title: str) -> tuple:
+    """Add ONE Grok Imagine block for the hook at the top of the script, before
+    the first chapter — unless the preamble already has a GROK IMAGINE block.
+    Line-based insertion so the title/metadata block keeps its formatting.
+    Returns (new_lines, added_count)."""
+    text = "\n".join(preamble_lines)
+    if _GROK_IMAGINE_TAG.lower() in text.lower():
+        return list(preamble_lines), 0  # hook already illustrated — top-up: skip
+    hook_idx = next((i for i, ln in enumerate(preamble_lines)
+                     if _gi_is_spoken(ln)), None)
+    if hook_idx is None:
+        return list(preamble_lines), 0
+    img, quote, on_screen = _grok_imagine_assets_for_beat(
+        _gi_beat_text(preamble_lines[hook_idx]), "Hook", video_title)
+    if not img:
+        return list(preamble_lines), 0
+    block = _new_grok_imagine_block(img, quote, on_screen).split("\n")
+    new = (list(preamble_lines[:hook_idx]) + block + [""]
+           + list(preamble_lines[hook_idx:]))
+    return new, 1
+
+
+def _gi_process_chapter(body: str, chap_title: str, video_title: str,
+                        max_workers: int) -> tuple:
+    """Inject 3-4 blocks into one chapter body, topping up to target. Returns
+    (new_body, added_count, changed). ``changed`` is False when the caller should
+    keep the original chapter lines verbatim (nothing to add)."""
+    # Tokenize into ordered items; [PRODUCTION …] blocks stay whole. Spoken text
+    # is one paragraph per line here (docx-extracted / processed scripts join
+    # paragraphs with a single \n), so split host segments per line.
+    items = []
+    for kind, text in _split_by_production(body):
+        if kind == "production":
+            items.append(("prod", text.strip()))
+            continue
+        for para in text.split("\n"):
+            p = para.strip()
+            if p:
+                items.append(("para", p))
+
+    existing = sum(1 for k, t in items
+                   if k == "prod" and _GROK_IMAGINE_TAG.lower() in t.lower())
+    spoken_words = sum(len(t.split()) for k, t in items
+                       if k == "para" and _gi_is_spoken(t))
+    target = 4 if spoken_words >= 220 else 3
+    needed = max(0, target - existing)
+    if spoken_words == 0 or needed <= 0:
+        return body, 0, False
+
+    beat_idxs = []
+    for i, (k, t) in enumerate(items):
+        if len(beat_idxs) >= needed:
+            break
+        if k != "para" or not _gi_is_spoken(t):
+            continue
+        if i > 0 and items[i - 1][0] == "prod":
+            continue
+        beat_idxs.append(i)
+    if not beat_idxs:
+        return body, 0, False
+
+    def _one(i):
+        return i, _grok_imagine_assets_for_beat(
+            _gi_beat_text(items[i][1]), chap_title, video_title)
+    results = {}
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        workers = max(1, min(max_workers, len(beat_idxs)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, pair in ex.map(_one, beat_idxs):
+                results[i] = pair
+    except Exception as e:
+        logger.warning(f"⚠️ Grok Imagine batch failed ({e}); sequential")
+        for i in beat_idxs:
+            results[i] = _grok_imagine_assets_for_beat(
+                _gi_beat_text(items[i][1]), chap_title, video_title)
+
+    out_items, added = [], 0
+    for i, (k, t) in enumerate(items):
+        pair = results.get(i)
+        if pair and pair[0]:
+            out_items.append(("prod", _new_grok_imagine_block(pair[0], pair[1], pair[2])))
+            added += 1
+        out_items.append((k, t))
+    if not added:
+        return body, 0, False
+    return "\n\n".join(t for _, t in out_items), added, True
+
+
+def _inject_grok_imagine_prompts(script: str, video_title: str = "",
+                                 max_workers: int = 6) -> tuple:
+    """Insert Grok Imagine blocks: one for the hook and 3-4 per chapter, topping
+    up sections that already have some. A block also carries a QUOTE CARD line
+    when its beat cites a quotable source. Trailing metadata sections are left
+    untouched. Returns (updated_script, added_count). Never raises.
+    """
+    if not script or not script.strip():
+        return script, 0
+
+    # Inject only into the spoken body — never into trailing metadata sections.
+    m = _GI_META_BOUNDARY_RE.search(script)
+    main, tail = (script[:m.start()], script[m.start():]) if m else (script, "")
+
+    lines = main.split("\n")
+    boundaries = [i for i, ln in enumerate(lines) if _CH_BOUNDARY_RE.match(ln)]
+
+    added_total = 0
+    # Hook: the preamble before the first chapter (whole script if no chapters).
+    pre_end = boundaries[0] if boundaries else len(lines)
+    new_lines, n = _gi_inject_hook(lines[:pre_end], video_title)
+    added_total += n
+    if not boundaries:
+        return "\n".join(new_lines) + tail, added_total
+
+    for bi, start in enumerate(boundaries):
+        end = boundaries[bi + 1] if bi + 1 < len(boundaries) else len(lines)
+        heading = lines[start]
+        body = "\n".join(lines[start + 1:end])
+        chap_title = re.sub(
+            r'^\s*(?:#{1,6}\s*)?\*{0,2}\s*Heading\s*:\s*', '', heading,
+            flags=re.IGNORECASE).strip(" *#")
+        new_body, added, changed = _gi_process_chapter(
+            body, chap_title, video_title, max_workers)
+        if not changed:
+            new_lines.extend(lines[start:end])  # leave chapter exactly as-is
+            continue
+        added_total += added
+        new_lines.append(heading)
+        new_lines.append("")
+        new_lines.extend(new_body.split("\n"))
+        new_lines.append("")  # keep chapters visually separated
+
+    return "\n".join(new_lines) + tail, added_total
+
+
+def _call_polish_model(text_to_polish: str, header: str,
+                       extra: str = "") -> tuple:
+    """Run one Fable-5 (fallback Opus) polish pass over ``text_to_polish``.
+    ``extra`` prepends run-specific instructions (e.g. the sentinel rule).
+    Returns ``(polished_text, model_used)``; raises if no model responds.
+
+    NO web search: the "make it current" web-search pass was the slow/flaky part
+    (a full-script polish with search ran ~2-5 min and could stall). A no-search
+    Fable pass is one bounded API call (~10-60s), fast and predictable.
+    """
+    user = (
+        f"{header}{extra}Here is the finished script to polish and elevate. "
+        f"Return the full polished script only:\n\n{text_to_polish}"
+    )
+    import anthropic
+    for model in (POLISH_MODEL, ANTHROPIC_MODEL):
+        try:
+            logger.info("🪄 polish: calling %s (no web search)", model)
+            out = _anthropic_complete(
+                _POLISH_SYSTEM, user, max_tokens=16000,
+                use_web_search=False, model=model, timeout=200.0,
+            )
+            out = _strip_reminder_tags(out)
+            if out:
+                return out, model
+        except anthropic.NotFoundError:
+            # Model isn't available on this key — try the next one.
+            logger.warning("Polish model %s not available; falling back", model)
+            continue
+    raise RuntimeError("Script polish failed — no usable Claude model responded.")
+
+
+def _polish_script(script: str, title: str = "", audience: str = "",
+                   production_type: str = "") -> tuple:
+    """Run the finished script through Fable 5 for a final polish pass.
+
+    Only the Host narration OUTSIDE [PRODUCTION BEGIN]…[PRODUCTION END] blocks is
+    ever rewritten: production blocks are extracted, the surrounding script is
+    polished, then the blocks are restored byte-for-byte. Returns
+    (polished_text, model_used). Falls back to ANTHROPIC_MODEL if POLISH_MODEL
+    isn't available on the account.
+    """
+    ctx = []
+    if title:
+        ctx.append(f"SCRIPT TITLE: {title}")
+    if audience:
+        ctx.append(f"AUDIENCE: {audience}")
+    if production_type:
+        ctx.append(f"PRODUCTION TYPE: {production_type}")
+    header = ("\n".join(ctx) + "\n\n") if ctx else ""
+
+    masked, blocks = _mask_production_blocks(script)
+    if not blocks:
+        # No production blocks — polish the whole script as before.
+        return _call_polish_model(script, header)
+
+    logger.info("🪄 polish: shielding %d [PRODUCTION …] block(s) from the pass",
+                len(blocks))
+    sentinel_note = (
+        "IMPORTANT — PRESERVE PLACEHOLDERS: The script contains placeholder "
+        "tokens of the form [[PRODUCTION_BLOCK_N]] (e.g. [[PRODUCTION_BLOCK_0]]). "
+        "Each stands in for a production-only section you must NOT alter. Leave "
+        "every such token EXACTLY as written, on its own line, in the same order "
+        "— do not modify, remove, reorder, translate, or add commentary around "
+        "them. Polish ONLY the surrounding host narration.\n\n"
+    )
+    polished, model = _call_polish_model(masked, header, extra=sentinel_note)
+    restored, missing = _restore_production_blocks(polished, blocks)
+    if not missing:
+        return restored, model
+
+    # The model dropped/mangled a sentinel — fall back to the bulletproof path:
+    # polish each host segment on its own and stitch the verbatim production
+    # blocks back between them, so nothing inside the tags can be lost.
+    logger.warning(
+        "⚠️ polish: %d production sentinel(s) missing from output; "
+        "using per-segment fallback", len(missing))
+    out_parts = []
+    model_used = model
+    for kind, text in _split_by_production(script):
+        if kind == "production" or not text.strip():
+            out_parts.append(text)
+        else:
+            polished_seg, model_used = _call_polish_model(text, header)
+            out_parts.append(polished_seg)
+    return "".join(out_parts), model_used
+
+
+@app.route("/api/script/polish", methods=["POST"])
+def api_script_polish():
+    """Final polish of the finished script via Claude Fable 5 (fallback Opus)."""
+    data = request.get_json(silent=True) or {}
+    script = (data.get("script") or "").strip()
+    if not script:
+        return jsonify({
+            "success": False,
+            "error": "No script to polish — create a script first.",
+        }), 400
+    title = (data.get("title") or "").strip()
+    audience = (data.get("audience") or "").strip()
+    production_type = (data.get("production_type") or "").strip()
+    try:
+        polished, model = _polish_script(
+            script, title=title, audience=audience,
+            production_type=production_type,
+        )
+    except Exception as e:
+        logger.error(f"❌ Script polish failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    logger.info("✨ Script polished with %s (%d → %d chars)",
+                model, len(script), len(polished))
+    return jsonify({"success": True, "polished_script": polished, "model": model})
+
+
+# ---------------------------------------------------------------------------
+# Interactive refine — targeted, user-directed edits on a finished script.
+#
+# Unlike Polish (a blanket rewrite pass), Refine applies ONE specific change the
+# user types in ("swap the ChatGPT example for a newer one", "add a 2026 example
+# from X about AI agents", "tighten chapter 3's intro"), using either Claude
+# (careful edits, web search on for currency) or Grok (recent / X-aware), and
+# returns the FULL updated script. Production blocks are shielded the same way
+# Polish shields them.
+# ---------------------------------------------------------------------------
+_REFINE_SYSTEM = (
+    "You are a precise script editor for a single-host narrated video. You are "
+    "given a COMPLETE, already-written script and ONE specific change request. "
+    "Apply ONLY that change. Preserve everything else EXACTLY — the overall "
+    "structure, chapter order and headings, every host line the request does "
+    "not touch, the formatting and blank lines, and any production markup or "
+    "placeholder tokens. Do NOT re-polish, re-order, summarize, shorten, lengthen, "
+    "or add commentary beyond what the request asks. Keep the same voice and "
+    "approximate length. If the request asks for a newer / more current example, "
+    "replace the named item with a REAL, current one and keep the surrounding "
+    "sentence shape. Return the FULL updated script ONLY — no preamble, no "
+    "explanation, no code fences."
+)
+
+
+def _refine_script(script: str, instructions: str, model: str = "claude",
+                   title: str = "", audience: str = "") -> tuple:
+    """Apply a single user-directed change to a finished script.
+
+    Returns (updated_text, model_used). `model` is "claude" (Opus 5.5, web
+    search on) or "grok" (xAI, X/recent-aware). Production blocks are masked and
+    restored byte-for-byte; if the model drops a placeholder, we retry once on
+    the raw script asking it to keep the blocks verbatim (a per-segment fallback
+    like Polish's would wrongly apply a single targeted edit to every segment).
+    """
+    ctx = []
+    if title:
+        ctx.append(f"SCRIPT TITLE: {title}")
+    if audience:
+        ctx.append(f"AUDIENCE: {audience}")
+    header = ("\n".join(ctx) + "\n\n") if ctx else ""
+
+    use_grok = (model or "").lower().startswith("grok")
+
+    def _call(text: str, extra: str = "") -> tuple:
+        user = (
+            f"{header}CHANGE REQUEST:\n{instructions}\n\n{extra}"
+            f"Here is the full script. Apply ONLY the change request above and "
+            f"return the complete, updated script:\n\n{text}"
+        )
+        if use_grok:
+            out = _grok_complete(_REFINE_SYSTEM, user, model=IDEA_GROK_MODEL)
+            return _strip_reminder_tags(out or ""), IDEA_GROK_MODEL
+        # Claude Opus 5.5 at HIGH reasoning effort (not Opus 4.8, not medium).
+        # NOTE: effort="max" on opus-5-5 OVERTHINKS this task — it burns the
+        # whole token budget on hidden reasoning and returns ZERO visible text
+        # (that is the "Refine returned an empty script" bug). "high" reasons
+        # hard and still emits the full updated script. max_tokens is raised so
+        # a long script (2k+ words) fits alongside the thinking block.
+        out = _anthropic_complete(
+            _REFINE_SYSTEM, user, max_tokens=32000,
+            use_web_search=True, model=REFINE_MODEL, timeout=240.0,
+            effort="high", thinking=True,
+        )
+        return _strip_reminder_tags(out or ""), REFINE_MODEL
+
+    masked, blocks = _mask_production_blocks(script)
+    if not blocks:
+        out, used = _call(script)
+        if not out:
+            raise RuntimeError("Refine returned an empty script.")
+        return out, used
+
+    sentinel_note = (
+        "IMPORTANT — PRESERVE PLACEHOLDERS: the script contains tokens of the "
+        "form [[PRODUCTION_BLOCK_N]]. Leave every such token EXACTLY as written, "
+        "on its own line, in the same order. Edit ONLY the surrounding host "
+        "narration.\n\n"
+    )
+    out, used = _call(masked, extra=sentinel_note)
+    if not out:
+        raise RuntimeError("Refine returned an empty script.")
+    restored, missing = _restore_production_blocks(out, blocks)
+    if not missing:
+        return restored, used
+
+    logger.warning("⚠️ refine: %d production sentinel(s) missing from output; "
+                   "retrying unmasked", len(missing))
+    keep_note = (
+        "IMPORTANT: Keep every [PRODUCTION BEGIN]…[PRODUCTION END] block and its "
+        "contents EXACTLY as written, unchanged and in place. Edit ONLY the host "
+        "narration.\n\n"
+    )
+    out2, used2 = _call(script, extra=keep_note)
+    if out2:
+        return out2, used2
+    return restored, used  # best effort — return what we could restore
+
+
+@app.route("/api/script/refine", methods=["POST"])
+def api_script_refine():
+    """Apply one user-directed change to the finished script via Claude or Grok."""
+    data = request.get_json(silent=True) or {}
+    script = (data.get("script") or "").strip()
+    instructions = (data.get("instructions") or "").strip()
+    model = (data.get("model") or "claude").strip().lower()
+    if not script:
+        return jsonify({
+            "success": False,
+            "error": "No script to refine — create a script first.",
+        }), 400
+    if not instructions:
+        return jsonify({
+            "success": False,
+            "error": "Describe the change you want (e.g. 'swap the ChatGPT "
+                     "example for a newer one').",
+        }), 400
+    title = (data.get("title") or "").strip()
+    audience = (data.get("audience") or "").strip()
+    try:
+        updated, used = _refine_script(
+            script, instructions, model=model, title=title, audience=audience)
+    except Exception as e:
+        logger.error(f"❌ Script refine failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    logger.info("✏️ Script refined with %s (%d → %d chars) | ask: %s",
+                used, len(script), len(updated), instructions[:80])
+    return jsonify({"success": True, "updated_script": updated, "model": used})
+
+
+@app.route("/api/script/save-to-cloud", methods=["POST"])
+def api_script_save_to_cloud():
+    """Persist the current script to the cloud as a pullable copy.
+
+    Modes:
+      - new_copy=True  -> a brand-new Script-ID (a distinct, named copy that
+                          shows as its own entry in Open Script -> From Cloud).
+                          Used by the manual "Save to Cloud" button.
+      - new_copy=False -> a new version under the given script_id (the refined
+                          script becomes the latest pullable version). Used by
+                          the auto-save after a Refine.
+
+    Returns the resolved script_id / version_id / title. Verified with a
+    read-back so the UI only reports success when the write actually landed.
+    """
+    data = request.get_json(silent=True) or {}
+    script = (data.get("script") or "").strip()
+    if not script:
+        return jsonify({"success": False, "error": "No script to save."}), 400
+    if not _artifacts_enabled():
+        return jsonify({
+            "success": False,
+            "error": "Cloud storage is not configured, so the script cannot be "
+                     "saved to the cloud.",
+        }), 503
+
+    title = (data.get("title") or "").strip()
+    brief = (data.get("brief") or "").strip()
+    new_copy = bool(data.get("new_copy", False))
+    src_id = (data.get("script_id") or "").strip()
+    try:
+        if new_copy or not src_id:
+            # Fresh Script-ID + version: a standalone, pullable copy.
+            stamped, sid, vid = _ensure_script_ids(
+                script, script_id=_new_ld_id("ld"), version_id=_new_ld_id("v"))
+        else:
+            # New version under the existing script (refined -> latest version).
+            stamped, sid, vid = _ensure_script_ids(
+                script, bump_version=True, script_id=src_id)
+
+        if not title:
+            m = (re.search(r"(?im)^\s*\**\s*Title\s*\**\s*:\s*(.+?)\s*$", stamped)
+                 or re.search(r"(?m)^\s*#\s+(.+?)\s*$", stamped))
+            title = (m.group(1).strip() if m else "") or "Untitled script"
+
+        _persist_version_artifacts(
+            sid, vid,
+            {"enhanced_script": stamped, "brief": brief, "script_title": title},
+            title)
+
+        # Read-back verification — _persist_version_artifacts never raises, so
+        # confirm the manifest actually landed before telling the user it saved.
+        chk = _read_version_artifacts(sid, vid)
+        if not chk or not (chk.get("enhanced_script") or "").strip():
+            return jsonify({
+                "success": False,
+                "error": "The cloud save could not be verified — please retry.",
+            }), 502
+
+        logger.info("☁️ Saved script to cloud %s/%s (new_copy=%s) title=%r",
+                    sid, vid, new_copy, title[:60])
+        return jsonify({"success": True, "script_id": sid, "version_id": vid,
+                        "title": title})
+    except Exception as e:
+        logger.error("❌ /api/script/save-to-cloud failed: %s", e)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/broll/regenerate", methods=["POST"])
+def api_broll_regenerate():
+    """Force a FRESH B-roll Search Terms Table by calling the B-roll agent
+    directly on the current script, ignoring any existing (possibly partial)
+    table. The normal Process flow skips the agent when a table/override is
+    present (web_gui.py ~3556), so this endpoint is how the UI's "Regenerate"
+    button gets a full table re-run. Returns the new table markdown + rows.
+    """
+    data = request.get_json(silent=True) or {}
+    script = (data.get("script") or "").strip()
+    title = (data.get("title") or data.get("script_title") or "").strip() or "Video Script"
+    if not script:
+        return jsonify({"success": False,
+                        "error": "No script to generate a B-roll table from."}), 400
+    try:
+        # Mirror the cleaning the full Process flow applies before the agent so
+        # the regenerated table matches a normal run.
+        cleaned = _tidy_generated_script(script)
+        cleaned = re.sub(r'^[_\-=~]+\s*$', '', cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        cleaned = re.sub(r'🎬|📺|📊|🎥|🎯|💡|✨|🚀', '', cleaned)
+        cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)
+        cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
+        cleaned = re.sub(r'__([^_]+)__', r'\1', cleaned)
+        cleaned = re.sub(r'_([^_]+)_', r'\1', cleaned)
+
+        from linedrive_azure.agents import ScriptBRollAgentClient
+        agent = ScriptBRollAgentClient()
+        result = agent.generate_broll_table_with_timecodes(
+            script_content=cleaned, script_title=title,
+            words_per_minute=150, timeout=300)
+        if not result.get("success", False):
+            return jsonify({
+                "success": False,
+                "error": result.get("error") or "The B-roll agent did not return a table.",
+            }), 502
+
+        table = (result.get("table") or "").strip()
+        rows = result.get("parsed_data") or []
+        # Merge "## Animation Suggestions" rows exactly like the full flow so the
+        # table carries Grok-eligible animation rows too.
+        try:
+            anim_rows = _extract_animation_suggestion_rows(cleaned)
+            if anim_rows:
+                rows = list(rows) + anim_rows
+                table = (table.rstrip() + "\n\n" + _animation_rows_to_markdown(anim_rows))
+                logger.info("🎞️ regenerate: appended %d Animation Suggestion row(s)",
+                            len(anim_rows))
+        except Exception as _ae:
+            logger.warning("⚠️ regenerate: animation-suggestion merge failed: %s", _ae)
+
+        if not table:
+            return jsonify({"success": False,
+                            "error": "The B-roll agent returned an empty table."}), 502
+
+        logger.info("🔄 Regenerated B-roll table (%d chars, %d rows) for %r",
+                    len(table), len(rows), title[:60])
+        return jsonify({"success": True, "broll_table": table, "broll_rows": rows})
+    except Exception as e:
+        logger.error("❌ /api/broll/regenerate failed: %s", e)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/x/generate", methods=["POST"])
+def api_x_generate():
+    """Draft an X post with Claude for an episode promo or a standalone post."""
+    data = request.get_json(silent=True) or {}
+    mode = (data.get("mode") or "random").strip()
+    title = (data.get("title") or "").strip()
+    youtube_url = (data.get("youtube_url") or "").strip()
+    topic = (data.get("topic") or "").strip()
+    if mode != "episode" and not topic and not title:
+        return jsonify({
+            "success": False,
+            "error": "Enter what you'd like to post about.",
+        }), 400
+    try:
+        text = _generate_x_post(mode, title=title, youtube_url=youtube_url,
+                                topic=topic)
+    except Exception as e:
+        logger.error(f"❌ X post generation failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    return jsonify({"success": True, "text": text})
+
+
+@app.route("/api/x/post", methods=["POST"])
+def api_x_post():
+    """Post the given text to X as @AIwithRoz."""
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip()
+    if not text:
+        return jsonify({"success": False, "error": "Post text is empty."}), 400
+    try:
+        client = _x_client()
+        resp = client.create_tweet(text=text)
+        tweet_id = resp.data["id"]
+        url = f"https://x.com/{X_ACCOUNT_HANDLE}/status/{tweet_id}"
+        logger.info(f"✅ Posted to X (@{X_ACCOUNT_HANDLE}): {url}")
+        return jsonify({"success": True, "tweet_id": tweet_id, "url": url})
+    except Exception as e:
+        logger.error(f"❌ X post failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# LinkedIn posting — promote published YouTube episodes + standalone posts.
+#
+# Posts from the @AIwithRoz LinkedIn profile using an OAuth 2.0 member access
+# token (LINKEDIN_ACCESS_TOKEN) with the w_member_social scope. The author URN
+# is read from LINKEDIN_AUTHOR_URN, or auto-resolved from the token via
+# /v2/userinfo. Post text is drafted by Claude Opus 4.8 (reuses
+# _anthropic_complete). No extra SDK — posts via the LinkedIn REST API with
+# `requests`. Degrades gracefully when the token is absent.
+# ---------------------------------------------------------------------------
+LINKEDIN_ACCOUNT_HANDLE = "AIwithRoz"
+_LINKEDIN_AUTHOR_CACHE = {}
+
+
+def _linkedin_token():
+    return (os.getenv("LINKEDIN_ACCESS_TOKEN") or "").strip()
+
+
+def _linkedin_api_version():
+    return (os.getenv("LINKEDIN_API_VERSION") or "").strip() or "202607"
+
+
+def _linkedin_resolve_author(token: str):
+    """Return the author URN for the token: env override, cache, or /v2/userinfo."""
+    env_urn = (os.getenv("LINKEDIN_AUTHOR_URN") or "").strip()
+    if env_urn:
+        return env_urn
+    if token in _LINKEDIN_AUTHOR_CACHE:
+        return _LINKEDIN_AUTHOR_CACHE[token]
+    try:
+        import requests as _rq
+        r = _rq.get(
+            "https://api.linkedin.com/v2/userinfo",
+            headers={"Authorization": f"Bearer {token}"}, timeout=15,
+        )
+        if r.status_code == 200:
+            sub = (r.json() or {}).get("sub")
+            if sub:
+                urn = f"urn:li:person:{sub}"
+                _LINKEDIN_AUTHOR_CACHE[token] = urn
+                return urn
+        logger.info("LinkedIn userinfo %s: %s", r.status_code, r.text[:180])
+    except Exception as e:
+        logger.info("LinkedIn author resolve failed: %s", e)
+    return None
+
+
+def _linkedin_configured() -> bool:
+    return bool(_linkedin_token())
+
+
+def _generate_linkedin_post(mode: str, title: str = "", youtube_url: str = "",
+                            topic: str = "") -> str:
+    """Draft a LinkedIn post with Claude. mode: 'episode' | 'random'.
+
+    LinkedIn favors a strong first line, short skimmable paragraphs, and a
+    couple of hashtags. The YouTube link is appended after generation (LinkedIn
+    renders a preview card from it). No hard char cap like X, but we keep it
+    tight (~1300 chars) so it doesn't get truncated behind "…see more".
+    """
+    link = (youtube_url or "").strip()
+    if mode == "episode":
+        ctx = f'New YouTube video title: "{title}".'
+        if topic:
+            ctx += f"\nExtra context: {topic}"
+        instruction = (
+            "Write an engaging LinkedIn post promoting this brand-new YouTube "
+            "video from the @AIwithRoz channel (practical AI for everyday life "
+            "and careers). Open with a scroll-stopping first line, use short "
+            "skimmable paragraphs with line breaks, share the value/takeaway, "
+            "end with a clear call to watch, and add 3-5 relevant hashtags. "
+            "Do NOT paste the video link — it is appended automatically."
+        )
+    else:
+        ctx = f"Topic / what to post about: {topic or title}"
+        instruction = (
+            "Write an engaging standalone LinkedIn post for the @AIwithRoz "
+            "channel (practical AI for everyday life and careers) about the "
+            "topic below. Strong first line, short skimmable paragraphs, a "
+            "takeaway, and 3-5 relevant hashtags."
+            + (" You may reference the linked video; the link is appended "
+               "automatically." if link else "")
+        )
+    system = (
+        "You are the social media manager for the @AIwithRoz brand on LinkedIn. "
+        "You write professional-but-human, value-first posts that earn saves and "
+        "shares. Output ONLY the post text — no surrounding quotes, no preamble, "
+        "no markdown headings."
+    )
+    user = f"{instruction}\n\n{ctx}\n\nKeep it under ~1300 characters."
+    text = _anthropic_complete(system, user, max_tokens=700,
+                               use_web_search=False).strip()
+    if len(text) >= 2 and text[0] in "\"'" and text[-1] == text[0]:
+        text = text[1:-1].strip()
+    if link:
+        text = f"{text}\n\n{link}"
+    return text
+
+
+@app.route("/api/linkedin/status", methods=["GET"])
+def api_linkedin_status():
+    """Report whether @AIwithRoz LinkedIn posting is configured (token present)."""
+    return jsonify({
+        "success": True,
+        "configured": _linkedin_configured(),
+        "account": LINKEDIN_ACCOUNT_HANDLE,
+    })
+
+
+@app.route("/api/linkedin/generate", methods=["POST"])
+def api_linkedin_generate():
+    """Draft a LinkedIn post with Claude for an episode promo or standalone post."""
+    data = request.get_json(silent=True) or {}
+    mode = (data.get("mode") or "random").strip()
+    title = (data.get("title") or "").strip()
+    youtube_url = (data.get("youtube_url") or "").strip()
+    topic = (data.get("topic") or "").strip()
+    if mode != "episode" and not topic and not title:
+        return jsonify({
+            "success": False,
+            "error": "Enter what you'd like to post about.",
+        }), 400
+    try:
+        text = _generate_linkedin_post(mode, title=title,
+                                       youtube_url=youtube_url, topic=topic)
+    except Exception as e:
+        logger.error(f"❌ LinkedIn post generation failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    return jsonify({"success": True, "text": text})
+
+
+@app.route("/api/linkedin/post", methods=["POST"])
+def api_linkedin_post():
+    """Post the given text to LinkedIn as @AIwithRoz."""
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip()
+    if not text:
+        return jsonify({"success": False, "error": "Post text is empty."}), 400
+
+    token = _linkedin_token()
+    if not token:
+        return jsonify({
+            "success": False,
+            "error": ("LinkedIn is not configured. Set LINKEDIN_ACCESS_TOKEN "
+                      "in the root .env (scope: w_member_social)."),
+        }), 500
+    author = _linkedin_resolve_author(token)
+    if not author:
+        return jsonify({
+            "success": False,
+            "error": ("Could not determine the LinkedIn author. Set "
+                      "LINKEDIN_AUTHOR_URN in .env, or ensure the token has the "
+                      "'openid profile' scopes so it can be auto-resolved."),
+        }), 500
+
+    try:
+        import requests as _rq
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "X-Restli-Protocol-Version": "2.0.0",
+            "LinkedIn-Version": _linkedin_api_version(),
+        }
+        body = {
+            "author": author,
+            "commentary": text,
+            "visibility": "PUBLIC",
+            "distribution": {
+                "feedDistribution": "MAIN_FEED",
+                "targetEntities": [],
+                "thirdPartyDistributionChannels": [],
+            },
+            "lifecycleState": "PUBLISHED",
+            "isReshareDisabledByAuthor": False,
+        }
+        r = _rq.post("https://api.linkedin.com/rest/posts",
+                     headers=headers, json=body, timeout=30)
+        if r.status_code in (200, 201):
+            post_id = (r.headers.get("x-restli-id")
+                       or r.headers.get("x-linkedin-id") or "")
+            url = (f"https://www.linkedin.com/feed/update/{post_id}"
+                   if post_id else "https://www.linkedin.com/feed/")
+            logger.info(f"✅ Posted to LinkedIn (@{LINKEDIN_ACCOUNT_HANDLE}): {url}")
+            return jsonify({"success": True, "post_id": post_id, "url": url})
+        logger.error(f"❌ LinkedIn API {r.status_code}: {r.text[:300]}")
+        return jsonify({
+            "success": False,
+            "error": f"LinkedIn API {r.status_code}: {r.text[:200]}",
+        }), 502
+    except Exception as e:
+        logger.error(f"❌ LinkedIn post failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/test")
@@ -4117,10 +7180,10 @@ def test_capture_page():
                     "index.html",
                     version=VERSION,
                     agent_mode=(os.environ.get("FOUNDRY_API_MODE") or "v2").lower(),
-                    saved_grok_api_key=_resolve("grok_api_key", "XAI_API_KEY"),
-                    saved_heygen_api_key=_resolve("heygen_api_key", "HEYGEN_API_KEY"),
+                    saved_grok_api_key=_mask_key(_resolve("grok_api_key", "XAI_API_KEY")),
+                    saved_heygen_api_key=_mask_key(_resolve("heygen_api_key", "HEYGEN_API_KEY")),
                     saved_heygen_voice_id=_resolve("heygen_voice_id", "HEYGEN_VOICE_ID"),
-                    saved_google_api_key=_resolve("google_api_key", "GOOGLE_API_KEY"),
+                    saved_google_api_key=_mask_key(_resolve("google_api_key", "GOOGLE_API_KEY")),
                 ))
                 resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
                 resp.headers['Pragma'] = 'no-cache'
@@ -4357,22 +7420,62 @@ def create():
     # Get form data
     data = request.get_json() or {}
     topic = data.get("topic", "AI in daily life")
+    # The creative brief from the Create Script dialog. This is the single most
+    # important steering input the workflow gets — without it the Topic
+    # Assistant and Script Writer fall back to "use the topic title as a guide"
+    # and invent an episode from the title alone.
+    description = (data.get("description") or "").strip()
+    # If this run came from an Idea-Generator batch that was grounded in an
+    # uploaded document, append a trimmed excerpt of that document to the brief.
+    # The description is the one channel that reaches BOTH the Topic Assistant
+    # and the Script Writer, so this puts the source material in front of both.
+    src_batch = _find_idea_batch(data.get("source_batch_id"))
+    src_doc = (src_batch or {}).get("source_document") or {}
+    src_doc_text = (src_doc.get("text") or "").strip()
+    if src_doc_text:
+        excerpt = src_doc_text[:_IDEA_DOC_EXCERPT_CHARS]
+        truncated = len(src_doc_text) > _IDEA_DOC_EXCERPT_CHARS
+        src_name = (src_doc.get("name") or "attachment")
+        doc_block = (
+            f"\n\n--- SOURCE DOCUMENT: {src_name} "
+            f"(ground the script in this; do not contradict it) ---\n"
+            f"{excerpt}"
+            + ("\n…[excerpt truncated]…" if truncated else "")
+            + "\n--- END SOURCE DOCUMENT ---\n"
+        )
+        description = (description + doc_block) if description else doc_block.strip()
+        logger.info("📎 Injected source document '%s' (%d chars) into the brief "
+                    "for the Topic Assistant + Script Writer",
+                    src_name, len(excerpt))
     audience = data.get("audience", "general")
     tone = data.get("tone", "professional")
-    video_length = data.get("video_length", "medium")
+    # The Create Script modal sends the duration dropdown as `duration`
+    # ("5"/"10"/"15"), NOT `video_length`. Honor it: prefer an explicit
+    # video_length, else convert the numeric duration to an "N minutes" string.
+    # Without this, video_length was always the "medium" default and the
+    # workflow fell back to ~8 minutes regardless of the dropdown.
+    video_length = data.get("video_length")
+    if not video_length:
+        _dur = str(data.get("duration", "")).strip()
+        video_length = f"{_dur} minutes" if _dur.isdigit() else (_dur or "medium")
     production_type = data.get("production_type", "standard")
     goals = data.get("goals", "educational")
     test_mode = data.get("test_mode", False)  # Quick test mode flag
     quick_test = data.get("quick_test", False)  # 1-chapter quick test
+    # Video archetype / format — selects the topic-assistant + writer agent pair:
+    #   teaching (default) = "5 things" tutorial listicle
+    #   predictions        = bold / visionary, 1 prediction per chapter
+    #   list               = Top-N ranked countdown (honors N, lists all)
+    video_format = (data.get("video_format") or "teaching").strip().lower()
 
     # NEW: Get checkbox selections
     checkboxes = data.get("checkboxes", {})
 
     # Get HeyGen parameters
     heygen_template_id = data.get("heygen_template_id", "")
-    heygen_api_key = data.get("heygen_api_key", "")
+    heygen_api_key = _effective_key(data.get("heygen_api_key", ""), "heygen_api_key", "HEYGEN_API_KEY")
     heygen_voice_id = data.get("heygen_voice_id", "")
-    grok_api_key = data.get("grok_api_key", "")
+    grok_api_key = _effective_key(data.get("grok_api_key", ""), "grok_api_key", "XAI_API_KEY")
 
     # If "All" is checked, enable everything
     if checkboxes.get("all", False):
@@ -4401,6 +7504,13 @@ def create():
 
     logger.info(f"🎬 Starting script creation: {session_id}")
     logger.info(f"📝 Topic: {topic}, Audience: {audience}, Tone: {tone}")
+    logger.info(f"🎬 Video format: {video_format!r} | length: {video_length!r}")
+    if description:
+        logger.info(f"📋 Brief: {len(description)} chars — steering the "
+                    f"Topic Assistant and Script Writer")
+    else:
+        logger.warning("⚠️ NO BRIEF SUPPLIED — the workflow will invent an "
+                       "episode from the topic title alone")
     logger.info(f"📋 Checkboxes: {checkboxes}")
     if quick_test:
         logger.info(f"⚡ QUICK TEST MODE: 1 chapter only")
@@ -4425,6 +7535,8 @@ def create():
                         production_type, goals, quick_test, checkboxes,
                         heygen_template_id, heygen_api_key,
                         heygen_voice_id, grok_api_key,
+                        description=description,
+                        script_format=video_format,
                     ),
                 )
         except Exception as e:
@@ -4526,6 +7638,8 @@ def progress_stream(session_id):
                                 "message": update_data.get("message", "✅ Script creation complete!"),
                                 "script": streamer.result.get("enhanced_script", ""),
                                 "script_title": streamer.result.get("script_title", "Untitled Script"),
+                                "script_id": streamer.result.get("script_id"),
+                                "script_version": streamer.result.get("script_version"),
                                 "demo_packages": streamer.result.get("demo_packages"),
                                 "word_count": streamer.result.get("word_count", 0),
                                 "reading_time": streamer.result.get("reading_time", "N/A"),
@@ -4679,9 +7793,9 @@ def process_script():
         tone = data.get("tone", "informative")
         checkboxes = data.get("checkboxes", {})
         heygen_template_id = data.get("heygen_template_id", "")
-        heygen_api_key = data.get("heygen_api_key", "")
+        heygen_api_key = _effective_key(data.get("heygen_api_key", ""), "heygen_api_key", "HEYGEN_API_KEY")
         heygen_voice_id = data.get("heygen_voice_id", "")
-        grok_api_key = data.get("grok_api_key", "")
+        grok_api_key = _effective_key(data.get("grok_api_key", ""), "grok_api_key", "XAI_API_KEY")
         # Optional pre-loaded artifacts that let the workflow skip the
         # corresponding agents (Feature: Load existing YouTube details / B-roll table).
         youtube_details_override = (
@@ -5202,22 +8316,107 @@ def export_heygen_curl():
         return jsonify({"error": error_msg}), 500
 
 
+# ---------------------------------------------------------------------------
+# HeyGen v3 API helpers. All HeyGen calls use v3 (https://developers.heygen.com):
+#   GET  /v3/templates            (paginated: data[], has_more, next_token)
+#   GET  /v3/templates/{id}       (data: {id, name, thumbnail_url, variables, ...})
+#   POST /v3/templates/{id}       (generate; variables flattened to {type, ...})
+#   GET  /v3/voices               (paginated; type=public|private)
+#   GET  /v3/videos/{video_id}    (status / video_url / failure_message)
+# The proxy routes below normalise v3 responses back to the field names the
+# frontend already reads (template_id, thumbnail_image_url, preview_audio,
+# variables[{name, type, properties:{content}}]) so the UI keeps working.
+# ---------------------------------------------------------------------------
+HEYGEN_API_BASE = "https://api.heygen.com"
+
+
+def _heygen_headers(api_key: str) -> dict:
+    return {"accept": "application/json", "x-api-key": api_key}
+
+
+def _heygen_v3_list_all(path: str, api_key: str, params: dict = None,
+                        max_pages: int = 50) -> list:
+    """Follow v3 cursor pagination (token/next_token) and return all items."""
+    items, token = [], None
+    query = dict(params or {})
+    query.setdefault("limit", 100)
+    for _ in range(max_pages):
+        if token:
+            query["token"] = token
+        resp = requests.get(f"{HEYGEN_API_BASE}{path}",
+                            headers=_heygen_headers(api_key),
+                            params=query, timeout=15)
+        resp.raise_for_status()
+        body = resp.json() or {}
+        page = body.get("data") or []
+        items.extend(page if isinstance(page, list) else [])
+        token = body.get("next_token")
+        if not body.get("has_more") or not token:
+            break
+    return items
+
+
+def _heygen_template_summary_v3_to_legacy(t: dict) -> dict:
+    out = dict(t)
+    out["template_id"] = t.get("id") or t.get("template_id")
+    out["thumbnail_image_url"] = t.get("thumbnail_url") or t.get("thumbnail_image_url")
+    return out
+
+
+def _heygen_variables_v3_to_legacy(variables) -> dict:
+    """v3 variables are {name: {type, content|voice_id|avatar_id|asset...}}.
+    Present them as {name: {name, type, properties:{...}}} for the UI."""
+    out = {}
+    if not isinstance(variables, dict):
+        return out
+    for name, v in variables.items():
+        if not isinstance(v, dict):
+            out[name] = {"name": name, "type": "text", "properties": {"content": v}}
+            continue
+        props = {k: val for k, val in v.items() if k != "type"}
+        if "content" not in props:
+            for alt in ("voice_id", "avatar_id", "character_id"):
+                if props.get(alt):
+                    props["content"] = props[alt]
+                    break
+        out[name] = {"name": name, "type": v.get("type", "text"), "properties": props}
+    return out
+
+
+def _heygen_body_to_v3(body: dict) -> dict:
+    """Accept a legacy v2 generate body or a v3 body and return a v3 body.
+    v2 {name, type, properties:{content}} -> v3 {type, content}; drops `test`."""
+    body = dict(body or {})
+    body.pop("test", None)
+    variables = body.get("variables") or {}
+    if isinstance(variables, dict):
+        new_vars = {}
+        for name, v in variables.items():
+            if isinstance(v, dict) and isinstance(v.get("properties"), dict):
+                flat = {"type": v.get("type", "text")}
+                flat.update(v["properties"])
+                new_vars[name] = flat
+            else:
+                new_vars[name] = v
+        body["variables"] = new_vars
+    return body
+
+
 @app.route("/api/heygen/templates", methods=["POST"])
 def heygen_list_templates():
-    """Proxy endpoint to fetch HeyGen templates (avoids CORS)"""
+    """Proxy endpoint to fetch HeyGen templates via GET /v3/templates (avoids CORS)."""
     try:
         data = request.get_json()
-        api_key = data.get("api_key", "") if data else ""
+        api_key = _effective_key(data.get("api_key", "") if data else "", "heygen_api_key", "HEYGEN_API_KEY")
         if not api_key:
             return jsonify({"error": "No API key provided"}), 400
 
-        resp = requests.get(
-            "https://api.heygen.com/v2/templates",
-            headers={"accept": "application/json", "x-api-key": api_key},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return jsonify(resp.json())
+        templates = _heygen_v3_list_all("/v3/templates", api_key)
+        return jsonify({
+            "error": None,
+            "data": {"templates": [_heygen_template_summary_v3_to_legacy(t)
+                                   for t in templates]},
+        })
 
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else 500
@@ -5230,36 +8429,25 @@ def heygen_list_templates():
 
 @app.route("/api/heygen/template/<template_id>", methods=["POST"])
 def heygen_template_details(template_id):
-    """Proxy endpoint to fetch details for a single HeyGen template.
-    Merges data from the list endpoint (name, thumbnail) and the
-    detail endpoint (variables)."""
+    """Proxy endpoint to fetch details for a single HeyGen template via
+    GET /v3/templates/{id}, which already includes name, thumbnail and
+    variables (no second list call needed)."""
     try:
         data = request.get_json()
-        api_key = data.get("api_key", "") if data else ""
+        api_key = _effective_key(data.get("api_key", "") if data else "", "heygen_api_key", "HEYGEN_API_KEY")
         if not api_key:
             return jsonify({"error": "No API key provided"}), 400
 
-        headers = {"accept": "application/json", "x-api-key": api_key}
-
-        # Detail endpoint gives variables
         detail_resp = requests.get(
-            f"https://api.heygen.com/v2/template/{template_id}",
-            headers=headers, timeout=15,
+            f"{HEYGEN_API_BASE}/v3/templates/{template_id}",
+            headers=_heygen_headers(api_key), timeout=15,
         )
         detail_resp.raise_for_status()
-        detail_data = detail_resp.json().get("data", {})
+        detail = detail_resp.json().get("data", {}) or {}
 
-        # List endpoint gives name and thumbnail
-        list_resp = requests.get(
-            "https://api.heygen.com/v2/templates",
-            headers=headers, timeout=15,
-        )
-        list_resp.raise_for_status()
-        templates = list_resp.json().get("data", {}).get("templates", [])
-        summary = next((t for t in templates if t.get(
-            "template_id") == template_id), {})
-
-        merged = {**summary, **detail_data, "template_id": template_id}
+        merged = _heygen_template_summary_v3_to_legacy(detail)
+        merged["template_id"] = template_id
+        merged["variables"] = _heygen_variables_v3_to_legacy(detail.get("variables"))
         return jsonify({"error": None, "data": merged})
 
     except requests.exceptions.HTTPError as e:
@@ -5273,20 +8461,21 @@ def heygen_template_details(template_id):
 
 @app.route("/api/heygen/voices", methods=["POST"])
 def heygen_list_voices():
-    """Proxy endpoint to fetch HeyGen voices (avoids CORS)"""
+    """Proxy endpoint to fetch HeyGen voices via GET /v3/voices (avoids CORS).
+    Fetches private (cloned) voices first, then the public library."""
     try:
         data = request.get_json()
-        api_key = data.get("api_key", "") if data else ""
+        api_key = _effective_key(data.get("api_key", "") if data else "", "heygen_api_key", "HEYGEN_API_KEY")
         if not api_key:
             return jsonify({"error": "No API key provided"}), 400
 
-        resp = requests.get(
-            "https://api.heygen.com/v2/voices",
-            headers={"accept": "application/json", "x-api-key": api_key},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return jsonify(resp.json())
+        voices = []
+        for vtype in ("private", "public"):
+            for v in _heygen_v3_list_all("/v3/voices", api_key, {"type": vtype}):
+                v = dict(v)
+                v.setdefault("preview_audio", v.get("preview_audio_url") or "")
+                voices.append(v)
+        return jsonify({"error": None, "data": {"voices": voices}})
 
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else 500
@@ -5299,22 +8488,23 @@ def heygen_list_voices():
 
 @app.route("/api/heygen/test-generate", methods=["POST"])
 def heygen_test_generate():
-    """Proxy endpoint to test HeyGen video generation from template."""
+    """Proxy endpoint to test HeyGen video generation from template
+    (POST /v3/templates/{id}). Legacy v2-shaped bodies are converted."""
     try:
         data = request.get_json()
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
-        api_key = data.get("api_key", "")
+        api_key = _effective_key(data.get("api_key", ""), "heygen_api_key", "HEYGEN_API_KEY")
         template_id = data.get("template_id", "")
-        request_body = data.get("request_body", {})
+        request_body = _heygen_body_to_v3(data.get("request_body", {}))
 
         if not api_key:
             return jsonify({"error": "No API key provided"}), 400
         if not template_id:
             return jsonify({"error": "No template ID provided"}), 400
 
-        url = f"https://api.heygen.com/v2/template/{template_id}/generate"
+        url = f"{HEYGEN_API_BASE}/v3/templates/{template_id}"
         headers = {
             "accept": "application/json",
             "content-type": "application/json",
@@ -5330,11 +8520,16 @@ def heygen_test_generate():
         logger.info(f"🧪 Response status: {resp.status_code}")
         logger.info(f"🧪 Response body: {resp.text[:500]}")
 
-        # Return the full response with status so frontend can show it
         try:
             resp_json = resp.json()
         except Exception:
             resp_json = {"raw_response": resp.text}
+
+        # v3 returns data.id; keep data.video_id for older callers.
+        if isinstance(resp_json, dict) and isinstance(resp_json.get("data"), dict):
+            d = resp_json["data"]
+            if d.get("id") and not d.get("video_id"):
+                d["video_id"] = d["id"]
 
         return jsonify(resp_json), resp.status_code
 
@@ -5361,8 +8556,7 @@ def grok_test_video_generate():
 
         duration = max(1, min(15, duration))
 
-        xai_api_key = (data.get("api_key") or "").strip(
-        ) or os.getenv("XAI_API_KEY", "").strip()
+        xai_api_key = _effective_key(data.get("api_key"), "grok_api_key", "XAI_API_KEY")
         if not xai_api_key or xai_api_key == "your-xai-api-key-here":
             return jsonify({
                 "success": False,
@@ -5585,16 +8779,28 @@ def api_extract_docx():
                     lines.append(sub)
                 first = False
 
-        # Append simple table extraction (tab-separated rows).
+        # Append tables as GitHub-flavored Markdown pipe tables (with a header
+        # separator row) so downstream parsers — the B-roll table renderer and
+        # parseBrollRowsFromTable — recognize them. (Previously emitted as
+        # tab-separated rows, which those parsers ignore, so a loaded B-roll
+        # Word doc produced "no selectable rows".)
         for table in doc.tables:
             lines.append("")
-            for row in table.rows:
-                cells = [(c.text or "").strip().replace("\n", " ")
+            for ri, row in enumerate(table.rows):
+                cells = [(c.text or "").strip().replace("\n", " ").replace("|", "/")
                          for c in row.cells]
-                lines.append("\t".join(cells))
+                lines.append("| " + " | ".join(cells) + " |")
+                if ri == 0:
+                    lines.append("| " + " | ".join(["---"] * len(cells)) + " |")
+            lines.append("")
 
         text = "\n".join(lines).strip() + "\n"
-        return jsonify({"success": True, "text": text, "filename": upload.filename, "length": len(text)})
+        # Robust server-side title (Title: line -> Direct Video -> Heading ->
+        # H1 -> first line) so the UI shows a title even if its client-side
+        # parse misses this doc's format.
+        extracted_title = _extract_script_title_for_output(text, "")
+        return jsonify({"success": True, "text": text, "title": extracted_title,
+                        "filename": upload.filename, "length": len(text)})
     except Exception as e:
         logger.error(f"❌ /api/extract-docx failed: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -5820,17 +9026,60 @@ def api_keys_get():
 
         def _v(key, env):
             return (settings.get(key) or "").strip() or os.getenv(env, "").strip()
+
+        def _src(key, env):
+            # Where the effective value comes from, for the dialog's source tag.
+            if (settings.get(key) or "").strip():
+                return "saved"
+            if os.getenv(env, "").strip():
+                return "env"
+            return "none"
+
+        _map = {
+            "google_api_key": "GOOGLE_API_KEY",
+            "heygen_api_key": "HEYGEN_API_KEY",
+            "grok_api_key": "XAI_API_KEY",
+            "anthropic_api_key": "ANTHROPIC_API_KEY",
+        }
+        # X (@AIwithRoz) keys: never return the values, only a masked hint
+        # (last 4 chars) plus where the effective value comes from.
+        def _mask(val):
+            return ("\u2022" * 4 + val[-4:]) if len(val) >= 8 else ("\u2022" * 4 if val else "")
+
+        _x_map = {
+            "x_api_key": "X_API_KEY",
+            "x_api_secret": "X_API_SECRET",
+            "x_access_token": "X_ACCESS_TOKEN",
+            "x_access_secret": "X_ACCESS_SECRET",
+            "x_bearer_token": "X_BEARER_TOKEN",
+        }
         return jsonify({
             "success": True,
-            "keys": {
-                "google_api_key": _v("google_api_key", "GOOGLE_API_KEY"),
-                "heygen_api_key": _v("heygen_api_key", "HEYGEN_API_KEY"),
-                "grok_api_key": _v("grok_api_key", "XAI_API_KEY"),
+            # Masked hints only (4 dots + last 4 chars), same as the X keys.
+            "keys": {k: _mask_key(_v(k, e)) for k, e in _map.items()},
+            "present": {k: bool(_v(k, e)) for k, e in _map.items()},
+            "sources": {k: _src(k, e) for k, e in _map.items()},
+            "x_keys": {
+                k: {"present": bool(_v(k, e)), "masked": _mask(_v(k, e)),
+                    "source": _src(k, e)}
+                for k, e in _x_map.items()
             },
         })
     except Exception as e:
         logger.error(f"❌ Failed to load API keys: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _reload_x_env_fallback(env_var: str) -> None:
+    """After clearing a saved key (X or the others), restore the root .env value (if any) so
+    the env/.env fallback still applies without a restart."""
+    try:
+        from dotenv import dotenv_values
+        val = (dotenv_values(REPO_ROOT / ".env").get(env_var) or "").strip()
+        if val:
+            os.environ[env_var] = val
+    except Exception:
+        pass
 
 
 @app.route("/api/keys", methods=["POST"])
@@ -5844,21 +9093,55 @@ def api_keys_save():
             "google_api_key": "GOOGLE_API_KEY",
             "heygen_api_key": "HEYGEN_API_KEY",
             "grok_api_key": "XAI_API_KEY",
+            "anthropic_api_key": "ANTHROPIC_API_KEY",
+        }
+        x_mapping = {
+            "x_api_key": "X_API_KEY",
+            "x_api_secret": "X_API_SECRET",
+            "x_access_token": "X_ACCESS_TOKEN",
+            "x_access_secret": "X_ACCESS_SECRET",
+            "x_bearer_token": "X_BEARER_TOKEN",
         }
         updated = []
-        for setting_key, env_var in mapping.items():
-            if setting_key in data:
+        # X keys: a blank field means "leave unchanged" (the dialog never
+        # receives the saved values); x_clear=true removes all saved X keys.
+        if data.get("x_clear"):
+            for setting_key, env_var in x_mapping.items():
+                if setting_key in settings:
+                    settings.pop(setting_key, None)
+                    os.environ.pop(env_var, None)
+                    _reload_x_env_fallback(env_var)
+                updated.append(setting_key)
+        else:
+            for setting_key, env_var in x_mapping.items():
                 val = (data.get(setting_key) or "").strip()
                 if val:
                     settings[setting_key] = val
                     os.environ[env_var] = val
-                else:
+                    updated.append(setting_key)
+        # Google / HeyGen / Grok / Claude keys: a blank or masked value means
+        # "leave unchanged" (the dialog only gets masked hints). To remove a
+        # saved key, list it in "clear": ["heygen_api_key", ...].
+        to_clear = data.get("clear") or []
+        if isinstance(to_clear, str):
+            to_clear = [to_clear]
+        for setting_key, env_var in mapping.items():
+            if setting_key in to_clear:
+                if setting_key in settings:
                     settings.pop(setting_key, None)
                     os.environ.pop(env_var, None)
+                    _reload_x_env_fallback(env_var)
+                updated.append(setting_key)
+                continue
+            val = (data.get(setting_key) or "").strip()
+            if val and not _is_masked_key(val):
+                settings[setting_key] = val
+                os.environ[env_var] = val
                 updated.append(setting_key)
 
         if not updated:
-            return jsonify({"success": False, "error": "No keys provided"}), 400
+            # Nothing typed (all blank / masked): nothing to change.
+            return jsonify({"success": True, "updated": [], "unchanged": True})
 
         if not _save_scriptcraft_settings(settings):
             return jsonify({"success": False, "error": "Could not save settings"}), 500
@@ -6258,7 +9541,8 @@ def grok_get_saved_key():
     try:
         settings = _load_scriptcraft_settings()
         key = (settings.get("grok_api_key") or "").strip()
-        return jsonify({"success": True, "api_key": key})
+        # Masked hint only; the full key never goes to the browser.
+        return jsonify({"success": True, "api_key": _mask_key(key)})
     except Exception as e:
         logger.error(f"❌ Failed to load saved Grok key: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -6282,6 +9566,408 @@ def _grok_prompt_no_audio(prompt: str) -> str:
     return base.rstrip(".") + "." + GROK_NO_AUDIO_HINT
 
 
+# ---------------------------------------------------------------------------
+# Grok "unique visual" prompt rewriting
+# ---------------------------------------------------------------------------
+# Raw b-roll descriptions are often flat and generic. Grok's value is bespoke,
+# theme-specific footage you can't easily stock-source — but it must look
+# PROFESSIONAL, not cartoonish. We steer every scene toward either (a)
+# photorealistic, cinematic LIVE-ACTION with real people, or (b) clean, modern
+# business MOTION GRAPHICS (3D charts, animated diagrams, holographic UI) for
+# data/abstract concepts — always with real motion/action. We explicitly avoid
+# cartoon / anime / illustrated / hand-drawn styles, which read as amateurish
+# here. The scene is rewritten into exactly that before grok-imagine-video.
+
+# Ops kill-switch: set GROK_VISUAL_REWRITE=0 to send raw descriptions instead.
+GROK_VISUAL_REWRITE_ENABLED = (
+    os.getenv("GROK_VISUAL_REWRITE", "1").strip().lower()
+    not in ("0", "false", "no", "off")
+)
+
+# Text model used to rewrite scene descriptions into visual prompts.
+GROK_REWRITE_MODEL = (
+    os.getenv("GROK_REWRITE_MODEL", "grok-3-mini").strip() or "grok-3-mini"
+)
+
+# Deterministic fallback styling, used when the LLM rewrite is unavailable — it
+# steers a raw description toward photoreal live-action / clean business motion
+# graphics (never cartoons) while staying on-scene.
+GROK_VISUAL_STYLE_DIRECTIVE = (
+    " Render this as photorealistic, cinematic live-action video with real "
+    "human actors, natural lighting, and dynamic camera movement and motion "
+    "(not a static shot). For data or abstract business concepts, use clean, "
+    "modern, professional 3D motion graphics — animated charts, diagrams, or "
+    "holographic UI. Absolutely NO cartoon, anime, comic, illustrated, "
+    "hand-drawn, or claymation styles. Stay faithful to what is described above."
+)
+
+GROK_REWRITE_SYSTEM = (
+    "You convert a b-roll scene description into ONE prompt for an AI video "
+    "generator (grok-imagine-video) that makes a ~6 second SILENT clip.\n"
+    "GOAL: depict EXACTLY WHAT THE DESCRIPTION SAYS — the same subject, "
+    "objects, setting, and action — as PHOTOREALISTIC, CINEMATIC, LIVE-ACTION "
+    "video with dynamic motion. The viewer must immediately recognize the thing "
+    "the description is about.\n"
+    "STYLE (strict):\n"
+    "- When people are involved, show REAL human actors — photorealistic skin, "
+    "natural lighting, real-world settings. Never cartoon or illustrated "
+    "characters.\n"
+    "- For data, systems, or abstract business concepts, use clean, modern, "
+    "professional motion graphics: 3D charts, animated diagrams, holographic "
+    "UI, sleek infographics — a corporate/editorial look, NOT cartoonish.\n"
+    "- ALWAYS include real motion and action — camera movement, gestures, "
+    "moving elements — so the clip feels alive. This dynamic motion is what we "
+    "mean by 'more animation'.\n"
+    "- ABSOLUTELY FORBIDDEN styles: cartoon, anime, comic, hand-drawn, "
+    "children's illustration, claymation, flat 2D character animation, "
+    "stylized Pixar/CGI-character looks.\n"
+    "Rules:\n"
+    "- FIDELITY FIRST: keep the description's concrete nouns, subject, setting, "
+    "and action. You set the visual STYLE (photoreal live-action, or clean "
+    "business motion graphics), NOT the CONTENT. Never swap the scene for an "
+    "unrelated abstract metaphor.\n"
+    "- Add a little topic-specific detail from the theme so it clearly belongs "
+    "to THIS subject. Describe the key elements, the MOTION, the lighting, and "
+    "a photorealistic / cinematic art direction. No on-screen text or "
+    "captions.\n"
+    "- Output ONLY the final prompt: 1-2 sentences, under ~55 words, no quotes, "
+    "no preamble, no lists."
+)
+
+# Preferred path: Claude (Opus 4.8) acts as a prompt engineer, turning the
+# b-roll description into an optimal grok-imagine-video prompt. Same anti-cartoon
+# style rules as the xAI rewrite. Requires ANTHROPIC_API_KEY; falls back to xAI
+# (then the deterministic directive) when unavailable.
+GROK_PROMPT_ENGINEER_SYSTEM = (
+    "You are a prompt engineer for grok-imagine-video (ONE short ~6s SILENT "
+    "clip). You are given the SCRIPT LINE this b-roll illustrates. Create ONE "
+    "simple animated EXPLAINER scene that conveys the POINT of that line — like a "
+    "clean whiteboard / motion-graphic explainer.\n"
+    "HOW (the whole job is translating the words into simple symbols):\n"
+    "- Turn the key elements of the line into a few CLEAR, SIMPLE visual symbols "
+    "and short labels, combined into ONE cohesive scene with gentle motion and a "
+    "small setup->payoff arc. Labels and short on-screen text ARE encouraged when "
+    "they make the meaning obvious.\n"
+    "- Represent named things as simple labeled figures/objects; represent "
+    "abstract ideas as simple icons; show the conclusion, using a text label if "
+    "it is the punchline.\n"
+    "- WORKED EXAMPLE. Line: 'every month a Yale team checks the entire US labor "
+    "market for AI damage and finds no disruption.' Good prompt: 'a small "
+    "research team labeled Yale Research examines a cluster of little factories "
+    "through a big magnifying glass as calendar months fly past, then a large "
+    "label reading No AI Disruption stamps onto the scene.'\n"
+    "- Keep it SIMPLE and readable — a few symbols in ONE scene. NOT a photoreal "
+    "literal shot ('a person at a laptop' is boring filler), and NOT a montage of "
+    "several separate shots.\n"
+    "STYLE: clean, modern, simple 2D animated motion-graphic look — simple line "
+    "icons/symbols and labels, minimal flat color, plain background, light gentle "
+    "motion.\n"
+    "- FORBIDDEN: cartoon/anime characters, claymation, mascots, busy cluttered "
+    "compositions.\n"
+    "Output ONLY the final prompt: 1-2 short sentences, ~20-45 words, naming the "
+    "symbols, labels, and gentle motion. No quotes, no preamble, no lists."
+)
+
+# The "Grok Chalk Prompt" column is the SAME visual as the cinematic prompt,
+# redrawn as rough white chalk on black — so the two columns always match, just
+# in different styles. It is given the already-chosen cinematic prompt as input.
+GROK_CHALK_PROMPT_ENGINEER_SYSTEM = (
+    "You are a prompt engineer for grok-imagine-video (ONE short ~4-6s SILENT "
+    "clip). You are GIVEN a visual scene that has already been chosen. Redraw "
+    "that SAME scene — the same subject, symbol, and action — as ONE simple "
+    "ROUGH WHITE CHALK DRAWING on a BLACK background (hand-sketched chalkboard "
+    "look). Do NOT invent a different subject; keep the given visual, only change "
+    "the style to chalk.\n"
+    "STYLE:\n"
+    "- BEGIN with exactly: 'Rough white chalk drawing on black background, simple "
+    "and clean, show ' then the same subject/action from the given scene.\n"
+    "- White chalk strokes only on matte black; loose, hand-drawn; the lines "
+    "draw themselves on with gentle motion. Keep it one simple sketch.\n"
+    "- FORBIDDEN: photorealism, live action, color, 3D renders, cartoon/anime "
+    "characters, any colored or non-black background.\n"
+    "Output ONLY the final prompt: 1-2 short sentences, ~20-45 words (starting "
+    "with the required phrase), keeping the same symbols and labels. No quotes, "
+    "no preamble, no lists."
+)
+
+
+def _grok_prompt_via_claude(
+    description: str,
+    scene_context: str = "",
+    theme: str = "",
+    system: Optional[str] = None,
+    max_len: int = 600,
+    script_excerpt: str = "",
+) -> Optional[str]:
+    """Ask Claude (Opus 4.8) to craft an optimal grok-imagine-video prompt from
+    the b-roll description. ``system`` selects the style engine (default cinematic
+    ``GROK_PROMPT_ENGINEER_SYSTEM``; pass ``GROK_CHALK_PROMPT_ENGINEER_SYSTEM``
+    for the chalk variant). ``script_excerpt`` is the actual script moment the
+    clip illustrates — passed so the visual is specific to the scene, not generic.
+    Returns the prompt, or None if ANTHROPIC_API_KEY / the SDK is missing or the
+    call fails."""
+    api_key = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
+    if not api_key:
+        return None
+    try:
+        import anthropic
+    except ImportError:
+        return None
+    try:
+        parts = []
+        if (scene_context or "").strip():
+            parts.append(
+                "SCRIPT LINE this clip must make the point of — anchor the visual "
+                f"to THIS: {scene_context.strip()}")
+        if (script_excerpt or "").strip():
+            parts.append(
+                f"Surrounding script (context only): \"{script_excerpt.strip()}\"")
+        parts.append(
+            "Scene / suggested visual (a starting idea — it may be over-elaborate; "
+            "simplify it into ONE clear symbolic shot, don't copy it literally): "
+            f"{description}")
+        if (theme or "").strip():
+            parts.append(
+                "Overall video topic (flavor only, do NOT replace the scene): "
+                f"{theme.strip()}")
+        user_msg = "\n".join(parts)
+
+        # Fail fast: the B-roll table now generates a cinematic AND an
+        # chalk prompt for every row (dozens of calls per table). When
+        # Anthropic is overloaded (HTTP 529), retrying turns that into a
+        # multi-minute stall that blocks the B-roll step from returning. With
+        # max_retries=0 an overloaded call falls straight through to the
+        # deterministic/xAI fallback (cinematic) or an empty cell (chalk)
+        # instead of hanging.
+        client = anthropic.Anthropic(
+            api_key=api_key, timeout=45.0, max_retries=0)
+        resp = client.messages.create(
+            model="claude-opus-4-8",
+            max_tokens=500,
+            system=system or GROK_PROMPT_ENGINEER_SYSTEM,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        out = "".join(
+            b.text for b in resp.content
+            if getattr(b, "type", None) == "text"
+        ).strip().strip('"').strip()
+        if out and len(out) <= max_len:
+            logger.info(f"🎨 Grok prompt (Claude): {out[:140]}")
+            return out
+    except Exception as e:
+        logger.warning(f"⚠️ Claude Grok-prompt rewrite failed: {e}")
+    return None
+
+
+def _resolve_xai_api_key() -> str:
+    """Resolve the xAI/Grok API key from saved server settings first, then the
+    XAI_API_KEY env var. Returns "" when neither is set (or is the placeholder)."""
+    key = ""
+    try:
+        key = (_load_scriptcraft_settings().get("grok_api_key") or "").strip()
+    except Exception:
+        key = ""
+    if not key:
+        key = (os.getenv("XAI_API_KEY") or "").strip()
+    if key == "your-xai-api-key-here":
+        return ""
+    return key
+
+
+def _grok_prompt_via_xai(
+    description: str,
+    scene_context: str = "",
+    theme: str = "",
+    system: Optional[str] = None,
+    max_len: int = 600,
+    script_excerpt: str = "",
+) -> Optional[str]:
+    """Ask Grok (xAI ``GROK_REWRITE_MODEL``) to craft a grok-imagine-video prompt,
+    using the SAME engineer/chalk system prompts as ``_grok_prompt_via_claude`` so
+    the visual style is identical — this is the fallback used when the Anthropic
+    key is missing or failing. Returns the prompt, or None when the xAI key/SDK is
+    unavailable or the call fails."""
+    api_key = _resolve_xai_api_key()
+    if not api_key:
+        return None
+    try:
+        import xai_sdk
+        from xai_sdk.chat import system as _xai_system, user as _xai_user
+    except ImportError:
+        return None
+    try:
+        parts = []
+        if (scene_context or "").strip():
+            parts.append(
+                "SCRIPT LINE this clip must make the point of — anchor the visual "
+                f"to THIS: {scene_context.strip()}")
+        if (script_excerpt or "").strip():
+            parts.append(
+                f"Surrounding script (context only): \"{script_excerpt.strip()}\"")
+        parts.append(
+            "Scene / suggested visual (a starting idea — it may be over-elaborate; "
+            "simplify it into ONE clear symbolic shot, don't copy it literally): "
+            f"{description}")
+        if (theme or "").strip():
+            parts.append(
+                "Overall video topic (flavor only, do NOT replace the scene): "
+                f"{theme.strip()}")
+        user_msg = "\n".join(parts)
+
+        client = xai_sdk.Client(api_key=api_key)
+        chat = client.chat.create(model=GROK_REWRITE_MODEL, temperature=0.6)
+        chat.append(_xai_system(system or GROK_PROMPT_ENGINEER_SYSTEM))
+        chat.append(_xai_user(user_msg))
+        resp = chat.sample()
+        out = (getattr(resp, "content", "") or "").strip().strip('"').strip()
+        if out and len(out) <= max_len:
+            logger.info(f"🎨 Grok prompt (xAI): {out[:140]}")
+            return out
+    except Exception as e:
+        logger.warning(f"⚠️ xAI Grok-prompt rewrite failed: {e}")
+    return None
+
+
+def _grok_prompt_via_llm(
+    description: str,
+    scene_context: str = "",
+    theme: str = "",
+    system: Optional[str] = None,
+    max_len: int = 600,
+    script_excerpt: str = "",
+) -> Optional[str]:
+    """Craft a grok-imagine-video prompt via Claude (Opus 4.8) when available,
+    falling back to Grok (xAI) with the SAME system prompt when the Anthropic key
+    is missing/failing. Returns None only if BOTH providers are unavailable."""
+    out = _grok_prompt_via_claude(
+        description, scene_context, theme, system=system, max_len=max_len,
+        script_excerpt=script_excerpt)
+    if out:
+        return out
+    return _grok_prompt_via_xai(
+        description, scene_context, theme, system=system, max_len=max_len,
+        script_excerpt=script_excerpt)
+
+
+def _grok_build_chalk_prompt(
+    base_visual: str,
+    scene_context: str = "",
+    theme: str = "",
+    script_excerpt: str = "",
+) -> str:
+    """Redraw an already-chosen visual (the cinematic Grok prompt) as its white-
+    chalk-on-black twin, so the "Grok Imagine" and "Grok Chalk" table columns show
+    the SAME scene in two styles. Uses Claude when available, falling back to Grok
+    (xAI). Returns "" when the rewrite is disabled or BOTH providers are
+    unavailable (this column is a bonus, no deterministic fallback)."""
+    base = (base_visual or "").strip()
+    if not base or not GROK_VISUAL_REWRITE_ENABLED:
+        return ""
+    out = _grok_prompt_via_llm(
+        base, system=GROK_CHALK_PROMPT_ENGINEER_SYSTEM, max_len=900)
+    return out or ""
+
+
+def _grok_chalk_prompts_from_cinematic(grok_prompts: dict, max_workers: int = 8) -> dict:
+    """Redraw each cinematic Grok prompt as its white-chalk twin (same visual, two
+    styles) so the two b-roll table columns always match. Returns
+    ``{row_index: chalk_prompt}``. Best-effort — a failing row yields ""."""
+    out: dict = {}
+    items = [(i, p) for i, p in (grok_prompts or {}).items() if (p or "").strip()]
+    if not items:
+        return out
+
+    def _one(item):
+        i, cine = item
+        try:
+            return i, (_grok_build_chalk_prompt(cine) or "")
+        except Exception as e:
+            logger.warning(f"⚠️ Chalk-from-cinematic failed (row {i}): {e}")
+            return i, ""
+
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        workers = max(1, min(max_workers, len(items)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, p in ex.map(_one, items):
+                out[i] = p
+    except Exception as e:
+        logger.warning(f"⚠️ Chalk batch failed ({e}); running sequentially")
+        for item in items:
+            i, p = _one(item)
+            out[i] = p
+    return out
+
+
+def _grok_build_video_prompt(
+    description: str,
+    scene_context: str = "",
+    theme: str = "",
+    client=None,
+    script_excerpt: str = "",
+) -> str:
+    """Rewrite a stock-style b-roll description into a unique, theme-specific
+    Grok video prompt (animation / diagram / artwork).
+
+    Falls back to the original description plus a style directive whenever the
+    LLM rewrite is disabled or fails, so generation never breaks on this step.
+    """
+    base = (description or "").strip()
+    if not base:
+        return base
+    styled_fallback = base.rstrip(".") + "." + GROK_VISUAL_STYLE_DIRECTIVE
+
+    if not GROK_VISUAL_REWRITE_ENABLED:
+        return styled_fallback
+
+    # 1) Preferred: Claude (Opus 4.8) writes the optimal grok-imagine prompt;
+    #    falls back to Grok (xAI) with the same engineer system prompt when the
+    #    Anthropic key is missing/failing.
+    llm_out = _grok_prompt_via_llm(
+        base, scene_context, theme, script_excerpt=script_excerpt)
+    if llm_out:
+        return llm_out
+
+    # 2) Fallback: xAI grok-3-mini rewrite (needs an explicitly-passed xAI client).
+    if client is None:
+        return styled_fallback
+
+    try:
+        from xai_sdk.chat import system as _xai_system, user as _xai_user
+
+        parts = []
+        parts.append(
+            "SCENE TO DEPICT (most important — your prompt MUST show exactly "
+            f"this, keeping its specific subject and objects): {base}")
+        if (script_excerpt or "").strip():
+            parts.append(
+                "EXACT SCRIPT MOMENT this b-roll illustrates — depict THIS "
+                "specific content literally, not a generic stock version: "
+                f"\"{script_excerpt.strip()}\"")
+        if (scene_context or "").strip():
+            parts.append(f"Why this scene appears in the video: {scene_context.strip()}")
+        if (theme or "").strip():
+            parts.append(
+                f"Overall video topic (for flavor/detail only, do NOT replace "
+                f"the scene with it): {theme.strip()}")
+        user_msg = "\n".join(parts)
+
+        chat = client.chat.create(model=GROK_REWRITE_MODEL, temperature=0.6)
+        chat.append(_xai_system(GROK_REWRITE_SYSTEM))
+        chat.append(_xai_user(user_msg))
+        resp = chat.sample()
+        out = (getattr(resp, "content", "") or "").strip().strip('"').strip()
+        # Reject empty / runaway output (model ignored the length rule).
+        if out and len(out) <= 600:
+            logger.info(f"🎨 Grok prompt rewritten: {out[:140]}")
+            return out
+        return styled_fallback
+    except Exception as e:
+        logger.warning(
+            f"⚠️ Grok prompt rewrite failed; using styled fallback: {e}")
+        return styled_fallback
+
+
 @app.route("/api/grok/key", methods=["POST"])
 def grok_save_key():
     """Persist Grok API key in server settings so it survives browser/session changes."""
@@ -6290,6 +9976,9 @@ def grok_save_key():
         api_key = (data.get("api_key") or "").strip()
         if not api_key:
             return jsonify({"success": False, "error": "api_key is required"}), 400
+        if _is_masked_key(api_key):
+            # The browser only holds the masked hint: nothing to change.
+            return jsonify({"success": True, "unchanged": True})
 
         settings = _load_scriptcraft_settings()
         settings["grok_api_key"] = api_key
@@ -6322,14 +10011,57 @@ def _grok_emit(session_id: str, payload: dict) -> None:
             pass
 
 
-def _grok_generate_worker(session_id: str, selected_rows: list, api_key: str, script_title: str = "") -> None:
+def _upscale_video_to_1080p(path) -> bool:
+    """Best-effort upscale a Grok clip to 1080p via ffmpeg (grok-imagine-video
+    maxes out at 720p natively, and xAI has no upscale API). Re-encodes in place
+    with Lanczos scaling to 1080p height, preserving aspect ratio. On any problem
+    (ffmpeg missing, timeout, error) the original file is left untouched. Returns
+    True only if the file was actually replaced with the 1080p version."""
+    try:
+        import shutil
+        import subprocess
+        if shutil.which("ffmpeg") is None:
+            logger.info("ℹ️ ffmpeg not on PATH — keeping 720p Grok clip")
+            return False
+        src = Path(path)
+        if not src.exists() or src.stat().st_size == 0:
+            return False
+        tmp = src.with_name(src.stem + ".1080p" + src.suffix)
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
+            "-vf", "scale=-2:1080:flags=lanczos",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+            "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart",
+            str(tmp),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if res.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
+            tmp.replace(src)
+            logger.info(f"⬆️ Upscaled Grok clip to 1080p → {src.name}")
+            return True
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+        logger.warning(
+            f"⚠️ 1080p upscale failed (rc={res.returncode}): "
+            f"{(res.stderr or '')[:200]}")
+    except Exception as e:
+        logger.warning(f"⚠️ 1080p upscale error: {e}")
+    return False
+
+
+def _grok_generate_worker(session_id: str, selected_rows: list, api_key: str, script_title: str = "", script_id: str = "") -> None:
     """Background worker: generate Grok videos one-by-one, streaming progress and honoring cancel."""
     cancel_evt = grok_video_cancel_events.setdefault(
         session_id, _threading.Event())
     out_dir = _grok_get_output_dir(script_title or None)
     videos: list = []
     failures: list = []
-    total = len(selected_rows)
+    # Each selected scene yields up to TWO clips — a cinematic take and a
+    # chalk-sketch take — so the total is ~2× the rows.
+    total = len(selected_rows) * 2
     cancelled = False
 
     try:
@@ -6357,101 +10089,152 @@ def _grok_generate_worker(session_id: str, selected_rows: list, api_key: str, sc
         "output_dir": str(out_dir),
     })
 
+    clip_no = 0
     for i, row in enumerate(selected_rows):
         if cancel_evt.is_set():
             cancelled = True
             break
 
-        prompt = (row.get("description") or row.get(
+        desc = (row.get("description") or row.get(
             "search_term") or "").strip()
         term = row.get("search_term", f"vid{i}") or f"vid{i}"
         timecode = row.get("timecode", "")
+        scene_context = (row.get("scene_context") or "").strip()
 
-        if not prompt:
+        if not desc:
+            clip_no += 1
             failures.append(
                 {"index": i, "error": "Missing prompt", "row": row})
             _grok_emit(session_id, {
                 "type": "video_failed",
-                "index": i, "current": i + 1, "total": total,
+                "index": i, "current": clip_no, "total": total,
                 "search_term": term, "timecode": timecode,
                 "error": "Missing prompt",
-                "message": f"⚠️ [{i+1}/{total}] Skipped '{term}' — missing prompt",
+                "message": f"⚠️ [{clip_no}/{total}] Skipped '{term}' — missing prompt",
             })
             continue
 
-        _grok_emit(session_id, {
-            "type": "video_start",
-            "index": i, "current": i + 1, "total": total,
-            "search_term": term, "timecode": timecode, "description": prompt,
-            "message": f"🎨 [{i+1}/{total}] Generating '{term}'…",
-        })
+        # Pull MORE out of each scene: generate TWO clips — a cinematic take and
+        # a rough white-chalk-on-black hand-drawn take. Reuse the prompts already
+        # prepared on the row (from the B-roll table) when present; otherwise
+        # build them now (Claude, with xAI fallback for the cinematic one).
+        variants = []
+        cine = (row.get("grok_prompt") or "").strip() or _grok_build_video_prompt(
+            desc, scene_context, script_title, client=client)
+        if cine:
+            variants.append(("cinematic", cine))
+        # Chalk is the SAME visual as the cinematic prompt, redrawn in chalk.
+        chalk = (row.get("grok_chalk_prompt") or "").strip() or \
+            _grok_build_chalk_prompt(cine or desc)
+        if chalk:
+            variants.append(("chalk", chalk))
+        if not variants:
+            variants.append(("cinematic", desc))
 
-        try:
-            response = client.video.generate(
-                prompt=_grok_prompt_no_audio(prompt),
-                model="grok-imagine-video",
-                duration=6,
-                aspect_ratio="16:9",
-                resolution="480p",
-            )
-
+        for style, gen_prompt in variants:
             if cancel_evt.is_set():
                 cancelled = True
                 break
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            safe_term = "".join(c if c.isalnum() else "_" for c in term)[:30]
-            filename = f"grok_{timestamp}_{i}_{safe_term}.mp4"
-            local_path = out_dir / filename
-
-            with requests.get(response.url, stream=True, timeout=180, verify=certifi.where()) as dl_resp:
-                dl_resp.raise_for_status()
-                with open(local_path, "wb") as out_file:
-                    for chunk in dl_resp.iter_content(chunk_size=8192):
-                        if cancel_evt.is_set():
-                            break
-                        if chunk:
-                            out_file.write(chunk)
-
-            if cancel_evt.is_set():
-                # Partial download — drop the incomplete file.
-                try:
-                    if local_path.exists():
-                        local_path.unlink()
-                except Exception:
-                    pass
-                cancelled = True
-                break
-
-            video_entry = {
-                "timecode": timecode,
-                "search_term": term,
-                "description": prompt,
-                "url": response.url,
-                "filename": str(local_path),
-            }
-            videos.append(video_entry)
+            clip_no += 1
 
             _grok_emit(session_id, {
-                "type": "video_ready",
-                "index": i, "current": i + 1, "total": total,
-                "video": video_entry,
-                "message": f"✅ [{i+1}/{total}] Saved '{term}' → {local_path}",
+                "type": "video_start",
+                "index": i, "current": clip_no, "total": total,
+                "search_term": term, "style": style,
+                "timecode": timecode, "description": desc,
+                "generated_prompt": gen_prompt,
+                "message": f"🎨 [{clip_no}/{total}] Generating {style} visual for '{term}'…",
             })
-        except Exception as row_err:
-            failures.append({
-                "index": i,
-                "timecode": timecode,
-                "search_term": term,
-                "error": str(row_err),
-            })
-            _grok_emit(session_id, {
-                "type": "video_failed",
-                "index": i, "current": i + 1, "total": total,
-                "search_term": term, "timecode": timecode,
-                "error": str(row_err),
-                "message": f"❌ [{i+1}/{total}] Failed '{term}': {row_err}",
-            })
+
+            try:
+                # Generate at 720p — the highest resolution grok-imagine-video
+                # supports natively (its only options are 480p / 720p).
+                response = client.video.generate(
+                    prompt=_grok_prompt_no_audio(gen_prompt),
+                    model="grok-imagine-video",
+                    duration=6,
+                    aspect_ratio="16:9",
+                    resolution="720p",
+                )
+
+                if cancel_evt.is_set():
+                    cancelled = True
+                    break
+
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                safe_term = "".join(
+                    c if c.isalnum() else "_" for c in term)[:30]
+                filename = f"grok_{timestamp}_{i}_{style}_{safe_term}.mp4"
+                local_path = out_dir / filename
+
+                with requests.get(response.url, stream=True, timeout=180, verify=certifi.where()) as dl_resp:
+                    dl_resp.raise_for_status()
+                    with open(local_path, "wb") as out_file:
+                        for chunk in dl_resp.iter_content(chunk_size=8192):
+                            if cancel_evt.is_set():
+                                break
+                            if chunk:
+                                out_file.write(chunk)
+
+                if cancel_evt.is_set():
+                    # Partial download — drop the incomplete file.
+                    try:
+                        if local_path.exists():
+                            local_path.unlink()
+                    except Exception:
+                        pass
+                    cancelled = True
+                    break
+
+                # Grok caps at 720p; upscale to full 1080p (best-effort, via
+                # ffmpeg) so clips drop crisply onto a 1080p timeline. Falls back
+                # to the 720p original if ffmpeg is unavailable or fails.
+                upscaled = _upscale_video_to_1080p(local_path)
+
+                video_entry = {
+                    "timecode": timecode,
+                    "search_term": term,
+                    "style": style,
+                    "description": desc,
+                    "generated_prompt": gen_prompt,
+                    "resolution": "1080p" if upscaled else "720p",
+                    "url": response.url,
+                    "filename": str(local_path),
+                }
+                # Persist to Azure under the permanent Script-ID so the video is
+                # restored next time this script is loaded (survives refresh). The
+                # durable blob SAS URL replaces the short-lived xAI url for playback.
+                blob_url = _persist_grok_video(
+                    script_id, local_path, video_entry)
+                if blob_url:
+                    video_entry["url"] = blob_url
+                    video_entry["persisted"] = True
+                videos.append(video_entry)
+
+                _grok_emit(session_id, {
+                    "type": "video_ready",
+                    "index": i, "current": clip_no, "total": total,
+                    "video": video_entry,
+                    "message": f"✅ [{clip_no}/{total}] Saved {style} '{term}' → {local_path}",
+                })
+            except Exception as row_err:
+                failures.append({
+                    "index": i,
+                    "timecode": timecode,
+                    "search_term": term,
+                    "style": style,
+                    "error": str(row_err),
+                })
+                _grok_emit(session_id, {
+                    "type": "video_failed",
+                    "index": i, "current": clip_no, "total": total,
+                    "search_term": term, "style": style, "timecode": timecode,
+                    "error": str(row_err),
+                    "message": f"❌ [{clip_no}/{total}] Failed {style} '{term}': {row_err}",
+                })
+
+        if cancelled:
+            break
 
     grok_video_results[session_id] = {
         "videos": videos,
@@ -6484,9 +10267,11 @@ def grok_generate_selected_videos():
     try:
         data = request.get_json() or {}
         selected_rows = data.get("selected_rows") or []
-        api_key = (data.get("api_key") or "").strip(
-        ) or os.getenv("XAI_API_KEY", "").strip()
+        api_key = _effective_key(data.get("api_key"), "grok_api_key", "XAI_API_KEY")
         script_title = (data.get("script_title") or "").strip()
+        # Grok videos are tied to the permanent Script-ID so they accumulate
+        # across every processing version of the script.
+        script_id = (data.get("script_id") or "").strip()
         session_id = (data.get("session_id")
                       or "").strip() or str(uuid.uuid4())
 
@@ -6502,7 +10287,7 @@ def grok_generate_selected_videos():
 
         thread = _threading.Thread(
             target=_grok_generate_worker,
-            args=(session_id, selected_rows, api_key, script_title),
+            args=(session_id, selected_rows, api_key, script_title, script_id),
             daemon=True,
         )
         thread.start()
@@ -7250,6 +11035,41 @@ def youtube_recent_videos():
         })
     except Exception as e:
         logger.error(f"❌ youtube_recent_videos error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/youtube/published-videos", methods=["GET"])
+def youtube_published_videos():
+    """List the @AIwithRoz channel's published (uploaded) videos, newest first.
+
+    Powers the "Promote a published video" browser in the Post to X composer so
+    any older episode can be turned into a promo at any time. Returns an empty
+    list (not an error) when YouTube isn't authorized yet, so the composer can
+    show a friendly hint instead of failing.
+    """
+    try:
+        import youtube_publisher as yp
+        if not yp.is_authorized():
+            return jsonify({
+                "success": True,
+                "authorized": False,
+                "videos": [],
+                "message": ("Connect the YouTube account first (Publish tab) "
+                            "to browse published videos."),
+            })
+        try:
+            max_results = int(request.args.get("max", 100))
+        except (TypeError, ValueError):
+            max_results = 100
+        max_results = max(1, min(max_results, 200))
+        videos = yp.list_published_videos(max_results=max_results)
+        return jsonify({
+            "success": True,
+            "authorized": True,
+            "videos": videos,
+        })
+    except Exception as e:
+        logger.error(f"❌ youtube_published_videos error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -8752,11 +12572,17 @@ def execute_curl():
                     import json
                     response_data = json.loads(result.stdout)
 
-                    # Extract job ID if available (HeyGen specific)
+                    # Extract job ID if available (HeyGen specific).
+                    # HeyGen V3 (/v3/templates/{id}) returns the video id at
+                    # data.id; the legacy V2 endpoint used data.video_id. Check
+                    # both so polling starts regardless of endpoint version.
                     job_id = None
                     if isinstance(response_data, dict):
                         data_obj = response_data.get('data') or {}
-                        job_id = (data_obj.get('video_id') if isinstance(data_obj, dict) else None) or \
+                        if not isinstance(data_obj, dict):
+                            data_obj = {}
+                        job_id = data_obj.get('video_id') or \
+                            data_obj.get('id') or \
                             response_data.get('video_id') or \
                             response_data.get('job_id') or \
                             response_data.get('id')
@@ -8961,7 +12787,7 @@ def check_video_status():
     try:
         data = request.json
         video_id = data.get("video_id", "")
-        api_key = data.get("api_key", "")
+        api_key = _effective_key(data.get("api_key", ""), "heygen_api_key", "HEYGEN_API_KEY")
 
         if not video_id:
             return jsonify({
@@ -8980,10 +12806,11 @@ def check_video_status():
         import requests
 
         # Check video status
-        base_url = "https://api.heygen.com/v1/video_status.get"
-        video_status_url = f"{base_url}?video_id={video_id}"
+        # HeyGen v3: GET /v3/videos/{video_id} (replaces v1/video_status.get)
+        video_status_url = f"https://api.heygen.com/v3/videos/{video_id}"
         headers = {
-            "X-Api-Key": api_key
+            "accept": "application/json",
+            "x-api-key": api_key,
         }
 
         try:
@@ -8993,7 +12820,7 @@ def check_video_status():
             response_data = response.json()
 
             if response.status_code != 200:
-                error_msg = response_data.get("message", "Unknown error")
+                error_msg = ((response_data.get("error") or {}).get("message") if isinstance(response_data.get("error"), dict) else response_data.get("error")) or response_data.get("message") or "Unknown error"
                 logger.error(f"❌ HeyGen API error: {error_msg}")
                 return jsonify({
                     "success": False,
@@ -9024,9 +12851,9 @@ def check_video_status():
                     logger.warning(msg)
 
             elif status == "failed":
-                error = response_data.get("data", {}).get(
-                    "error", "Unknown error"
-                )
+                error = (response_data.get("data", {}).get("failure_message")
+                    or response_data.get("data", {}).get("failure_code")
+                    or "Unknown error")
                 result["error"] = error
                 logger.error(f"❌ Video generation failed: {error}")
 
@@ -9791,6 +13618,659 @@ def _blob_sas_url(blob_name: str) -> str:
     )
 
 
+# --- Script artifact persistence (Feature 2) --------------------------------
+# Generated artifacts are stored in Azure Blob so a script reloaded in any
+# session (or after a refresh) restores them into the main-page tabs:
+#   <script_id>/videos/<file>.mp4(+.json)   Grok videos, by permanent Script-ID
+#   <script_id>/versions/<version_id>/...    everything else, by Script-Version
+# Uses the same account + cached user-delegation key as the video gallery.
+SCRIPT_ARTIFACTS_BLOB_CONTAINER = os.environ.get(
+    "SCRIPT_ARTIFACTS_BLOB_CONTAINER", "script-artifacts"
+).strip()
+_artifacts_container_ready = {"done": False}
+
+
+def _artifacts_enabled() -> bool:
+    return bool(FINISHED_VIDEOS_BLOB_ACCOUNT and SCRIPT_ARTIFACTS_BLOB_CONTAINER)
+
+
+def _safe_blob_id(s: str) -> str:
+    return re.sub(r'[^A-Za-z0-9._\-]', '_', (s or '').strip()) or 'unknown'
+
+
+def _artifacts_container():
+    svc = _finished_videos_blob_service()
+    cc = svc.get_container_client(SCRIPT_ARTIFACTS_BLOB_CONTAINER)
+    if not _artifacts_container_ready["done"]:
+        try:
+            cc.create_container()
+        except Exception:
+            pass  # already exists, or no create permission (fine to read/write)
+        _artifacts_container_ready["done"] = True
+    return cc
+
+
+def _artifacts_sas_url(blob_name: str) -> str:
+    from datetime import datetime, timedelta, timezone
+    from urllib.parse import quote as _q
+    from azure.storage.blob import generate_blob_sas, BlobSasPermissions
+    udk = _get_user_delegation_key()
+    expiry = datetime.now(timezone.utc) + \
+        timedelta(minutes=FINISHED_VIDEOS_SAS_MINUTES)
+    sas = generate_blob_sas(
+        account_name=FINISHED_VIDEOS_BLOB_ACCOUNT,
+        container_name=SCRIPT_ARTIFACTS_BLOB_CONTAINER,
+        blob_name=blob_name,
+        user_delegation_key=udk,
+        permission=BlobSasPermissions(read=True),
+        expiry=expiry,
+    )
+    encoded = "/".join(_q(seg) for seg in blob_name.split("/"))
+    return (
+        f"https://{FINISHED_VIDEOS_BLOB_ACCOUNT}.blob.core.windows.net/"
+        f"{SCRIPT_ARTIFACTS_BLOB_CONTAINER}/{encoded}?{sas}"
+    )
+
+
+def _artifacts_upload_bytes(blob_name: str, data, content_type: "Optional[str]" = None) -> bool:
+    try:
+        from azure.storage.blob import ContentSettings
+        cc = _artifacts_container()
+        cs = ContentSettings(
+            content_type=content_type) if content_type else None
+        cc.upload_blob(name=blob_name, data=data,
+                       overwrite=True, content_settings=cs)
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ artifact upload failed ({blob_name}): {e}")
+        return False
+
+
+def _artifacts_upload_file(blob_name: str, path, content_type: "Optional[str]" = None) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return _artifacts_upload_bytes(blob_name, f, content_type)
+    except Exception as e:
+        logger.warning(f"⚠️ artifact upload (file) failed ({blob_name}): {e}")
+        return False
+
+
+def _persist_grok_video(script_id: str, local_path, entry: dict) -> "Optional[str]":
+    """Upload a generated Grok mp4 + sidecar metadata under
+    <script_id>/videos/. Returns a read SAS URL for the mp4, or None if
+    persistence is disabled/unavailable (generation must never break on this).
+    """
+    if not _artifacts_enabled() or not script_id:
+        return None
+    sid = _safe_blob_id(script_id)
+    fname = os.path.basename(str(local_path))
+    blob = f"{sid}/videos/{fname}"
+    if not _artifacts_upload_file(blob, local_path, "video/mp4"):
+        return None
+    meta = {
+        "filename": fname,
+        "blob_name": blob,
+        "search_term": entry.get("search_term", ""),
+        "timecode": entry.get("timecode", ""),
+        "description": entry.get("description", ""),
+        "generated_prompt": entry.get("generated_prompt", ""),
+        "script_id": sid,
+    }
+    _artifacts_upload_bytes(
+        blob + ".json", json.dumps(meta).encode("utf-8"), "application/json")
+    try:
+        return _artifacts_sas_url(blob)
+    except Exception:
+        return None
+
+
+def _list_grok_videos_for_script(script_id: str) -> list:
+    """All persisted Grok videos for a Script-ID, with fresh SAS playback URLs."""
+    if not _artifacts_enabled() or not script_id:
+        return []
+    sid = _safe_blob_id(script_id)
+    out: list = []
+    try:
+        cc = _artifacts_container()
+        names = [b.name for b in cc.list_blobs(name_starts_with=f"{sid}/videos/")]
+        nameset = set(names)
+        for n in sorted(x for x in names if x.lower().endswith(".mp4")):
+            meta = {}
+            if n + ".json" in nameset:
+                try:
+                    meta = json.loads(cc.download_blob(n + ".json").readall())
+                except Exception:
+                    meta = {}
+            out.append({
+                "filename": os.path.basename(n),
+                "url": _artifacts_sas_url(n),
+                "search_term": meta.get("search_term", ""),
+                "timecode": meta.get("timecode", ""),
+                "description": meta.get("description", ""),
+                "generated_prompt": meta.get("generated_prompt", ""),
+                "persisted": True,
+            })
+    except Exception as e:
+        logger.warning(f"⚠️ listing grok videos failed for {script_id}: {e}")
+    return out
+
+
+@app.route("/api/script-artifacts/videos", methods=["GET"])
+def api_script_artifacts_videos():
+    """Restore previously generated Grok videos for a Script-ID."""
+    script_id = (request.args.get("script_id") or "").strip()
+    if not script_id:
+        return jsonify({"success": False, "error": "script_id required"}), 400
+    vids = _list_grok_videos_for_script(script_id)
+    return jsonify({"success": True, "videos": vids, "count": len(vids)})
+
+
+# --- Phase C: persist + restore ALL artifacts of a Script-Version -----------
+def _find_media_file(filename: str) -> "Optional[Path]":
+    """Locate a generated thumbnail/b-roll image on disk by filename (mirrors
+    the /thumbnails and /broll-images serving routes)."""
+    if not filename:
+        return None
+    for root in (_get_output_parent_dir(),
+                 Path.home() / "Dev" / "Thumbnails",
+                 Path.home() / "Dev" / "brollimages"):
+        try:
+            if root.exists():
+                matches = list(root.rglob(filename))
+                if matches:
+                    return matches[0]
+        except Exception:
+            continue
+    return None
+
+
+def _persist_version_artifacts(script_id: str, version_id: str, result: dict,
+                               script_title: str = "") -> None:
+    """Upload every artifact produced by a create/process run to Azure under
+    <script_id>/versions/<version_id>/ so the script reopened later restores
+    its tabs. Text artifacts go in artifacts.json; thumbnails + b-roll images
+    are uploaded as files (durable SAS urls served on restore). Grok videos are
+    persisted separately by Script-ID. Never raises into the caller.
+    """
+    if not _artifacts_enabled() or not script_id or not version_id or not result:
+        return
+    try:
+        sid = _safe_blob_id(script_id)
+        vid = _safe_blob_id(version_id)
+        prefix = f"{sid}/versions/{vid}"
+        title = script_title or result.get("script_title", "")
+
+        # Thumbnails (collect entries, upload each image file).
+        thumb_entries = []
+        try:
+            tlist = _collect_all_thumbnail_entries(
+                title, result.get("thumbnail_results"))
+        except Exception:
+            tlist = result.get("thumbnails") or []
+        for t in (tlist or []):
+            fn = (t.get("filename") or "").split("/")[-1]
+            if not fn:
+                continue
+            fp = _find_media_file(fn)
+            blob = f"{prefix}/thumbnails/{fn}"
+            if fp and _artifacts_upload_file(blob, fp, "image/png"):
+                thumb_entries.append({
+                    "filename": fn, "blob_name": blob,
+                    "emotion": t.get("emotion", ""), "text": t.get("text", ""),
+                })
+
+        # B-roll images.
+        broll_entries = []
+        for b in (result.get("broll_images") or []):
+            fn = ((b.get("filename") or b.get("filepath") or "")
+                  .split("/")[-1])
+            if not fn:
+                continue
+            fp = _find_media_file(fn)
+            blob = f"{prefix}/broll/{fn}"
+            if fp and _artifacts_upload_file(blob, fp, "image/png"):
+                broll_entries.append({
+                    "filename": fn, "blob_name": blob,
+                    "search_term": b.get("search_term", ""),
+                    "timecode": b.get("timecode", ""),
+                })
+
+        # The initial generated script body + the creative brief that produced
+        # it, so both can be pulled back from the cloud (and recent scripts can
+        # seed style context for future generations). A reprocess run bumps the
+        # version and carries no brief — carry the newest prior brief forward so
+        # every version's manifest stays self-contained (single-read listing).
+        enhanced_script = (result.get("enhanced_script")
+                           or result.get("script") or "")
+        brief = (result.get("brief") or "").strip()
+        if not brief:
+            try:
+                brief = (_read_latest_brief_for_script(script_id) or "").strip()
+            except Exception:
+                brief = ""
+
+        manifest = {
+            "script_id": sid, "version_id": vid, "script_title": title,
+            "enhanced_script": enhanced_script,
+            "brief": brief,
+            "broll_table": result.get("broll_table"),
+            "broll_rows": result.get("broll_rows"),
+            "youtube_details": result.get("youtube_details"),
+            "demo_packages": result.get("demo_packages"),
+            "flow_original_script": result.get("flow_original_script"),
+            "flow_improved_script": result.get("flow_improved_script"),
+            "flow_analysis_report": result.get("flow_analysis_report"),
+            "chapter_comparisons": result.get("chapter_comparisons"),
+            "edl_content": result.get("edl_content"),
+            "edl_filename": result.get("edl_filename"),
+            "curl_commands": result.get("curl_commands"),
+            "hooks": result.get("hooks"),
+            "hook_labels": result.get("hook_labels"),
+            "thumbnails": thumb_entries,
+            "broll_images": broll_entries,
+        }
+        _artifacts_upload_bytes(
+            f"{prefix}/artifacts.json",
+            json.dumps(manifest).encode("utf-8"), "application/json")
+        logger.info(
+            f"📦 Persisted version artifacts {sid}/{vid}: "
+            f"{len(thumb_entries)} thumbnails, {len(broll_entries)} b-roll images")
+    except Exception as e:
+        logger.warning(f"⚠️ persist version artifacts failed: {e}")
+
+
+def _read_version_artifacts(script_id: str, version_id: str) -> "Optional[dict]":
+    """Read a version's artifacts.json and attach fresh SAS urls to media."""
+    if not _artifacts_enabled() or not script_id or not version_id:
+        return None
+    sid = _safe_blob_id(script_id)
+    vid = _safe_blob_id(version_id)
+    try:
+        cc = _artifacts_container()
+        raw = cc.download_blob(f"{sid}/versions/{vid}/artifacts.json").readall()
+        manifest = json.loads(raw)
+    except Exception:
+        return None
+    for t in (manifest.get("thumbnails") or []):
+        if t.get("blob_name"):
+            try:
+                t["url"] = _artifacts_sas_url(t["blob_name"])
+            except Exception:
+                pass
+    for b in (manifest.get("broll_images") or []):
+        if b.get("blob_name"):
+            try:
+                b["url"] = _artifacts_sas_url(b["blob_name"])
+            except Exception:
+                pass
+    return manifest
+
+
+@app.route("/api/script-artifacts/version", methods=["GET"])
+def api_script_artifacts_version():
+    """Restore all stored artifacts for a specific Script-Version."""
+    script_id = (request.args.get("script_id") or "").strip()
+    version_id = (request.args.get("version_id") or "").strip()
+    if not script_id or not version_id:
+        return jsonify({"success": False,
+                        "error": "script_id and version_id required"}), 400
+    data = _read_version_artifacts(script_id, version_id)
+    if data is None:
+        return jsonify({"success": True, "found": False})
+    return jsonify({"success": True, "found": True, "artifacts": data})
+
+
+def _read_latest_broll_table_for_script(script_id: str) -> "Optional[dict]":
+    """Newest persisted B-roll table for a Script-ID, across ALL versions.
+
+    Version artifacts are keyed by exact Script-Version, but every processing
+    run (including a standalone B-roll agent run) bumps the version — so a
+    script reloaded from an older file points at a version whose manifest
+    predates the table. This walks every version manifest for the Script-ID,
+    newest-written first, and returns the first B-roll table it finds — so the
+    table (and its Shutterstock links) come back on load without re-running the
+    agent. Restore-by-Script-ID, the same way Grok videos are restored.
+    Returns {"broll_table", "broll_rows", "version_id"} or None.
+    """
+    if not _artifacts_enabled() or not script_id:
+        return None
+    sid = _safe_blob_id(script_id)
+    try:
+        cc = _artifacts_container()
+        blobs = [
+            b for b in cc.list_blobs(name_starts_with=f"{sid}/versions/")
+            if b.name.endswith("/artifacts.json")
+            and getattr(b, "last_modified", None)
+        ]
+        # Version ids are random, not time-ordered — sort by blob write time.
+        blobs.sort(key=lambda b: b.last_modified, reverse=True)
+        for b in blobs:
+            try:
+                manifest = json.loads(cc.download_blob(b.name).readall())
+            except Exception:
+                continue
+            table = manifest.get("broll_table")
+            if table and str(table).strip():
+                return {
+                    "broll_table": table,
+                    "broll_rows": manifest.get("broll_rows"),
+                    "version_id": manifest.get("version_id"),
+                }
+    except Exception as e:
+        logger.warning(
+            f"⚠️ latest broll table lookup failed for {script_id}: {e}")
+    return None
+
+
+@app.route("/api/script-artifacts/latest-broll", methods=["GET"])
+def api_script_artifacts_latest_broll():
+    """Newest persisted B-roll table for a Script-ID (across versions)."""
+    script_id = (request.args.get("script_id") or "").strip()
+    if not script_id:
+        return jsonify({"success": False, "error": "script_id required"}), 400
+    data = _read_latest_broll_table_for_script(script_id)
+    if not data:
+        return jsonify({"success": True, "found": False})
+    return jsonify({"success": True, "found": True, **data})
+
+
+def _read_latest_brief_for_script(script_id: str) -> "Optional[str]":
+    """Newest persisted creative brief for a Script-ID, across ALL versions.
+
+    Only the create run carries a brief; reprocess runs bump the version with
+    no brief. Walk every version manifest newest-written first and return the
+    first non-empty brief. Mirrors _read_latest_broll_table_for_script.
+    """
+    if not _artifacts_enabled() or not script_id:
+        return None
+    sid = _safe_blob_id(script_id)
+    try:
+        cc = _artifacts_container()
+        blobs = [
+            b for b in cc.list_blobs(name_starts_with=f"{sid}/versions/")
+            if b.name.endswith("/artifacts.json")
+            and getattr(b, "last_modified", None)
+        ]
+        blobs.sort(key=lambda b: b.last_modified, reverse=True)
+        for b in blobs:
+            try:
+                manifest = json.loads(cc.download_blob(b.name).readall())
+            except Exception:
+                continue
+            brief = manifest.get("brief")
+            if brief and str(brief).strip():
+                return str(brief)
+    except Exception as e:
+        logger.warning(f"⚠️ latest brief lookup failed for {script_id}: {e}")
+    return None
+
+
+# How many recent scripts to expose in the cloud picker / feed as style memory,
+# and how much of each script to include as a style sample (chars).
+_CLOUD_SCRIPTS_MAX = 50
+_STYLE_CONTEXT_SCRIPTS = 8
+_STYLE_CONTEXT_CHARS_PER_SCRIPT = 2000
+
+
+def _list_cloud_scripts(limit: int = _CLOUD_SCRIPTS_MAX) -> list:
+    """List saved scripts in the cloud, newest first, one entry per Script-ID.
+
+    Walks every version manifest, groups by Script-ID, and keeps the
+    newest-written version per script. Returns lightweight cards:
+    {script_id, version_id, title, created, has_script, has_brief, word_count}.
+    """
+    if not _artifacts_enabled():
+        return []
+    try:
+        cc = _artifacts_container()
+        # Newest artifacts.json per Script-ID (first path segment).
+        newest: "dict[str, object]" = {}
+        for b in cc.list_blobs():
+            name = getattr(b, "name", "") or ""
+            if not name.endswith("/artifacts.json") or "/versions/" not in name:
+                continue
+            if not getattr(b, "last_modified", None):
+                continue
+            sid = name.split("/", 1)[0]
+            cur = newest.get(sid)
+            if cur is None or b.last_modified > cur.last_modified:
+                newest[sid] = b
+        # Newest scripts first; cap how many manifests we actually download.
+        ordered = sorted(
+            newest.values(), key=lambda b: b.last_modified, reverse=True)
+        truncated = len(ordered) > limit
+        ordered = ordered[:limit]
+        cards = []
+        for b in ordered:
+            try:
+                m = json.loads(cc.download_blob(b.name).readall())
+            except Exception:
+                continue
+            script_text = (m.get("enhanced_script") or "").strip()
+            cards.append({
+                "script_id": m.get("script_id") or b.name.split("/", 1)[0],
+                "version_id": m.get("version_id"),
+                "title": (m.get("script_title") or "Untitled").strip(),
+                "created": b.last_modified.isoformat(),
+                "has_script": bool(script_text),
+                "has_brief": bool((m.get("brief") or "").strip()),
+                "word_count": len(script_text.split()) if script_text else 0,
+            })
+        if truncated:
+            logger.info(
+                f"ℹ️ Cloud script list truncated to newest {limit} "
+                f"(of {len(newest)} total scripts)")
+        return cards
+    except Exception as e:
+        logger.warning(f"⚠️ list cloud scripts failed: {e}")
+        return []
+
+
+@app.route("/api/cloud-scripts", methods=["GET"])
+def api_cloud_scripts():
+    """List saved scripts in the cloud for the Load-from-Cloud picker."""
+    if not _artifacts_enabled():
+        return jsonify({"success": True, "enabled": False, "scripts": []})
+    try:
+        limit = int(request.args.get("limit", _CLOUD_SCRIPTS_MAX))
+    except (TypeError, ValueError):
+        limit = _CLOUD_SCRIPTS_MAX
+    scripts = _list_cloud_scripts(max(1, min(limit, 200)))
+    return jsonify({"success": True, "enabled": True,
+                    "scripts": scripts, "count": len(scripts)})
+
+
+def _recent_scripts_for_style_context(
+        limit: int = _STYLE_CONTEXT_SCRIPTS,
+        exclude_script_id: str = "") -> list:
+    """The newest saved scripts (title + trimmed body) to seed style memory for
+    a new generation. Returns [{title, excerpt}] newest first, skipping the
+    current Script-ID and any script with no body. Best-effort; never raises.
+    """
+    if not _artifacts_enabled():
+        return []
+    exclude = _safe_blob_id(exclude_script_id) if exclude_script_id else ""
+    out = []
+    try:
+        cc = _artifacts_container()
+        newest: "dict[str, object]" = {}
+        for b in cc.list_blobs():
+            name = getattr(b, "name", "") or ""
+            if not name.endswith("/artifacts.json") or "/versions/" not in name:
+                continue
+            if not getattr(b, "last_modified", None):
+                continue
+            sid = name.split("/", 1)[0]
+            if exclude and sid == exclude:
+                continue
+            cur = newest.get(sid)
+            if cur is None or b.last_modified > cur.last_modified:
+                newest[sid] = b
+        # Scan a few more than `limit` so reference-flagged scripts can jump the
+        # queue, then rank reference-first, newest-first.
+        candidates = sorted(
+            newest.values(), key=lambda b: b.last_modified,
+            reverse=True)[:max(limit * 3, 12)]
+        rows = []
+        for b in candidates:
+            try:
+                m = json.loads(cc.download_blob(b.name).readall())
+            except Exception:
+                continue
+            body = (m.get("enhanced_script") or "").strip()
+            if not body:
+                continue
+            rows.append((
+                bool(m.get("reference") or m.get("final")),
+                b.last_modified,
+                (m.get("script_title") or "Untitled").strip(),
+                body,
+            ))
+        rows.sort(key=lambda r: (r[0], r[1]), reverse=True)
+        for _is_ref, _lm, title, body in rows[:limit]:
+            out.append({
+                "title": title + (" [REFERENCE]" if _is_ref else ""),
+                "excerpt": body[:_STYLE_CONTEXT_CHARS_PER_SCRIPT],
+            })
+    except Exception as e:
+        logger.warning(f"⚠️ recent scripts (style context) lookup failed: {e}")
+    return out
+
+
+def _set_script_reference_flag(script_id: str, version_id: str,
+                               reference: bool = True) -> bool:
+    """Read a version manifest, set its `reference` (and `final`) flag, and
+    re-upload it. Reference scripts lead the style context for new generations."""
+    if not _artifacts_enabled() or not script_id or not version_id:
+        return False
+    sid = _safe_blob_id(script_id)
+    vid = _safe_blob_id(version_id)
+    try:
+        cc = _artifacts_container()
+        path = f"{sid}/versions/{vid}/artifacts.json"
+        m = json.loads(cc.download_blob(path).readall())
+        m["reference"] = bool(reference)
+        m["final"] = bool(reference)  # a marked reference == a production-final
+        _artifacts_upload_bytes(
+            path, json.dumps(m).encode("utf-8"), "application/json")
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ mark-reference failed for {script_id}/{version_id}: {e}")
+        return False
+
+
+@app.route("/api/script/mark-reference", methods=["POST"])
+def api_script_mark_reference():
+    """Mark a saved cloud script as a REFERENCE (used in production / golden).
+    Reference scripts lead the style context fed into every new generation."""
+    data = request.get_json(silent=True) or {}
+    sid = (data.get("script_id") or "").strip()
+    vid = (data.get("version_id") or "").strip()
+    ref = bool(data.get("reference", True))
+    if not sid or not vid:
+        return jsonify({
+            "success": False,
+            "error": "script_id and version_id are required — save the script "
+                     "to the cloud first.",
+        }), 400
+    ok = _set_script_reference_flag(sid, vid, ref)
+    if ok:
+        logger.info("⭐ Marked %s/%s reference=%s", sid, vid, ref)
+    return jsonify({"success": ok})
+
+
+_GOLDEN_CLOUD_SID = "golden-reference"
+_GOLDEN_CLOUD_VID = "v1"
+
+
+def _seed_golden_reference_to_cloud() -> bool:
+    """Upload the local golden reference script to the cloud as a reference
+    script, once. Best-effort and idempotent (skips if already present)."""
+    if not _artifacts_enabled():
+        return False
+    try:
+        from linedrive_azure.agents.pro_script_writer import load_golden_reference
+        body = load_golden_reference(max_chars=100000)
+        if not body:
+            return False
+        cc = _artifacts_container()
+        path = f"{_GOLDEN_CLOUD_SID}/versions/{_GOLDEN_CLOUD_VID}/artifacts.json"
+        try:
+            existing = json.loads(cc.download_blob(path).readall())
+            if (existing.get("enhanced_script") or "").strip():
+                return True  # already seeded
+        except Exception:
+            pass
+        manifest = {
+            "script_id": _GOLDEN_CLOUD_SID,
+            "version_id": _GOLDEN_CLOUD_VID,
+            "script_title": "GOLDEN REFERENCE — The Top 10 AI Tools, When NOT to Use Them",
+            "enhanced_script": body,
+            "brief": "",
+            "reference": True,
+            "final": True,
+        }
+        _artifacts_upload_bytes(
+            path, json.dumps(manifest).encode("utf-8"), "application/json")
+        logger.info("⭐ Seeded golden reference script to the cloud (reference)")
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ seed golden reference to cloud failed: {e}")
+        return False
+
+
+@app.route("/api/golden-reference/save-to-cloud", methods=["POST"])
+def api_golden_reference_save_to_cloud():
+    """Save the golden reference script to the cloud, marked as a reference."""
+    ok = _seed_golden_reference_to_cloud()
+    return jsonify({"success": ok,
+                    "enabled": _artifacts_enabled()})
+
+
+def _build_style_context_block(exclude_script_id: str = "") -> str:
+    """A delimited style-reference block built from recent saved scripts, or ''
+    when style memory is unavailable/empty. Fed to the Script Writer so new
+    scripts stay consistent in voice, structure, and pacing with recent work.
+    """
+    parts = []
+    # The GOLDEN REFERENCE always leads — it is the approved target the user
+    # wants every generation to follow (the Pro single-pass writer embeds the
+    # full copy; the Foundry pipeline gets a trimmed copy here).
+    try:
+        from linedrive_azure.agents.pro_script_writer import load_golden_reference
+        golden = load_golden_reference(max_chars=9000)
+    except Exception:
+        golden = ""
+    if golden:
+        parts.append(
+            "\n\n--- GOLDEN REFERENCE SCRIPT (the approved target: match this "
+            "STRUCTURE, production conventions, and SPOKEN VOICE exactly — no "
+            "contractions, no em-dashes or en-dashes, numbers and names spelled "
+            "the way the avatar says them, a FINAL HOOK, 'Heading: Chapter N -' "
+            "lines, [PRODUCTION BEGIN] / [GROK IMAGINE / RESOLVE] / [PRODUCTION "
+            "END] blocks, [VERIFY BEFORE RENDER] for legal or numeric claims, a "
+            "cheat-sheet [PROMPT OVERLAY] in the final chapter, and trailing "
+            "=== … === sections. Do NOT copy its topic or wording) ---\n"
+            + golden + "\n--- END GOLDEN REFERENCE ---\n"
+        )
+    recent = _recent_scripts_for_style_context(
+        exclude_script_id=exclude_script_id)
+    if recent:
+        parts.append(
+            "\n\n--- STYLE REFERENCE: recent scripts (match their voice, "
+            "structure, and pacing; do NOT copy their topics or content) ---")
+        for i, r in enumerate(recent, 1):
+            parts.append(
+                f"\n[Recent script {i} — \"{r['title']}\"]\n{r['excerpt']}")
+        parts.append("\n--- END STYLE REFERENCE ---\n")
+    if not parts:
+        return ""
+    logger.info(
+        f"🎨 Style memory: golden reference=%s + %d recent script(s) seeded "
+        "as style context", "yes" if golden else "no", len(recent))
+    return "".join(parts)
+
+
 def _list_finished_videos_from_blob():
     """Returns (items, source_label) by listing blobs in the configured container.
 
@@ -10115,15 +14595,131 @@ def api_grok_video_delete():
             except Exception as e:  # noqa: BLE001
                 logger.error(f"❌ grok-video delete failed for {path}: {e}")
 
-        if not deleted:
-            return jsonify({"success": False,
-                            "error": "File not found in any broll directory",
-                            "filename": safe_name}), 404
+        # Also delete the DURABLE blob copy (mp4 + sidecar .json) under
+        # <script_id>/videos/. Without this the video reappears from Azure on the
+        # next load as a dead grey card (local file gone, blob entry still there).
+        blob_deleted = []
+        script_id = (data.get("script_id") or "").strip()
+        if script_id and _artifacts_enabled():
+            try:
+                cc = _artifacts_container()
+                sid = _safe_blob_id(script_id)
+                for bn in (f"{sid}/videos/{safe_name}",
+                           f"{sid}/videos/{safe_name}.json"):
+                    try:
+                        cc.delete_blob(bn)
+                        blob_deleted.append(bn)
+                    except Exception as be:  # noqa: BLE001
+                        # Missing blob (already gone) is fine — anything else logs.
+                        logger.info(
+                            f"grok-video blob delete skipped {bn}: {be}")
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"❌ grok-video blob delete failed: {e}")
+
+        # Idempotent: even if the file was already gone locally AND in blob, the
+        # desired end state (not present anywhere) is met — return success so the
+        # gallery always removes the card. This is what clears the leftover grey
+        # boxes for blob-only videos that have no local file to unlink.
         return jsonify({"success": True, "deleted": deleted,
-                        "filename": safe_name})
+                        "blob_deleted": blob_deleted, "filename": safe_name})
     except Exception as e:  # noqa: BLE001
         logger.error(
             f"❌ /api/grok-videos/delete failed: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _video_height(path) -> int:
+    """Return the pixel height of a video's first stream via ffprobe, or 0."""
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=height", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=30)
+        return int((out.stdout or "0").strip().split("\n")[0] or 0)
+    except Exception:
+        return 0
+
+
+@app.route("/api/grok/upscale", methods=["POST"])
+def api_grok_upscale():
+    """Upscale ONE generated Grok video to 1080p (ffmpeg). The gallery calls this
+    once per checked video. Resolves a local copy (or pulls the blob down),
+    upscales in place, and re-persists to blob so the durable copy + gallery both
+    get the HD version. Skips re-encoding if the clip is already ≥1080p.
+
+    POST body: {"filename": "grok_..mp4", "script_id": "..", "blob_name": ".."}
+    """
+    try:
+        import shutil
+        import tempfile
+        data = request.get_json(silent=True) or {}
+        safe_name = Path((data.get("filename") or "").strip()).name
+        script_id = (data.get("script_id") or "").strip()
+        blob_name = (data.get("blob_name") or "").strip()
+        if not safe_name or not safe_name.lower().endswith(".mp4"):
+            return jsonify({"success": False,
+                            "error": "filename must be a .mp4"}), 400
+        if shutil.which("ffmpeg") is None:
+            return jsonify({"success": False,
+                            "error": "ffmpeg not available on the server"}), 500
+
+        derived_blob = blob_name or (
+            f"{_safe_blob_id(script_id)}/videos/{safe_name}"
+            if script_id else "")
+
+        # Resolve a local copy; otherwise pull the blob down to a temp file.
+        local = _resolve_media_file(safe_name, "video")
+        tmpdir = None
+        if local is None and _artifacts_enabled() and derived_blob:
+            try:
+                raw = _artifacts_container().download_blob(
+                    derived_blob).readall()
+                tmpdir = Path(tempfile.mkdtemp(prefix="grok_upscale_"))
+                local = tmpdir / safe_name
+                local.write_bytes(raw)
+            except Exception as e:
+                return jsonify({"success": False,
+                                "error": f"could not fetch video: {e}"}), 404
+        if local is None or not Path(local).exists():
+            return jsonify({"success": False,
+                            "error": "video file not found"}), 404
+
+        cur_h = _video_height(local)
+        already = bool(cur_h and cur_h >= 1080)
+        if not already:
+            if not _upscale_video_to_1080p(local):
+                if tmpdir:
+                    shutil.rmtree(tmpdir, ignore_errors=True)
+                return jsonify({"success": False,
+                                "error": "upscale failed"}), 500
+            # Keep the durable blob copy in sync with the new HD file.
+            if _artifacts_enabled() and derived_blob:
+                try:
+                    _artifacts_upload_file(derived_blob, local, "video/mp4")
+                except Exception as e:
+                    logger.warning(f"⚠️ re-persist upscaled video failed: {e}")
+
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+        # Prefer the local serve URL when a local file exists (now HD); else blob.
+        if _resolve_media_file(safe_name, "video") is not None:
+            url = f"/broll-videos/{safe_name}"
+        elif _artifacts_enabled() and derived_blob:
+            try:
+                url = _artifacts_sas_url(derived_blob)
+            except Exception:
+                url = ""
+        else:
+            url = ""
+        return jsonify({
+            "success": True, "filename": safe_name,
+            "resolution": f"{cur_h}p" if already else "1080p",
+            "already": already, "url": url,
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"❌ /api/grok/upscale failed: {e}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -10825,9 +15421,21 @@ if __name__ == "__main__":
     logger.info("📦 Version: %s", VERSION)
     logger.info("🚀 Server starting on http://0.0.0.0:%d", port)
 
+    # Save the golden reference script to the cloud (marked reference), once.
+    try:
+        _seed_golden_reference_to_cloud()
+    except Exception as _e:
+        logger.warning("golden reference cloud seed skipped: %s", _e)
+
     if port == 5007:
         logger.info("🐳 Running in Azure Container mode")
     else:
         logger.info("💻 Running in Local mode")
 
-    app.run(host="0.0.0.0", port=port, debug=False)
+    # threaded=True is REQUIRED: the app uses long-lived SSE progress streams
+    # (/progress/<id>). Werkzeug's dev server is single-threaded by default, so an
+    # open SSE connection occupies the ONLY worker thread and blocks every other
+    # request (e.g. /api/script/polish) until it closes — the browser just spins
+    # forever. Threading lets concurrent requests (SSE + polish + polling) be
+    # served at once, matching the gunicorn thread pool used in the container.
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)

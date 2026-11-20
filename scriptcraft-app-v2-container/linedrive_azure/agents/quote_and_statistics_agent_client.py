@@ -76,7 +76,11 @@ COMPLETE SCRIPT TO ANALYZE:
 {script_content}
 
 TASK:
-Generate 3 expert quotes and 3 compelling statistics about AI content creation tools.
+Generate 3 expert quotes and 3 compelling statistics directly about the SUBJECT
+of THIS video: "{topic}". Ground them in the actual topics, claims, people,
+companies, studies, and events discussed in the COMPLETE SCRIPT above — not in
+generic AI or "AI content creation" material. Every quote and statistic MUST be
+relevant to "{topic}"; discard anything that is not.
 
 DELIVERABLE:
 - 3 expert quotes with attribution and context

@@ -1,0 +1,20 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+.pytest_cache
+.mypy_cache
+.venv
+venv
+venv*/
+.env
+.env.*
+*.log
+*.edl
+*.md
+# ...except the golden reference script the Pro writers embed.
+!agent_instructions/*.md
+.git
+.gitignore
+.DS_Store
