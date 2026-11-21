@@ -37,7 +37,6 @@ class ScriptBRollAgentClient(BaseAgentClient):
             ],
             "video_sources": [
                 "Pexels (free stock videos)",
-                "Pixabay (free stock videos)",
             ],
         }
 
