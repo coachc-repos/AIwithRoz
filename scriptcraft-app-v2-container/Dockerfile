@@ -46,9 +46,14 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://localhost:8080/healthz || exit 1
 
-# 2 workers, 4 threads — tuned for moderate concurrent agent calls
+# SINGLE worker (many threads) — progress/SSE job state lives in an in-process
+# dict (progress_streams), so all requests for a session MUST hit the same
+# process. Multiple workers/replicas caused /progress/<id> to 404 intermittently
+# ("connection error" during script processing). Threads give I/O concurrency
+# for the agent/API calls without splitting in-memory state. Pair with
+# minReplicas=maxReplicas=1 on the Container App.
 CMD ["gunicorn", "--bind", "0.0.0.0:8080", \
-     "--workers", "2", "--threads", "4", \
-     "--timeout", "300", "--graceful-timeout", "30", \
+     "--workers", "1", "--threads", "8", \
+     "--timeout", "600", "--graceful-timeout", "30", \
      "--access-logfile", "-", "--error-logfile", "-", \
      "container_app:app"]

@@ -1,0 +1,522 @@
+{
+	Tools = ordered() {
+		mTuber_4_Tiles_Swap = MacroOperator {
+			CtrlWZoom = false,
+			NameSet = true,
+			Inputs = ordered() {
+				Input1 = InstanceInput {
+					SourceOp = "BrightnessContrast",
+					Source = "Input",
+				},
+				Input2 = InstanceInput {
+					SourceOp = "BrightnessContrast1",
+					Source = "Input",
+				},
+				Label1 = InstanceInput {
+					Name = "Transition Controls",
+					Source = "Label1",
+					SourceOp = "CustomLabels",
+					Page = "Controls",
+					Default = 1,
+				},
+				Input3 = InstanceInput {
+					SourceOp = "AnimCurves5",
+					Source = "Scale",
+					Default = 0.07,
+					Name = "Footage Corner Radius",
+				},
+				Input4 = InstanceInput {
+					SourceOp = "GlowCalc",
+					Source = "SecondOperand",
+					Page = "Controls",
+					Default = 1,
+					Name = "Glow",
+				},
+				Input5 = InstanceInput {
+					SourceOp = "Glow",
+					Source = "XGlowSize",
+					Default = 55.1,
+					Name = "Glow Size",
+				},
+				Input6 = InstanceInput {
+					Source = "Glow",
+					SourceOp = "Glow",
+					Default = 0.8,
+					Name = "Glow Strength",
+				},
+				Input7 = InstanceInput {
+					SourceOp = "GlowCalc",
+					Source = "FirstOperand",
+					Page = "Controls",
+					Name = "Glow Blend",
+					Default = 0.2,
+				},
+				Input8 = InstanceInput {
+					SourceOp = "Calculation1",
+					Source = "SecondOperand",
+					Page = "Controls",
+					Default = 1,
+					Name = "Background",
+				},
+				Input9 = InstanceInput {
+					SourceOp = "Bg_Color",
+					Source = "TopLeftRed",
+					ControlGroup = 1,
+					Name = "Background Color",
+				},
+				Input10 = InstanceInput {
+					SourceOp = "Bg_Color",
+					Source = "TopLeftGreen",
+					ControlGroup = 1,
+					Name = "Background Color",
+				},
+				Input11 = InstanceInput {
+					SourceOp = "Bg_Color",
+					Source = "TopLeftBlue",
+					ControlGroup = 1,
+					Name = "Background Color",
+				},
+				Input12 = InstanceInput {
+					SourceOp = "Bg_Color",
+					Source = "TopLeftAlpha",
+					ControlGroup = 1,
+					Default = 1,
+					Name = "Background Color",
+				},
+			},
+			Outputs = {
+				Output1 = InstanceOutput {
+					SourceOp = "CustomLabels",
+					Source = "Output",
+				},
+			},
+			ViewInfo = GroupInfo {
+				Pos = { 3190, -3316.5 },
+				Flags = {
+					Expanded = true,
+					AllowPan = false,
+					GridSnap = true,
+					AutoSnap = true,
+					RemoveRouters = true,
+				},
+				Size = { 786, 153.697, 393, -53.4248 },
+				Direction = "Horizontal",
+				PipeStyle = "Direct",
+				Scale = 1,
+				Offset = { -3135, 3226.14 },
+			},
+			Tools = ordered() {
+				CustomLabels = Dissolve {
+					Transitions = { [0] = "DFTDissolve" },
+					NameSet = true,
+					Inputs = {
+						Background = Input {
+							SourceOp = "Bg_Mrg",
+							Source = "Output",
+						},
+						Label1 = Input { Value = 1 },
+					},
+					ViewInfo = OperatorInfo { Pos = { 3465, -3052.5 } },
+					UserControls = ordered() {
+						Label1 = {
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							INPID_InputControl = "LabelControl",
+							LBLC_NumInputs = 10,
+							INP_External = false,
+							LINKID_DataType = "Number",
+							INP_Passive = true,
+							ICS_ControlPage = "Controls",
+							LINKS_Name = "Transition Controls",
+						},
+					},
+				},
+				Bg_Color = Background {
+					NameSet = true,
+					Inputs = {
+						GlobalOut = Input { Value = 99999 },
+						Width = Input { Value = 1920 },
+						Height = Input { Value = 1080 },
+						UseFrameFormatSettings = Input { Value = 1 },
+						["Gamut.SLogVersion"] = Input { Value = FuID { "SLog2" } },
+						GlobalIn = Input { Value = -9999 },
+					},
+					ViewInfo = OperatorInfo { Pos = { 3355, -3118.5 } },
+					ExtentSet = true,
+				},
+				Bg_On_Off = BrightnessContrast {
+					NameSet = true,
+					Inputs = {
+						Alpha = Input { Value = 1 },
+						Gain = Input {
+							SourceOp = "Calculation1",
+							Source = "Result",
+						},
+						Input = Input {
+							SourceOp = "Bg_Color",
+							Source = "Output",
+						},
+						ClipBlack = Input { Value = 1 },
+						ClipWhite = Input { Value = 1 },
+					},
+					ViewInfo = OperatorInfo { Pos = { 3355, -3085.5 } },
+				},
+				Bg_Mrg = Merge {
+					NameSet = true,
+					Inputs = {
+						Background = Input {
+							SourceOp = "Bg_On_Off",
+							Source = "Output",
+						},
+						Foreground = Input {
+							SourceOp = "Glow",
+							Source = "Output",
+						},
+						PerformDepthMerge = Input { Value = 0 },
+					},
+					ViewInfo = OperatorInfo { Pos = { 3355, -3052.5 } },
+				},
+				Slide_Anim = Transform {
+					NameSet = true,
+					Inputs = {
+						Center = Input {
+							SourceOp = "Vector1",
+							Source = "Position",
+						},
+						UseSizeAndAspect = Input { Value = 0 },
+						Input = Input {
+							SourceOp = "Mrg",
+							Source = "Output",
+						},
+					},
+					ViewInfo = OperatorInfo { Pos = { 3135, -3052.5 } },
+				},
+				Mrg = Merge {
+					NameSet = true,
+					Inputs = {
+						Background = Input {
+							SourceOp = "Zoom_Anim",
+							Source = "Output",
+						},
+						Foreground = Input {
+							SourceOp = "Unzoom_Anim",
+							Source = "Output",
+						},
+						PerformDepthMerge = Input { Value = 0 },
+					},
+					ViewInfo = OperatorInfo { Pos = { 3025, -3052.5 } },
+				},
+				Unzoom_Anim = Transform {
+					NameSet = true,
+					Inputs = {
+						Size = Input {
+							SourceOp = "AnimCurves2",
+							Source = "Value",
+						},
+						Input = Input {
+							SourceOp = "BrightnessContrast1",
+							Source = "Output",
+						},
+					},
+					ViewInfo = OperatorInfo { Pos = { 2915, -3052.5 } },
+				},
+				BrightnessContrast1 = BrightnessContrast {
+					Inputs = {
+						ApplyMaskInverted = Input { Value = 1 },
+						Alpha = Input { Value = 1 },
+						Gain = Input { Value = 0 },
+						EffectMask = Input {
+							SourceOp = "Main_Mask",
+							Source = "Mask",
+						},
+						ClipBlack = Input { Value = 1 },
+						ClipWhite = Input { Value = 1 },
+					},
+					ViewInfo = OperatorInfo { Pos = { 2805, -3052.5 } },
+				},
+				Glow = Glow {
+					NameSet = true,
+					Inputs = {
+						Blend = Input {
+							SourceOp = "GlowCalc",
+							Source = "Result",
+						},
+						Filter = Input { Value = FuID { "Fast Gaussian" } },
+						XGlowSize = Input { Value = 55.1 },
+						ApplyMode = Input { Value = 1 },
+						ColorScale = Input { Value = 1 },
+						Input = Input {
+							SourceOp = "Slide_Anim",
+							Source = "Output",
+						},
+					},
+					ViewInfo = OperatorInfo { Pos = { 3245, -3052.5 } },
+				},
+				BrightnessContrast = BrightnessContrast {
+					Inputs = {
+						ApplyMaskInverted = Input { Value = 1 },
+						Alpha = Input { Value = 1 },
+						Gain = Input { Value = 0 },
+						EffectMask = Input {
+							SourceOp = "Main_Mask",
+							Source = "Mask",
+						},
+						ClipBlack = Input { Value = 1 },
+						ClipWhite = Input { Value = 1 },
+					},
+					ViewInfo = OperatorInfo { Pos = { 2805, -3085.5 } },
+				},
+				Zoom_Anim = Transform {
+					NameSet = true,
+					Inputs = {
+						Center = Input { Value = { 1.594, 0.5 } },
+						Size = Input {
+							SourceOp = "AnimCurves3",
+							Source = "Value",
+						},
+						Input = Input {
+							SourceOp = "BrightnessContrast",
+							Source = "Output",
+						},
+					},
+					ViewInfo = OperatorInfo { Pos = { 2915, -3085.5 } },
+				},
+				Main_Mask = RectangleMask {
+					NameSet = true,
+					Inputs = {
+						Filter = Input { Value = FuID { "Fast Gaussian" } },
+						MaskWidth = Input { Value = 1920 },
+						MaskHeight = Input { Value = 1080 },
+						PixelAspect = Input { Value = { 1, 1 } },
+						UseFrameFormatSettings = Input { Value = 1 },
+						ClippingMode = Input { Value = FuID { "None" } },
+						Width = Input { Value = 1 },
+						Height = Input { Value = 1 },
+						CornerRadius = Input {
+							SourceOp = "AnimCurves5",
+							Source = "Value",
+						},
+						GlobalIn = Input { Value = -9999 },
+						GlobalOut = Input { Value = 99999 },
+					},
+					ViewInfo = OperatorInfo { Pos = { 2805, -3118.5 } },
+					ExtentSet = true,
+				},
+			},
+			UserControls = ordered() {
+				Label = {
+					LINKID_DataType = "Number",
+					INPID_InputControl = "ButtonControl",
+					INP_Integer = false,
+					LBLC_DropDownButton = false,
+					BTNCS_Execute = "os.execute('open \"\" \"https://www.motionvfx.com/dvr\"')\n os.execute('start \"\" \"https://www.motionvfx.com\"')\n",
+					INP_External = false,
+					INP_Passive = true,
+					IC_ControlPage = -1,
+					LINKS_Name = "mTuber 4 by MotionVFX",
+				},
+			},
+		},
+		Calculation1 = Calculation {
+			CtrlWZoom = false,
+			Inputs = {
+				FirstOperand = Input { Value = 1 },
+				Operator = Input { Value = 2 },
+				SecondOperand = Input { Value = 1 },
+			},
+			UserControls = ordered() {
+				SecondOperand = {
+					LINKS_Name = "Second Operand",
+					LINKID_DataType = "Number",
+					INPID_InputControl = "CheckboxControl",
+					INP_Integer = false,
+					INP_MinScale = 0,
+					INP_MaxScale = 1,
+					INP_MinAllowed = 0,
+					INP_MaxAllowed = 1,
+					CBC_TriState = false,
+					INP_Default = 1,
+				},
+			},
+		},
+		Vector1 = Vector {
+			Inputs = {
+				Distance = Input {
+					SourceOp = "AnimCurves1",
+					Source = "Value",
+				},
+			},
+		},
+		AnimCurves1 = LUTLookup {
+			CtrlWZoom = false,
+			Inputs = {
+				Curve = Input { Value = FuID { "Custom" } },
+				Lookup = Input {
+					SourceOp = "AnimCurvesonVectoronSlide_AnimCenterLookup",
+					Source = "Value",
+				},
+				Scale = Input { Value = -1.094 },
+			},
+		},
+		AnimCurvesonVectoronSlide_AnimCenterLookup = LUTBezier {
+			KeyColorSplines = {
+				[0] = {
+					[0.235294117647059] = { 0,
+						RH = { 0.40427730568588, 0 },
+						Flags = { Linear = true },
+					},
+					[0.742243681763522] = { 1,
+						LH = { 0.573260493724701, 1 },
+					},
+				},
+			},
+			SplineColor = {
+				Red = 255,
+				Green = 255,
+				Blue = 255,
+			},
+			NameSet = true,
+		},
+		AnimCurves2 = LUTLookup {
+			CtrlWZoom = false,
+			Inputs = {
+				Curve = Input { Value = FuID { "Custom" } },
+				Lookup = Input {
+					SourceOp = "AnimCurves2Lookup",
+					Source = "Value",
+				},
+				Scale = Input { Value = -0.268 },
+				Offset = Input { Value = 1 },
+			},
+		},
+		AnimCurves2Lookup = LUTBezier {
+			KeyColorSplines = {
+				[0] = {
+					[0] = { 0,
+						RH = { 0.115811711890143, 0 },
+						Flags = { Linear = true },
+					},
+					[0.34743513567043] = { 1,
+						LH = { 0.0275626649148795, 1 },
+						RH = { 0.564956757113621, 0.999999999999999 },
+					},
+					[1] = { 1, LH = { 0.78247837855681, 1 } },
+				},
+			},
+			SplineColor = {
+				Red = 255,
+				Green = 255,
+				Blue = 255,
+			},
+			NameSet = true,
+		},
+		AnimCurves3 = LUTLookup {
+			CtrlWZoom = false,
+			Inputs = {
+				Curve = Input { Value = FuID { "Custom" } },
+				Lookup = Input {
+					SourceOp = "AnimCurves3Lookup",
+					Source = "Value",
+				},
+				Invert = Input { Value = 1 },
+				Scale = Input { Value = -0.268 },
+				Offset = Input { Value = 1 },
+			},
+		},
+		AnimCurves3Lookup = LUTBezier {
+			KeyColorSplines = {
+				[0] = {
+					[0] = { 0,
+						RH = { 0.228770352997574, 0 },
+						Flags = { Linear = true },
+					},
+					[0.686311058992723] = { 0,
+						LH = { 0.363097095121627, -0.00388997684778031 },
+						RH = { 0.840993064357001, 0.00186164425703824 },
+					},
+					[1] = { 1,
+						LH = { 0.895437019664241, 1 },
+					},
+				},
+			},
+			SplineColor = {
+				Red = 255,
+				Green = 255,
+				Blue = 255,
+			},
+			NameSet = true,
+		},
+		AnimCurves5 = LUTLookup {
+			CtrlWZoom = false,
+			Inputs = {
+				Curve = Input { Value = FuID { "Custom" } },
+				Lookup = Input {
+					SourceOp = "AnimCurves5Lookup",
+					Source = "Value",
+				},
+				Scale = Input { Value = 0.07 },
+			},
+		},
+		AnimCurves5Lookup = LUTBezier {
+			KeyColorSplines = {
+				[0] = {
+					[0] = { 0,
+						RH = { 0.0881647803354178, 0 },
+						Flags = { Linear = true },
+					},
+					[0.264494341006253] = { 1,
+						LH = { 0.176329560670836, 1 },
+						RH = { 0.427666459066558, 1 },
+					},
+					[0.754010695187166] = { 1,
+						LH = { 0.590838577126862, 1 },
+						RH = { 0.836007130124777, 1 },
+					},
+					[1] = { 0,
+						LH = { 0.918003565062389, 0 },
+					},
+				},
+			},
+			SplineColor = {
+				Red = 255,
+				Green = 255,
+				Blue = 255,
+			},
+			NameSet = true,
+		},
+		GlowCalc = Calculation {
+			Inputs = {
+				Operator = Input { Value = 2 },
+				SecondOperand = Input { Value = 1 },
+				FirstOperand = Input { Value = 0.2 },
+			},
+			UserControls = ordered() {
+				SecondOperand = {
+					LINKS_Name = "On Off",
+					LINKID_DataType = "Number",
+					INPID_InputControl = "CheckboxControl",
+					INP_Default = 1,
+					INP_Integer = false,
+					INP_MinScale = 0,
+					INP_MaxScale = 1,
+					INP_MinAllowed = 0,
+					INP_MaxAllowed = 1,
+					CBC_TriState = false,
+					ICS_ControlPage = "Controls",
+				},
+				FirstOperand = {
+					LINKS_Name = "Blend",
+					LINKID_DataType = "Number",
+					INPID_InputControl = "SliderControl",
+					INP_Integer = false,
+					INP_Default = 0.2,
+					INP_MinScale = 0,
+					INP_MaxScale = 1,
+					INP_MinAllowed = 0,
+					INP_MaxAllowed = 1,
+					ICS_ControlPage = "Controls",
+				},
+			},
+		},
+	},
+}

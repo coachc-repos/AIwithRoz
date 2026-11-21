@@ -18,6 +18,26 @@ azure-storage-blob>=12.20
 # OpenAI / Azure OpenAI (used by some agent clients)
 openai>=1.40
 
+# xAI Grok SDK — generates unique b-roll video clips (grok-imagine-video) and
+# rewrites scene descriptions into theme-specific visual prompts (grok-3-mini).
+xai-sdk>=1.11
+
+# Anthropic Claude — preferred prompt engineer for grok-imagine-video prompts
+# (Opus 4.8). Requires ANTHROPIC_API_KEY in the container env; if absent, the
+# Grok prompt step falls back to the xAI grok-3-mini rewrite above.
+anthropic>=0.69
+
 # AutoGen (used by enhanced multi-agent system)
 autogen-agentchat>=0.4.0
 autogen-core>=0.4.0
+
+# X (Twitter) posting for @AIwithRoz promos/standalone posts
+tweepy>=4.14.0
+
+# Fetch transcripts of adjacency-target YouTube videos for the Idea Generator
+youtube-transcript-api>=1.0.0
+
+# Extract text from a PDF attached as the basis for the 10 generated ideas
+# (Idea Generator "attach a PDF/text file" feature). Lazy-imported; without it
+# the PDF-attach path degrades to empty text instead of crashing.
+pypdf>=4.0.0

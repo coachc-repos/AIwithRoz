@@ -1103,7 +1103,7 @@
                     <button onclick="openTestVideoDialog()" style="padding: 4px 10px; background: linear-gradient(135deg, #10b981, #059669); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8em; font-weight: 600; white-space: nowrap;">🧪 Test Generate</button>
                     <span style="display:inline-block; width:1px; height:20px; background:#334155; margin:0 4px;"></span>
                     <button onclick="openApiKeysModal()" style="padding: 4px 10px; background: linear-gradient(135deg, #6366f1, #4f46e5); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8em; font-weight: 600; white-space: nowrap;" title="Manage Google / HeyGen / Grok API keys">🔑 API Keys…</button>
-                    <input type="hidden" id="heygenApiKey" value="{{ saved_heygen_api_key or 'sk_V2_hgu_kQ2qXUuyF7P_nNPQcfSV1C9zRHlrLiWfDrHoiwaOouVC' }}">
+                    <input type="hidden" id="heygenApiKey" value="{{ saved_heygen_api_key or '' }}">
                 </div>
             </div>
 
@@ -5737,18 +5737,15 @@ Thank you for watching!`;
             title: title || 'Test Video',
             variables: {
                 script: {
-                    name: 'script',
                     type: 'text',
-                    properties: {
-                        content: scriptText
-                    }
+                    content: scriptText
                 }
             }
         };
 
         // Show the equivalent curl command
         var curlCmd = 'curl --request POST \\\n' +
-            "     --url 'https://api.heygen.com/v2/template/" + templateId + "/generate' \\\n" +
+            "     --url 'https://api.heygen.com/v3/templates/" + templateId + "' \\\n" +
             "     --header 'accept: application/json' \\\n" +
             "     --header 'content-type: application/json' \\\n" +
             "     --header 'x-api-key: " + apiKey + "' \\\n" +

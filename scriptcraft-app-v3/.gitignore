@@ -1,0 +1,3 @@
+# Reports the script workflow writes into the folder the GUI runs from.
+chapter_comparison_*.md
+reviewer_feedback_*.txt

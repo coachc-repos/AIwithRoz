@@ -3652,22 +3652,32 @@ def create_resolve_project_with_videos(
                 break
 
         intro_clip = None
+        exit_clip = None
         if intro_bin:
             intro_clips = intro_bin.GetClipList()
-            print(f"\n🔍 Looking for intro video in intro bin...")
+            print(f"\n🔍 Looking for intro/exit videos in intro bin...")
             print(f"   Found {len(intro_clips)} clips in Intro bin")
 
-            # Look for "AI with Roz v2.mov"
+            # Look for "AI with Roz v2.mov" (intro) and
+            # "AI with Roz NEW EXIT 4K Edited 2.mov" (exit)
             for clip in intro_clips:
                 clip_name = clip.GetName()
                 print(f"   - {clip_name}")
-                if "AI with Roz v2" in clip_name or "AI_with_Roz_v2" in clip_name:
+                if intro_clip is None and (
+                        "AI with Roz v2" in clip_name
+                        or "AI_with_Roz_v2" in clip_name):
                     intro_clip = clip
                     print(f"   ✅ Found intro video: {clip_name}")
-                    break
+                elif exit_clip is None and (
+                        "AI with Roz NEW EXIT 4K Edited 2" in clip_name
+                        or "AI_with_Roz_NEW_EXIT_4K_Edited_2" in clip_name):
+                    exit_clip = clip
+                    print(f"   ✅ Found exit video: {clip_name}")
 
             if not intro_clip:
                 print(f"   ⚠️ Intro video 'AI with Roz v2.mov' not found in Intro bin")
+            if not exit_clip:
+                print(f"   ⚠️ Exit video 'AI with Roz NEW EXIT 4K Edited 2.mov' not found in Intro bin")
 
         # Create a mapping of clip name to clip object
         clip_map = {}
@@ -3711,6 +3721,11 @@ def create_resolve_project_with_videos(
 
             if clip:
                 clips_to_add.append(clip)
+
+        # Add exit video last if found (always the final clip on V1)
+        if exit_clip:
+            clips_to_add.append(exit_clip)
+            print(f"\n📺 Exit video will be added last")
 
         print(f"\n� Prepared {len(clips_to_add)} clips to add to timeline")
 
@@ -3768,61 +3783,25 @@ def create_resolve_project_with_videos(
         # ------------------------------------------------------------------
 
         # ------------------------------------------------------------------
-        # Place bRoll (Grok-generated) clips on V2 above the aRoll on V1.
-        # Order matches the broll table (encoded in filename: grok_<ts>_<i>_*).
+        # B-ROLL: import to the 'broll' bin ONLY — do NOT place it on the
+        # timeline. Per project preference, generated b-roll (like the
+        # animations and images bins) is left in the media pool for the editor
+        # to place manually. The V3 wipe/fade styling passes are therefore
+        # skipped too, since there are no auto-placed V3 clips to style.
         # ------------------------------------------------------------------
-        broll_bin = None
-        try:
-            for subfolder in root_folder.GetSubFolders().values():
-                if subfolder.GetName() == "broll":
-                    broll_bin = subfolder
-                    break
-        except Exception as bin_err:
-            print(f"⚠️ Could not locate broll bin: {bin_err}")
-
-        broll_v2_result = _add_broll_clips_above_aroll(media_pool, timeline, broll_bin)
-        print(
-            f"   {'✅' if broll_v2_result.get('success') else '⚠️'} "
-            f"{broll_v2_result.get('message')}"
-        )
-
-        # ------------------------------------------------------------------
-        # Apply the user's saved Fusion wipe (myswipe.setting) to every
-        # V3 broll clip: a Transform driven by a PolyPath + BezierSpline
-        # that slides the image in from off-screen on entry and slides
-        # it off on exit. Uses comp.Paste() then rescales the
-        # displacement keyframes to each clip's COMP-LOCAL frame range.
-        # ------------------------------------------------------------------
-        wipe_result = _apply_wipe_to_v3_clips(
-            timeline, track_index=3, slide_seconds=0.4
-        )
-        print(
-            f"   {'✅' if wipe_result.get('success') else '⚠️'} "
-            f"{wipe_result.get('message')}"
-        )
-        for _err in (wipe_result.get("errors") or [])[:5]:
-            print(f"      • {_err}")
-        base_result["broll_wipe_v3"] = wipe_result
-
-        # ------------------------------------------------------------------
-        # 1-second fade-out is now injected as an AlphaMultiply node inside
-        # each clip's Fusion comp during _apply_fusion_preset_to_v3_clips
-        # (TimelineItem opacity-keyframe API is not exposed by Resolve, so
-        # the standalone fade pass below was a no-op). Keeping the call
-        # behind a flag so it still runs as a diagnostic but no longer
-        # blocks success.
-        # ------------------------------------------------------------------
-        try:
-            fade_result = _apply_fade_out_to_v3_clips(timeline, fade_seconds=1.0, track_index=3)
-            print(
-                f"   {'✅' if fade_result.get('success') else 'ℹ️'} "
-                f"(timeline-item fade pass — Fusion-comp AlphaMultiply is the real fade): "
-                f"{fade_result.get('message')}"
-            )
-            base_result["broll_fade_out"] = fade_result
-        except Exception as _fade_err:
-            print(f"   ⚠️ broll fade-out skipped: {_fade_err}")
-            base_result["broll_fade_out"] = {"success": False, "error": str(_fade_err)}
+        broll_v2_result = {
+            "attempted": False, "success": True, "count": 0,
+            "message": "B-roll imported to the 'broll' bin only (not placed on the timeline)",
+        }
+        print(f"   ℹ️ {broll_v2_result['message']}")
+        base_result["broll_wipe_v3"] = {
+            "attempted": False, "success": True,
+            "message": "Skipped — b-roll is bin-only, not on the timeline",
+        }
+        base_result["broll_fade_out"] = {
+            "attempted": False, "success": True,
+            "message": "Skipped — b-roll is bin-only, not on the timeline",
+        }
 
         # ------------------------------------------------------------------
         # Configure audio tracks (A1='aroll sound', A2='background sound')
@@ -3868,15 +3847,14 @@ def create_resolve_project_with_videos(
 
         videos_added = videos_list if len(final_items) > 0 else []
 
+        # Subtitles are intentionally NOT generated, per project preference.
+        # (The generate_subtitles arg is ignored on purpose; flip this block back
+        # on if auto-subtitles are ever wanted again.)
         subtitle_result = {
             "attempted": False,
             "success": False,
-            "message": "Subtitle generation skipped",
+            "message": "Subtitle generation disabled",
         }
-        if generate_subtitles and len(final_items) > 0:
-            print("\n📝 Attempting subtitle generation from timeline audio...")
-            subtitle_result = _generate_subtitles_from_audio(timeline)
-            print(f"   {'✅' if subtitle_result.get('success') else '⚠️'} {subtitle_result.get('message')}")
 
         # Update result with video info
         base_result["videos_added"] = videos_added

@@ -13,18 +13,18 @@ old_part1 = '''        curl_cmd_part1 = f"""# Chapter {i} - Part 1: {chapter['ti
 # Content length: {len(part1)} characters
 # Title: {script_title}-Ch{i}p1
 
-curl --location 'https://api.heygen.com/v2/template/{template_id}/generate' \\'''
+curl --location 'https://api.heygen.com/v3/templates/{template_id}' \\'''
 
-new_part1 = '''        curl_cmd_part1 = f"""curl --location 'https://api.heygen.com/v2/template/{template_id}/generate' \\'''
+new_part1 = '''        curl_cmd_part1 = f"""curl --location 'https://api.heygen.com/v3/templates/{template_id}' \\'''
 
 # Part 2 - Remove the 3 comment lines before curl command
 old_part2 = '''        curl_cmd_part2 = f"""# Chapter {i} - Part 2: {chapter['title']}
 # Content length: {len(part2)} characters
 # Title: {script_title}-Ch{i}p2
 
-curl --location 'https://api.heygen.com/v2/template/{template_id}/generate' \\'''
+curl --location 'https://api.heygen.com/v3/templates/{template_id}' \\'''
 
-new_part2 = '''        curl_cmd_part2 = f"""curl --location 'https://api.heygen.com/v2/template/{template_id}/generate' \\'''
+new_part2 = '''        curl_cmd_part2 = f"""curl --location 'https://api.heygen.com/v3/templates/{template_id}' \\'''
 
 # Apply replacements
 if old_part1 in content:

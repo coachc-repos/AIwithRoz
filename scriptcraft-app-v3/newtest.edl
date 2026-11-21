@@ -1,0 +1,42 @@
+TITLE: B-Roll Markers
+FCM: NON-DROP FRAME
+
+001  AX       V     C        00:00:05:00 00:00:05:00 00:00:05:00 00:00:05:00
+* FROM CLIP NAME: baseball player hitting homerun
+* TO CLIP NAME: baseball player hitting homerun
+M  001 baseball player hitting homerun 00:00:05:00
+
+002  AX       V     C        00:00:15:00 00:00:15:00 00:00:15:00 00:00:15:00
+* FROM CLIP NAME: youth baseball team celebrating
+* TO CLIP NAME: youth baseball team celebrating
+M  001 youth baseball team celebrating 00:00:15:00
+
+003  AX       V     C        00:00:30:00 00:00:30:00 00:00:30:00 00:00:30:00
+* FROM CLIP NAME: coach giving instructions to players
+* TO CLIP NAME: coach giving instructions to players
+M  001 coach giving instructions to players 00:00:30:00
+
+004  AX       V     C        00:00:45:00 00:00:45:00 00:00:45:00 00:00:45:00
+* FROM CLIP NAME: close up baseball glove catching ball
+* TO CLIP NAME: close up baseball glove catching ball
+M  001 close up baseball glove catching ball 00:00:45:00
+
+005  AX       V     C        00:01:00:00 00:01:00:00 00:01:00:00 00:01:00:00
+* FROM CLIP NAME: parents cheering in bleachers
+* TO CLIP NAME: parents cheering in bleachers
+M  001 parents cheering in bleachers 00:01:00:00
+
+006  AX       V     C        00:01:15:00 00:01:15:00 00:01:15:00 00:01:15:00
+* FROM CLIP NAME: pitcher throwing fastball
+* TO CLIP NAME: pitcher throwing fastball
+M  001 pitcher throwing fastball 00:01:15:00
+
+007  AX       V     C        00:01:30:00 00:01:30:00 00:01:30:00 00:01:30:00
+* FROM CLIP NAME: baseball stadium aerial view
+* TO CLIP NAME: baseball stadium aerial view
+M  001 baseball stadium aerial view 00:01:30:00
+
+008  AX       V     C        00:01:45:00 00:01:45:00 00:01:45:00 00:01:45:00
+* FROM CLIP NAME: equipment bag with bats and helmets
+* TO CLIP NAME: equipment bag with bats and helmets
+M  001 equipment bag with bats and helmets 00:01:45:00

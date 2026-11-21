@@ -250,7 +250,7 @@ Generate the comprehensive B-roll table:
         script_content: str,
         script_title: str = None,
         words_per_minute: int = 150,
-        timeout: int = 180,
+        timeout: int = 300,
     ) -> Dict[str, Any]:
         """
         Generate a detailed B-roll table with timecodes for EDL export
@@ -282,7 +282,9 @@ Create a comprehensive table of B-roll search terms with the following format:
 | [HH:MM:SS] | [term] | [what to look for] | [when to use in script] |
 
 REQUIREMENTS:
-1. Generate 33-40 rows (comprehensive coverage — about 1/3 more entries than a typical pass)
+1. Generate 48-60 rows — DENSE, comprehensive coverage. Aim for a distinct
+   visual for roughly every 2-4 sentences / every key beat of the script, so
+   nearly every moment has b-roll to cut to. Do NOT skip minor moments.
 2. For each entry, estimate the timecode by analyzing WHERE in the script the term appears
 3. Timecode should be in HH:MM:SS format (e.g., 00:01:23 for 1 minute 23 seconds)
 4. Calculate timecodes assuming approximately {words_per_minute} words per minute speaking pace
@@ -292,6 +294,14 @@ REQUIREMENTS:
 8. Use proper Markdown table formatting
 9. Focus on actionable, searchable terms
 10. Include variety: products/apps, actions, concepts, UI elements, objects
+11. INFOGRAPHIC MOMENTS — explicitly capture every DATA / STAT / PROCESS /
+    COMPARISON / FRAMEWORK / LIST moment as its own row: numbers, percentages,
+    growth or trends, before/after, step-by-step workflows, pros/cons, rankings,
+    timelines, and "how it works" concepts. In the Description, describe these as
+    a clean animated business infographic (charts, graphs, spreadsheets/tables,
+    KPI counters, flow arrows, checkmarks) so they can be rendered as 2D/3D
+    business-graphics clips. Aim for at least one such infographic-friendly row
+    for every major point in the script.
 
 IMPORTANT: 
 - Analyze the script text to find where each term is mentioned
