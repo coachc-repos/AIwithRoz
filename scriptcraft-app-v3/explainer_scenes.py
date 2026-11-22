@@ -27,7 +27,7 @@ SCENE_BOX = {
     "house": (220, 170),
     "building": (190, 240),
     "datacenter": (340, 180),
-    "car": (320, 102),
+    "car": (400, 130),
     "tree": (140, 170),
     "factory": (220, 170),
     "server": (80, 160),
@@ -52,6 +52,9 @@ _DEFS = """
   </linearGradient>
   <linearGradient id="scg-body" x1="0" y1="0" x2="1" y2="1">
     <stop offset="0" stop-color="#3a4558"/><stop offset="1" stop-color="#141820"/>
+  </linearGradient>
+  <linearGradient id="scg-sedan" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#5c6e84"/><stop offset="0.42" stop-color="#2c3a4c"/><stop offset="1" stop-color="#141a24"/>
   </linearGradient>
   <linearGradient id="scg-leaf" x1="0" y1="0" x2="0.2" y2="1">
     <stop offset="0" stop-color="#3e7a48"/><stop offset="1" stop-color="#16301c"/>
@@ -92,10 +95,10 @@ def _classic() -> dict:
             <rect x="130" y="64" width="16" height="12" fill="#f5b83d"/>
             <rect x="48" y="118" width="36" height="28" fill="#2a4038"/>
             <rect x="96" y="118" width="36" height="28" fill="#2a4038"/>""",
-        "car": """<circle cx="96" cy="78" r="16" fill="#4a5568"/><circle cx="96" cy="78" r="6" fill="#d5dbe3"/>
-            <circle cx="270" cy="78" r="16" fill="#4a5568"/><circle cx="270" cy="78" r="6" fill="#d5dbe3"/>
-            <path d="M16 70 L78 58 L118 24 L210 22 L248 56 L308 62 L308 74 L292 74 C288 64 252 64 248 74 L116 74 C112 64 80 64 76 74 L22 74 Z" fill="#2a3446"/>
-            <path d="M200 30 L236 54 L168 54 L176 30 Z" fill="#3a465c"/>""",
+        "car": """<circle cx="85" cy="96" r="30" fill="#4a5568"/><circle cx="85" cy="96" r="12" fill="#d5dbe3"/>
+            <circle cx="315" cy="96" r="30" fill="#4a5568"/><circle cx="315" cy="96" r="12" fill="#d5dbe3"/>
+            <path d="M8 96 L8 64 C12 54 22 52 30 52 L95 52 L150 16 L245 16 L300 50 C340 54 370 62 392 78 C396 88 390 96 376 96 L349 96 C349 77 334 62 315 62 C296 62 281 77 281 96 L119 96 C119 77 104 62 85 62 C66 62 51 77 51 96 L8 96 Z" fill="#2a3446"/>
+            <path d="M108 52 L155 24 L236 24 L286 52 Z" fill="#3a465c"/>""",
         "tree": """<rect x="52" y="78" width="18" height="64" fill="#6b4630"/>
             <circle cx="60" cy="64" r="40" fill="#2f6a3c"/>""",
         "factory": """<rect x="20" y="74" width="156" height="72" fill="#3a342e"/>
@@ -245,44 +248,44 @@ def _cinematic() -> dict:
             <circle cx="232" cy="36" r="3" fill="#c5d0dc"/>
             <line x1="232" y1="36" x2="206" y2="28" stroke="#c5d0dc" stroke-width="3" stroke-linecap="round"/>""",
         "car": """
-            <ellipse cx="160" cy="98" rx="100" ry="4" fill="#000" opacity="0.4"/>
-            <g class="sc-wheel" data-cx="86" data-cy="78">
-              <circle cx="86" cy="78" r="16" fill="#2c3340"/>
-              <ellipse cx="80" cy="72" rx="6" ry="4" fill="#8b97a8" opacity="0.55"/>
-              <circle cx="86" cy="78" r="11" fill="#d5dde6"/>
-              <rect x="85" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(0 86 78)"/>
-              <rect x="85" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(72 86 78)"/>
-              <rect x="85" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(144 86 78)"/>
-              <rect x="85" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(216 86 78)"/>
-              <rect x="85" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(288 86 78)"/>
-              <circle cx="86" cy="78" r="4" fill="#2a3138"/>
+            <!-- Original sedan on a 400x130 grid, nose to the right. Not copied from a clip-art file. -->
+            <ellipse cx="200" cy="124" rx="150" ry="5" fill="#000" opacity="0.35"/>
+            <circle cx="85" cy="96" r="34" fill="#0c1016"/>
+            <circle cx="315" cy="96" r="34" fill="#0c1016"/>
+            <g class="sc-wheel" data-cx="85" data-cy="96">
+              <circle cx="85" cy="96" r="30" fill="#1a1f28"/>
+              <circle cx="85" cy="96" r="21" fill="#d5dde6"/>
+              <rect x="83" y="78" width="4" height="14" rx="1" fill="#f4f7fb" transform="rotate(0 85 96)"/>
+              <rect x="83" y="78" width="4" height="14" rx="1" fill="#f4f7fb" transform="rotate(72 85 96)"/>
+              <rect x="83" y="78" width="4" height="14" rx="1" fill="#f4f7fb" transform="rotate(144 85 96)"/>
+              <rect x="83" y="78" width="4" height="14" rx="1" fill="#f4f7fb" transform="rotate(216 85 96)"/>
+              <rect x="83" y="78" width="4" height="14" rx="1" fill="#f4f7fb" transform="rotate(288 85 96)"/>
+              <circle cx="85" cy="96" r="7" fill="#2a3138"/>
             </g>
-            <g class="sc-wheel" data-cx="230" data-cy="78">
-              <circle cx="230" cy="78" r="16" fill="#2c3340"/>
-              <ellipse cx="224" cy="72" rx="6" ry="4" fill="#8b97a8" opacity="0.55"/>
-              <circle cx="230" cy="78" r="11" fill="#d5dde6"/>
-              <rect x="229" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(0 230 78)"/>
-              <rect x="229" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(72 230 78)"/>
-              <rect x="229" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(144 230 78)"/>
-              <rect x="229" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(216 230 78)"/>
-              <rect x="229" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(288 230 78)"/>
-              <circle cx="230" cy="78" r="4" fill="#2a3138"/>
+            <g class="sc-wheel" data-cx="315" data-cy="96">
+              <circle cx="315" cy="96" r="30" fill="#1a1f28"/>
+              <circle cx="315" cy="96" r="21" fill="#d5dde6"/>
+              <rect x="313" y="78" width="4" height="14" rx="1" fill="#f4f7fb" transform="rotate(0 315 96)"/>
+              <rect x="313" y="78" width="4" height="14" rx="1" fill="#f4f7fb" transform="rotate(72 315 96)"/>
+              <rect x="313" y="78" width="4" height="14" rx="1" fill="#f4f7fb" transform="rotate(144 315 96)"/>
+              <rect x="313" y="78" width="4" height="14" rx="1" fill="#f4f7fb" transform="rotate(216 315 96)"/>
+              <rect x="313" y="78" width="4" height="14" rx="1" fill="#f4f7fb" transform="rotate(288 315 96)"/>
+              <circle cx="315" cy="96" r="7" fill="#2a3138"/>
             </g>
-            <path d="M34 66 C34 58 48 54 66 52 L86 50 C102 32 118 18 140 14 C172 8 200 8 220 12 L236 26 C246 38 254 48 264 52 L280 56 C286 58 290 64 290 68 L290 72 L252 74 C248 56 212 56 208 74 L108 74 C104 56 68 56 64 74 L40 74 C34 74 34 70 34 66 Z" fill="url(#scg-body)"/>
-            <path d="M76 50 L96 44 L102 50 L78 50 Z" fill="url(#scg-glass)"/>
-            <path d="M132 32 L158 28 L162 50 L128 50 Z" fill="url(#scg-glass)"/>
-            <path d="M184 26 L204 24 L206 50 L180 50 Z" fill="url(#scg-glass)"/>
-            <path d="M188 30 L200 28 L200 38 L188 38 Z" fill="#fff" opacity="0.3"/>
-            <path d="M206 38 L220 34 L240 50 L212 50 Z" fill="url(#scg-glass)"/>
-            <path d="M210 40 L220 37 L224 46 L212 46 Z" fill="#fff" opacity="0.4"/>
-            <path d="M70 54 L250 50 L250 53 L70 57 Z" fill="#9aabbe" opacity="0.35"/>
-            <path d="M36 68 L78 68 L78 74 L40 74 Z" fill="#6d7c90"/>
-            <path d="M236 68 L286 66 L288 74 L234 74 Z" fill="#6d7c90"/>
-            <path d="M42 60 L60 58 L60 68 L42 66 Z" fill="#e45a5a"/>
-            <path d="M258 56 L276 58 L276 68 L256 66 Z" fill="#ffe7a8"/>
-            <path d="M222 50 L238 48 L238 56 L220 56 Z" fill="#121820"/>
-            <rect x="136" y="58" width="12" height="3" rx="1" fill="#c5ced8"/>
-            <rect x="186" y="58" width="12" height="3" rx="1" fill="#c5ced8"/>""",
+            <path d="M8 96 L8 64 C12 54 22 52 30 52 L95 52 L150 16 L245 16 L300 50 C340 54 372 64 392 80 C396 90 390 96 376 96 L349 96 C349 77 334 62 315 62 C296 62 281 77 281 96 L119 96 C119 77 104 62 85 62 C66 62 51 77 51 96 L8 96 Z" fill="url(#scg-sedan)"/>
+            <path d="M36 88 L28 88 L8 84 L8 96 L40 96 Z" fill="#6d7c90"/>
+            <path d="M366 80 L384 74 L388 88 L368 92 Z" fill="#6d7c90"/>
+            <path d="M40 56 L290 54 L290 57 L40 59 Z" fill="#c5d2e0" opacity="0.28"/>
+            <path d="M100 52 L155 21 L240 21 L290 52 Z" fill="url(#scg-glass)"/>
+            <path d="M150 24 L250 24 L246 32 L146 32 Z" fill="#fff" opacity="0.28"/>
+            <path d="M112 52 L118 52 L166 21 L160 21 Z" fill="#243044"/>
+            <path d="M196 21 L206 21 L212 52 L202 52 Z" fill="#243044"/>
+            <path d="M202 21 L206 21 L212 52 L208 52 Z" fill="#101820"/>
+            <path d="M16 58 L30 56 L30 70 L14 68 Z" fill="#e45a5a"/>
+            <path d="M358 64 L374 66 L374 78 L356 76 Z" fill="#ffe7a8"/>
+            <path d="M262 50 L280 48 L282 58 L260 58 Z" fill="#121820"/>
+            <rect x="150" y="68" width="16" height="4" rx="2" fill="#c5ced8"/>
+            <rect x="214" y="68" width="16" height="4" rx="2" fill="#c5ced8"/>""",
         "tree": """
             <ellipse cx="70" cy="158" rx="34" ry="6" fill="#000" opacity="0.32"/>
             <polygon points="58,96 50,156 86,156 78,96" fill="#5a3a24"/>
