@@ -10448,6 +10448,9 @@ def _xv_state(p) -> dict:
         "pip_frame": _xv.pip_frame_key(None, ((d.get("host") or {}).get("pip_frame") or d.get("pip_frame"))),
         "bubble": _xv.bubble_mode_key(None, d.get("bubble")),
         "visual_style": _xv.visual_style_key(None, d.get("visual_style")),
+        "transition_mode": _xv.transition_mode_key(None, d.get("transition_mode")),
+        "slide_fx": {k: _xv.slide_fx_key(v) for k, v in (d.get("slide_fx") or {}).items()
+                     if _xv.slide_fx_key(v) != "auto"},
         "youtube": _xv.yt_public(p),
     }
     host = p.host()
@@ -10511,6 +10514,8 @@ def explainer_options():
                     "host_shares": _xv.HOST_SHARES, "pip_frames": list(_xv.PIP_FRAME_MODES),
                     "bubble_modes": list(_xv.BUBBLE_MODES),
                     "visual_styles": list(_xv.VISUAL_STYLES),
+                    "transition_modes": list(_xv.TRANSITION_MODES),
+                    "transition_styles": list(_xv.TRANSITION_STYLES),
                     "chrome": bool(_xv.find_chrome()), "claude": bool((os.getenv("ANTHROPIC_API_KEY") or "").strip()),
                     "elevenlabs": bool(_eleven_key()), "model": _xv.MODEL_LABEL,
                     "render_workers": _xv.RENDER_WORKERS})
@@ -10596,6 +10601,7 @@ def explainer_start():
     pip_frame = _xv.pip_frame_key(data.get("pip_frame"))
     bubble = _xv.bubble_mode_key(data.get("bubble"))
     visual_style = _xv.visual_style_key(data.get("visual_style"))
+    transition_mode = _xv.transition_mode_key(data.get("transition_mode"))
     pid = _xv.new_project_id()
     folder = _get_run_output_dir(title) / "explainer" / pid
     folder.mkdir(parents=True, exist_ok=True)
@@ -10604,7 +10610,7 @@ def explainer_start():
     project.write("spoken.txt", spoken)
     project.data.update(title=title, created=time.time(), voiceover=voiceover, text_source=source,
                         model=_xv.MODEL, status="running", pip_frame=pip_frame, bubble=bubble,
-                        visual_style=visual_style)
+                        visual_style=visual_style, transition_mode=transition_mode)
     project.save()
     counts = _xv.production_counts(script)
     logger.info(f"🎞️ Explainer video for {title[:60]!r}: {voiceover}, {len(spoken.split()):,} spoken words "
@@ -10618,7 +10624,8 @@ def explainer_start():
                               pauses=_audio_pauses, logos=logos, images_dir=_xv_images_dir(title),
                               cancel=cancel, status=status, log=_xv_log, test=test, presenter=presenter,
                               root=_get_run_output_dir(title, create=False), share=share,
-                              pip_frame=pip_frame, bubble=bubble, visual_style=visual_style)
+                              pip_frame=pip_frame, bubble=bubble, visual_style=visual_style,
+                              transition_mode=transition_mode)
 
     _xv.start_job(project, "create", job, _xv_log)
     return jsonify({"success": True, "project": pid, "state": _xv_state(project)})
@@ -11215,6 +11222,38 @@ def explainer_sections(pid):
         out["warning"] = ("No presenter footage for part of " + ", ".join(
             f"{_xv.fmt_secs(x['t0'])}–{_xv.fmt_secs(x['t1'])}" for x in bare) + ": add the clip that covers it.")
     return jsonify({"success": True, **out})
+
+
+@app.route("/api/explainer/<pid>/transitions", methods=["POST"])
+def explainer_transitions(pid):
+    """Global strength (off / subtle / full) and a per-slide auto, none, or style."""
+    data = request.get_json(silent=True) or {}
+    p = _xv_project((data.get("title") or "").strip(), pid)
+    if p is None:
+        return jsonify({"success": False, "error": "Project not found."}), 404
+    if _xv.job_running(p.id):
+        return jsonify({"success": False, "error": "Wait for the running job to finish."}), 409
+    if "mode" in data and data.get("mode") not in _xv.TRANSITION_MODES:
+        return jsonify({"success": False, "error": "Transitions are off, subtle, or full."}), 400
+    if "fx" in data and str(data.get("fx") or "").strip().lower() not in _xv.SLIDE_FX_CHOICES:
+        return jsonify({"success": False, "error": "Unknown transition."}), 400
+    with p.lock:
+        if "mode" in data:
+            p.data["transition_mode"] = data["mode"]
+        if data.get("slide"):
+            sid = str(data.get("slide") or "")[:40]
+            fx = str(data.get("fx") or "auto").strip().lower()
+            choices = p.data.setdefault("slide_fx", {})
+            if fx == "auto":
+                choices.pop(sid, None)
+            else:
+                choices[sid] = fx
+            if not choices:
+                p.data.pop("slide_fx", None)
+    p.save()
+    logger.info(f"✨ Explainer {pid}: transitions {p.data.get('transition_mode') or 'full'}"
+                + (f", {data.get('slide')} → {data.get('fx')}" if data.get("slide") else ""))
+    return jsonify({"success": True, **_xv_state(p)})
 
 
 @app.route("/api/explainer/<pid>/layout", methods=["POST"])

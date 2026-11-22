@@ -78,26 +78,43 @@
         }
         return best;
     }
+    function clipTail(t) {
+        if (!window.XVFx) return null;
+        var best = null;
+        for (var i = 0; i < CLIPS.length; i++) {
+            var c = CLIPS[i];
+            var extra = XVFx.clipExtra(c, slides);
+            if (extra > 0.02 && t >= +c.t1 && t < +c.t1 + extra) best = c;
+        }
+        return best;
+    }
     function placeClip(t, playing) {
         if (!clipVid) return null;
-        var c = clipAt(t);
+        var strict = clipAt(t);
+        var c = strict || clipTail(t);
         if (!c) {
             clipVid.style.visibility = 'hidden';
             if (!clipVid.paused) clipVid.pause();
             clipId = '';
+            if (window.XVFx) XVFx.clearMedia(clipVid);
             return null;
         }
         clipVid.style.visibility = '';
         clipLocal = Math.max(0, t - (+c.t0));
-        clipPlaying = !!playing;
+        // The overlap after the slide is picture only. Narration stays on the slide window.
+        clipPlaying = !!playing && !!strict;
         if (clipId !== c.id || clipVid.getAttribute('src') !== c.src) {
             clipId = c.id;
-            clipVid.muted = c.audio === 'mute';
-            clipVid.volume = c.audio === 'mix' ? 0.2 : 1;
             if (clipVid.getAttribute('src') !== c.src) clipVid.src = c.src;
         }
+        if (!strict) clipVid.muted = true;
+        else {
+            clipVid.muted = c.audio === 'mute';
+            clipVid.volume = c.audio === 'mix' ? 0.2 : 1;
+        }
         applyClip();
-        return c;
+        if (window.XVFx) XVFx.styleMedia(clipVid, c, t, !!strict);
+        return strict;
     }
 
     function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
@@ -263,6 +280,7 @@
                  host: HOST.on && LAYOUTS[el.dataset.host] ? el.dataset.host : '',
                  items: [], cams: [], prepped: false };
     });
+    if (window.XVFx) XVFx.prepare(slides);
 
     function baseTransform(e) {
         var b = e.style.transform || '';
@@ -630,20 +648,29 @@
     function placeDemos(t) {
         for (var i = 0; i < DEMOS.length; i++) {
             var d = DEMOS[i];
-            var on = t >= +d.t0 && t < +d.t1;
+            var extra = window.XVFx ? XVFx.clipExtra(d, slides) : 0;
+            var strict = t >= +d.t0 && t < +d.t1;
+            var on = strict || (extra > 0.02 && t >= +d.t1 && t < +d.t1 + extra);
             d.el.style.display = on ? 'block' : 'none';
+            if (!on) { if (window.XVFx) XVFx.clearMedia(d.el); continue; }
+            if (window.XVFx) XVFx.styleMedia(d.el, d, t, strict);
         }
     }
 
     function transitionOf(s) { var n = slides[s.i + 1]; return n ? n.trans : 'cut'; }
+    function slideTail(s) {
+        return window.XVFx ? XVFx.tail(s, slides, TR) : (transitionOf(s) === 'cut' ? 0 : TR);
+    }
 
     var active = [];
     function seek(t) {
         t = clamp(+t || 0, 0, DUR);
+        var fx = window.XVFx ? XVFx.active(slides, t) : null;
+        if (window.XVFx) XVFx.current = fx;
         var vis = [], holes = {};
         for (var i = 0; i < slides.length; i++) {
             var s = slides[i];
-            var tail = transitionOf(s) === 'cut' ? 0 : TR;
+            var tail = slideTail(s);
             if (t >= s.t0 && t < s.t1 + tail) vis.push(s);
             else if (s.t0 > t + 1) break;
         }
@@ -653,16 +680,22 @@
             prep(s);
             s.el.classList.add('on');
             var o = 1, ty = 0;
-            if (t < s.t0 + TR && s.i > 0 && s.trans !== 'cut') {
-                var q = E.out(clamp((t - s.t0) / TR, 0, 1));
-                o = q; ty = s.trans === 'push' ? (1 - q) * 70 : 0;
+            var inFx = fx && (s === fx.inn || s === fx.out);
+            if (inFx) {
+                o = XVFx.paint(s, fx);
+            } else {
+                if (window.XVFx) XVFx.clear(s);
+                if (t < s.t0 + TR && s.i > 0 && s.trans !== 'cut') {
+                    var q = E.out(clamp((t - s.t0) / TR, 0, 1));
+                    o = q; ty = s.trans === 'push' ? (1 - q) * 70 : 0;
+                }
+                if (t >= s.t1) {
+                    var q2 = E.inout(clamp((t - s.t1) / TR, 0, 1));
+                    o *= 1 - q2; ty -= transitionOf(s) === 'push' ? q2 * 90 : 0;
+                }
+                s.el.style.opacity = o >= 1 ? '' : o.toFixed(3);
+                s.el.style.transform = ty ? 'translateY(' + ty.toFixed(2) + 'px)' : '';
             }
-            if (t >= s.t1) {
-                var q2 = E.inout(clamp((t - s.t1) / TR, 0, 1));
-                o *= 1 - q2; ty -= transitionOf(s) === 'push' ? q2 * 90 : 0;
-            }
-            s.el.style.opacity = o >= 1 ? '' : o.toFixed(3);
-            s.el.style.transform = ty ? 'translateY(' + ty.toFixed(2) + 'px)' : '';
             if (s.host) holes[s.host] = Math.max(holes[s.host] || 0, o);
             s.el.style.zIndex = String(s.i + 1);
             for (var j = 0; j < s.items.length; j++) apply(s, s.items[j], t);
@@ -698,6 +731,7 @@
         }
         sceneMotion(t);
         placeDemos(t);
+        if (window.XVFx) XVFx.overlay(fx);
         drawBg(t, holes, frame);
         placeHost(holes, frame);
         placeFrame(frame, frame ? (holes.pip || 0) : 0);

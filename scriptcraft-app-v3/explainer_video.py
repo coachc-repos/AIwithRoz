@@ -45,6 +45,13 @@ when the slide ends, so later slides stay on the spoken words. Per clip, the
 audio is muted under the narration (the default), replaces the narration, or
 is sidechain-ducked under it.
 
+Stylized transitions overlap the two slides, so the narration is not lengthened
+and clip audio (mute, clip, or mix) keeps the slide's own window. They play
+on the way into the presenter, a YouTube clip or demo-video slot, a numbered
+step or stat, or a new section or scene type. Other slides keep the 0.4 s
+push. The project chooses off, subtle, or full (the default), and each slide
+can stay on auto, pick a style, or opt out.
+
 Pictures: the particle waves stay on every style (denser and a little faster
 than the original field). Text slides are otherwise unchanged. visual_style
 classic draws scene objects as the old flat shapes. cinematic draws the same
@@ -219,7 +226,7 @@ DESIGN SYSTEM
 - Layout in 1920x1080 units; the app renders at 2x for 4K, so everything is vectors and live text.
 - Colors (CSS variables): --bg #090c12 (background), --panel #121824, --panel-2 #1a2232, --line #2a3446, --text #f2f4f8 (off-white), --muted #8a94a6, --gold #f5b83d (emphasis and "own"), --red #f05252 (losses and "rent"), --green #3cc878 (gains), --blue #4c8dff, --amber #f59e0b, --navy #0c1526 and --navy-2 #13213a (scene skies and ground), --sky-3 #1b2c4a. Use these, plus brand colors where a brand is shown.
 - Type: Inter (Inter Display at large sizes, automatic). Classes: kicker (gold caps label), h1 (104px), h2 (72px), h3 (48px), lead (40px, muted), body (34px), small (26px), huge (220px numbers), num (tabular figures); color classes gold, red, green, blue, amber, muted, white.
-- The app draws the particle background (rows of small particles riding a slow wave at the bottom, fading out by mid-screen), the HUD (section label top left, chapter tracker top right, thin progress bar at the bottom) and the slide transitions (a 0.4 s push up). Keep content inside x 120-1800 and y 110-990 so it clears the HUD; full-bleed scenes may fill the frame. The app may briefly show a small guide character with a short line from this slide's narration in the lower left (about x 40-520, y 820-1030). Keep essential type, logos and figures out of that pocket.
+- The app draws the particle background (rows of small particles riding a slow wave at the bottom, fading out by mid-screen), the HUD (section label top left, chapter tracker top right, thin progress bar at the bottom) and the slide transitions. Most slides use a 0.4 s push. The app itself may play a short stylized transition when the picture cuts to the presenter, a clip, a numbered step or a new section. Do not draw those transitions yourself. Keep content inside x 120-1800 and y 110-990 so it clears the HUD; full-bleed scenes may fill the frame. The app may briefly show a small guide character with a short line from this slide's narration in the lower left (about x 40-520, y 820-1030). Keep essential type, logos and figures out of that pocket.
 - The blend: presentation slides for stats, lists, definitions, timelines, comparisons and quotes; illustrated vector scenes for about a third of the runtime, for metaphor and story passages, drawn from the GROK IMAGINE briefs (not every brief needs a scene); a cold-open panorama with camera pans if the script describes one; a chapter card per section; the copyable asset (checklist or cheat sheet) as its own slide of kind asset.
 - Any slide where text alone would sit for more than about 8 seconds gets a supporting icon or small illustration (inline SVG).
 - Motion: headlines rise word by word, cards slide in, numbers count up, key figures pop or stamp (a ring burst on the biggest), charts draw or wipe on, bars grow from the bottom. Every element appears on the spoken words it illustrates and stays until the slide changes unless it is being swapped.
@@ -1166,10 +1173,24 @@ def clip_render_plan(project: "Project", start: float, end: float) -> list:
         audio = c.get("audio") if c.get("audio") in YT_AUDIO_MODES else YT_AUDIO_DEFAULT
         if audio != "mute" and not c.get("has_audio", True):
             audio = "mute"
+        show = round(b - a, 3)
+        order = compiled.get("slides") or []
+        idx = next((i for i, m in enumerate(order) if m.get("id") == meta.get("id")), -1)
+        nxt = order[idx + 1] if idx >= 0 and idx + 1 < len(order) else None
+        head = float(meta.get("fx_dur") or 0) if meta.get("fx") else 0.0
+        head_left = max(0.0, (t0 + head) - a) if head else 0.0
+        tail = 0.0
+        leave_style = ""
+        if nxt and nxt.get("fx"):
+            tail = min(float(nxt.get("fx_dur") or 0), max(0.0, float(end) - t1))
+            leave_style = nxt.get("fx") or ""
         out.append({"path": str(path), "audio": audio, "t0": t0, "t1": t1,
-                    "offset": round(a - float(start), 3), "show": round(b - a, 3),
+                    "offset": round(a - float(start), 3), "show": show,
                     "src_skip": round(src_skip, 3), "seconds": round(remain, 3),
-                    "w": int(c.get("width") or 1920) or 1920, "h": int(c.get("height") or 1080) or 1080})
+                    "w": int(c.get("width") or 1920) or 1920, "h": int(c.get("height") or 1080) or 1080,
+                    "head_fade": round(head_left, 3), "tail": round(tail, 3),
+                    "enter_style": meta.get("fx") or "", "leave_style": leave_style,
+                    "fx_amp": float(meta.get("fx_amp") or (nxt or {}).get("fx_amp") or 1)})
     return out
 
 
@@ -1189,17 +1210,34 @@ def build_overlay_cmd(base: Path, out: Path, clips: list, width: int, height: in
         inputs += ["-i", str(c["path"])]
         sw, sh, x, y = fit_contain(int(c.get("w") or width), int(c.get("h") or height), width, height)
         show = max(1.0 / FPS, float(c["show"]))
+        head = float(c.get("head_fade") or 0)
+        tail = float(c.get("tail") or 0)
+        vis = show + max(0.0, tail)
         remain = max(0.0, float(c.get("seconds") or show))
-        hold = max(0.0, show - remain)
+        hold = max(0.0, vis - remain)
         pad = f",tpad=stop_mode=clone:stop_duration={hold + 0.08:.3f}" if hold > 0.04 else ""
+        # Picture may fade across the overlapping transition. Audio still uses
+        # `show`, the slide window, so mute / clip / mix do not grow.
+        fade = ""
+        if head > 0.02 or tail > 0.02:
+            if head > 0.02:
+                fade += f",fade=t=in:st=0:d={head:.3f}:alpha=1"
+            if tail > 0.02:
+                fade += f",fade=t=out:st={show:.3f}:d={tail:.3f}:alpha=1"
+        fx = ""
+        if head > 0.02 and c.get("enter_style"):
+            fx += _clip_fx_filters(c.get("enter_style") or "", float(c.get("fx_amp") or 1), head, 0, show)
+        if tail > 0.02 and c.get("leave_style"):
+            fx += _clip_fx_filters(c.get("leave_style") or "", float(c.get("fx_amp") or 1), 0, tail, show)
+        fmt = "yuva420p" if (fade or fx) else "yuv420p"
         lab, nxt = f"c{i}", f"v{i}"
         off = float(c["offset"])
         chains.append(
             f"[{i + 1}:v]setpts=PTS-STARTPTS,fps={FPS},scale={sw}:{sh}:flags=lanczos,setsar=1,"
-            f"pad={width}:{height}:{x}:{y}:black,format=yuv420p{pad},"
-            f"trim=duration={show:.3f},setpts=PTS-STARTPTS+{off:.3f}/TB[{lab}]")
+            f"pad={width}:{height}:{x}:{y}:black,format={fmt}{fx}{fade}{pad},"
+            f"trim=duration={vis:.3f},setpts=PTS-STARTPTS+{off:.3f}/TB[{lab}]")
         chains.append(
-            f"[{last}][{lab}]overlay=0:0:eof_action=pass:enable='between(t,{off:.3f},{off + show:.3f})'[{nxt}]")
+            f"[{last}][{lab}]overlay=0:0:eof_action=pass:enable='between(t,{off:.3f},{off + vis:.3f})'[{nxt}]")
         last = nxt
     return ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *inputs, "-filter_complex", ";".join(chains),
             "-map", f"[{last}]", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", str(int(crf)),
@@ -1268,6 +1306,355 @@ def build_mux_cmd(video: Path, narration: Path, out: Path, start: float, dur: fl
     return ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *inputs, "-filter_complex", ";".join(chains),
             "-map", "0:v:0", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
             "-ar", "48000", "-ac", "2", "-t", f"{float(dur):.3f}", "-movflags", "+faststart", str(out)]
+
+
+# ---------------------------------------------------------------------------
+# Stylized transitions. They overlap the two slides, so the narration clock
+# does not move. Most slides keep the 0.4 s push. These fire on the way in:
+# a presenter, a YouTube clip or demo-video slot, a numbered step or stat,
+# or a major scene change. Presenter and media cuts always play. Steps and
+# scene changes wait so two stylized transitions are at least three slides
+# apart, unless one of those cuts demands it. Full is the default.
+# ---------------------------------------------------------------------------
+
+TRANSITION_MODES = ("off", "subtle", "full")
+TRANSITION_DEFAULT = "full"
+TRANSITION_STYLES = ("glitch", "paint", "warp", "pixel", "lightleak", "burn", "shatter")
+SLIDE_FX_CHOICES = ("auto", "none") + TRANSITION_STYLES
+TRANSITION_GAP = 3
+_HARD_REASONS = ("presenter", "media-enter", "media-leave")
+_REASON_ORDER = ("presenter", "media-enter", "media-leave", "step", "scene")
+TRANSITION_DURS = {
+    "glitch": 0.50, "paint": 0.56, "warp": 0.52, "pixel": 0.48,
+    "lightleak": 0.44, "burn": 0.50, "shatter": 0.46,
+}
+_STYLE_CYCLE = {
+    "presenter": ("lightleak", "glitch", "warp"),
+    "media-enter": ("glitch", "pixel", "warp"),
+    "media-leave": ("pixel", "paint", "glitch"),
+    "step": ("pixel", "lightleak", "shatter"),
+    "scene": ("paint", "warp", "burn"),
+}
+_STEP_RE = re.compile(
+    r"(?:^|[^\w])(?:step\s*#?\s*\d+|step\s+(?:one|two|three|four|five|six|seven|eight|nine|ten)|#\s*\d{1,2})\b",
+    re.I)
+_OUTRO_RE = re.compile(r"\b(?:outro|ending|wrap-?up|closing|sign-?off|goodbye)\b", re.I)
+_HOOK_RE = re.compile(r"\b(?:hook|cold[ -]?open)\b", re.I)
+_SC_RE = re.compile(r'data-sc="([A-Za-z0-9_-]+)"')
+
+
+def transition_mode_key(choice: Optional[str] = None, saved: Optional[str] = None) -> str:
+    """off, subtle, or full. An explicit choice wins, then a saved one, then full."""
+    for raw in (choice, saved):
+        key = (raw or "").strip().lower()
+        if key in TRANSITION_MODES:
+            return key
+    return TRANSITION_DEFAULT
+
+
+def slide_fx_key(choice: Optional[str] = None) -> str:
+    """auto, none, or a style name. Anything else is auto."""
+    key = (choice or "").strip().lower()
+    return key if key in SLIDE_FX_CHOICES else "auto"
+
+
+def transition_duration(style: str, mode: str) -> float:
+    dur = TRANSITION_DURS.get(style, 0.5)
+    if transition_mode_key(mode) == "subtle":
+        dur = round(dur * 0.70, 3)
+    return dur
+
+
+def transition_intensity(mode: str) -> float:
+    return {"off": 0.0, "subtle": 0.52, "full": 1.0}[transition_mode_key(mode)]
+
+
+def _scene_type_of(html: str) -> str:
+    """The scene object this slide is built from (house, bot, brand, …)."""
+    found = [name.lower() for name in _SC_RE.findall(html or "")]
+    if not found:
+        return ""
+    counts: dict = {}
+    for name in found:
+        counts[name] = counts.get(name, 0) + 1
+    return max(counts, key=lambda k: (counts[k], k))
+
+
+def _slide_blob(slide: dict) -> str:
+    return " ".join(str(slide.get(k) or "") for k in ("text", "idea", "spoken", "at", "title"))
+
+
+def slide_shows_presenter(slide: dict) -> bool:
+    """The presenter is on screen as this slide starts."""
+    if str(slide.get("host") or "").lower() in HOST_LAYOUTS:
+        return True
+    if slide.get("presenter") is True:
+        return True
+    try:
+        t0 = float(slide.get("t0") or 0)
+    except (TypeError, ValueError):
+        t0 = 0.0
+    for sec in slide.get("sections") or []:
+        if not isinstance(sec, dict):
+            continue
+        if str(sec.get("layout") or "").lower() not in HOST_LAYOUTS:
+            continue
+        try:
+            a0, a1 = float(sec.get("t0") or 0), float(sec.get("t1") or 0)
+        except (TypeError, ValueError):
+            continue
+        if a0 <= t0 + 0.4 and a1 > t0 + 0.2:
+            return True
+    return False
+
+
+def slide_has_media(slide: dict, media_ids: Optional[set] = None) -> bool:
+    """A YouTube clip, an uploaded screen recording, or a demo-video slot."""
+    if media_ids and (slide.get("id") or "") in media_ids:
+        return True
+    if slide.get("media") or slide.get("clip") or slide.get("demo"):
+        return True
+    slot = str(slide.get("slot") or slide.get("media_slot") or "").strip().lower()
+    if slot in ("demo", "screen", "youtube", "clip", "recording", "screencast"):
+        return True
+    kind = str(slide.get("kind") or "").lower()
+    if kind in ("demo", "clip", "screen"):
+        return True
+    scene = str(slide.get("scene_type") or slide.get("visual_style") or "").lower()
+    if scene in ("demo", "screen", "clip", "recording"):
+        return True
+    return bool(demo_note(str(slide.get("spoken") or "")))
+
+
+def slide_is_step(slide: dict) -> bool:
+    """A numbered step, a count, or a big stat reveal."""
+    if slide.get("step") or slide.get("stat") or slide.get("count"):
+        return True
+    if slide.get("has_count") or slide.get("has_stat"):
+        return True
+    return bool(_STEP_RE.search(_slide_blob(slide)))
+
+
+def _hook_until(slides: list) -> Optional[float]:
+    for slide in slides or []:
+        if str(slide.get("kind") or "") == "chapter":
+            try:
+                return float(slide.get("t0") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+    return None
+
+
+def _beat(slide: dict, hook_until: Optional[float]) -> str:
+    label = f"{slide.get('section') or ''} {slide.get('section_key') or ''} {slide.get('role') or ''}"
+    role = str(slide.get("role") or "").lower()
+    if role in ("hook", "body", "outro"):
+        return role
+    if _OUTRO_RE.search(label) or str(slide.get("kind") or "") == "outro":
+        return "outro"
+    if str(slide.get("kind") or "") == "chapter":
+        return "chapter"
+    try:
+        t0 = float(slide.get("t0") or 0)
+    except (TypeError, ValueError):
+        t0 = 0.0
+    if hook_until is not None and t0 < hook_until - 0.05:
+        return "hook"
+    if _HOOK_RE.search(label):
+        return "hook"
+    return "body"
+
+
+def _picture(slide: dict) -> str:
+    """Kind plus the scene-object type, so a house becoming a bot is a new picture."""
+    kind = str(slide.get("kind") or "slide").lower()
+    scene = str(slide.get("scene_type") or slide.get("visual_style") or "").strip().lower()
+    if scene in ("classic", "cinematic", "rich"):
+        scene = ""
+    return f"{kind}:{scene}" if scene else kind
+
+
+def is_scene_change(slide: dict, prev: dict, hook_until: Optional[float] = None) -> bool:
+    """A new section, hook to body, body to outro, or a different scene type."""
+    sk = str(slide.get("section_key") or "")
+    pk = str(prev.get("section_key") or "")
+    if sk and pk and sk != pk:
+        return True
+    if not sk and not pk:
+        ss, ps = str(slide.get("section") or ""), str(prev.get("section") or "")
+        if ss and ps and ss != ps:
+            return True
+    if _beat(slide, hook_until) != _beat(prev, hook_until):
+        return True
+    return _picture(slide) != _picture(prev)
+
+
+def detect_transition_reasons(slide: dict, prev: Optional[dict], *,
+                              media_ids: Optional[set] = None,
+                              hook_until: Optional[float] = None) -> list:
+    """Why a stylized transition would play on the way into `slide`.
+
+    Empty when there is no previous slide. Order is the priority order.
+    """
+    if not prev:
+        return []
+    reasons = []
+    if slide_shows_presenter(slide) and not slide_shows_presenter(prev):
+        reasons.append("presenter")
+    here, was = slide_has_media(slide, media_ids), slide_has_media(prev, media_ids)
+    if here and not was:
+        reasons.append("media-enter")
+    if was and not here:
+        reasons.append("media-leave")
+    if slide_is_step(slide):
+        reasons.append("step")
+    if is_scene_change(slide, prev, hook_until):
+        reasons.append("scene")
+    return reasons
+
+
+def _blank_event(slide: dict, index: int, reasons: list, blocked: str) -> dict:
+    try:
+        t0 = round(float(slide.get("t0") or 0), 3)
+    except (TypeError, ValueError):
+        t0 = 0.0
+    return {"id": slide.get("id") or "", "index": index, "t": t0, "style": "", "dur": 0.0,
+            "amp": 0.0, "reason": "", "reasons": list(reasons), "blocked": blocked}
+
+
+def plan_slide_transitions(slides: list, *, mode: str = "full", overrides: Optional[dict] = None,
+                           media_ids: Optional[set] = None, gap: int = TRANSITION_GAP) -> list:
+    """One record per slide. `style` is empty when this entrance stays a plain cut.
+
+    Presenter and media entrances and exits always play, even back to back.
+    A step or a scene change plays only when the previous stylized transition
+    was at least `gap` slides earlier. A per-slide style forces that style.
+    `none` and mode `off` play nothing.
+    """
+    mode = transition_mode_key(mode)
+    overrides = overrides or {}
+    hook_until = _hook_until(slides)
+    events, last, counts = [], -10 ** 6, {}
+    for i, slide in enumerate(slides or []):
+        choice = slide_fx_key((overrides or {}).get(slide.get("id")))
+        prev = slides[i - 1] if i else None
+        reasons = detect_transition_reasons(slide, prev, media_ids=media_ids, hook_until=hook_until)
+        if mode == "off":
+            events.append(_blank_event(slide, i, reasons, "off"))
+            continue
+        if choice == "none":
+            events.append(_blank_event(slide, i, reasons, "none"))
+            continue
+        if choice in TRANSITION_STYLES:
+            style, reason = choice, "override"
+        elif i == 0 or not reasons:
+            events.append(_blank_event(slide, i, reasons, "first" if i == 0 else ""))
+            continue
+        else:
+            primary = next(r for r in _REASON_ORDER if r in reasons)
+            hard = primary in _HARD_REASONS
+            if not hard and i - last < gap:
+                events.append(_blank_event(slide, i, reasons, "spacing"))
+                continue
+            n = counts.get(primary, 0)
+            counts[primary] = n + 1
+            cycle = _STYLE_CYCLE[primary]
+            style, reason = cycle[n % len(cycle)], primary
+        dur = transition_duration(style, mode)
+        amp = transition_intensity(mode)
+        try:
+            t0 = round(float(slide.get("t0") or 0), 3)
+        except (TypeError, ValueError):
+            t0 = 0.0
+        events.append({"id": slide.get("id") or "", "index": i, "t": t0, "style": style,
+                       "dur": dur, "amp": amp, "reason": reason, "reasons": reasons, "blocked": ""})
+        last = i
+    return events
+
+
+def _stamp_fx_html(html: str, sid: str, ev: dict) -> str:
+    sid_esc = _html.escape(sid, quote=True)
+    needle = f'id="{sid_esc}"'
+    idx = html.find(needle)
+    if idx < 0 or not ev.get("style"):
+        return html
+    extra = (f' data-fx="{ev["style"]}" data-fx-dur="{float(ev["dur"]):.3f}" '
+             f'data-fx-amp="{float(ev["amp"]):.3f}" '
+             f'data-fx-why="{_html.escape(ev.get("reason") or "", quote=True)}"')
+    at = idx + len(needle)
+    return html[:at] + extra + html[at:]
+
+
+def apply_transition_plan(compiled: dict, *, mode: str = "full", overrides: Optional[dict] = None,
+                          media_ids: Optional[set] = None) -> dict:
+    """Write the chosen effect onto each slide and into the section tag.
+
+    The slide text is not rewritten. An empty style leaves the 0.4 s push.
+    """
+    slides = compiled.get("slides") or []
+    events = plan_slide_transitions(slides, mode=mode, overrides=overrides, media_ids=media_ids)
+    html = compiled.get("html") or ""
+    fired = []
+    by_id = {ev["id"]: ev for ev in events}
+    for meta in slides:
+        ev = by_id.get(meta.get("id")) or {}
+        meta["fx"] = ev.get("style") or ""
+        meta["fx_dur"] = float(ev.get("dur") or 0)
+        meta["fx_amp"] = float(ev.get("amp") or 0)
+        meta["fx_reason"] = ev.get("reason") or ""
+        meta["fx_reasons"] = list(ev.get("reasons") or [])
+        meta["fx_blocked"] = ev.get("blocked") or ""
+        if ev.get("style"):
+            html = _stamp_fx_html(html, meta.get("id") or "", ev)
+            fired.append(ev)
+    compiled["html"] = html
+    compiled["transitions"] = fired
+    return compiled
+
+
+def media_ids_of(data: Optional[dict]) -> set:
+    """Slides that have a clip or a demo-video placeholder."""
+    ids = set()
+    for clip in load_youtube(data).get("clips") or []:
+        if clip.get("slide") and clip.get("status") in ("ready", "placeholder"):
+            ids.add(clip["slide"])
+    return ids
+
+
+def _clip_fx_filters(style: str, amp: float, head: float, tail: float, show: float) -> str:
+    """A timeline-limited ffmpeg effect on a clip, in the clip's own clock.
+
+    Empty when this edge has no stylized transition, so a plain overlay
+    command stays what it was.
+    """
+    windows = []
+    if head > 0.02 and style:
+        windows.append(f"between(t,0,{head:.3f})")
+    if tail > 0.02:
+        windows.append(f"between(t,{show:.3f},{show + tail:.3f})")
+    if not windows:
+        return ""
+    enable = f"enable='{'+'.join(windows)}'"
+    shift = max(4, int(round(12 * max(0.3, amp))))
+    if style == "glitch":
+        return (f",rgbashift=rh={shift}:bh=-{shift}:edge=wrap:{enable},"
+                f"noise=alls={max(4, int(round(10 * amp)))}:allf=t+u:{enable}")
+    if style == "pixel":
+        block = 10 if amp < 0.75 else 18
+        return f",pixelize=w={block}:h={block}:{enable}"
+    if style == "warp":
+        return f",lenscorrection=k1={0.18 * amp:.3f}:k2={0.06 * amp:.3f}:{enable}"
+    if style == "lightleak":
+        return (f",gblur=sigma={1.2 + 5 * amp:.2f}:sigmaV={0.4 + amp:.2f}:{enable},"
+                f"eq=brightness={0.05 * amp:.3f}:saturation={1.15 + 0.35 * amp:.2f}:{enable}")
+    if style == "paint":
+        return f",eq=saturation={1.15 + 0.45 * amp:.2f}:{enable}"
+    if style == "burn":
+        return (f",eq=brightness={0.07 * amp:.3f}:saturation={1.4 + 0.5 * amp:.2f}:{enable},"
+                f"vignette=angle=PI/5:{enable}")
+    if style == "shatter":
+        return f",pixelize=w=32:h=24:{enable}"
+    return ""
 
 
 def usage_cost(u: dict) -> float:
@@ -2647,10 +3034,15 @@ def compile_composition(raw: str, timeline: Timeline, *, duration: float, plan: 
         idea = (plan_slides.get(sid) or {}).get("idea") or ""
         if not idea:
             idea = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body)).strip()[:140]
+        plain = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body)).strip()
         slides_meta.append({"id": sid, "t0": t0, "t1": t1, "kind": kind, "section": label or "",
-                            "idea": idea, "at": a.get("data-at") or "", "host": host, "warnings": slide_warn,
-                            "spoken": timeline.window_text(t0, t1)[:500],
-                            "demo": (a.get("data-demo") or "")[:180]})
+                            "section_key": skey, "idea": idea, "at": a.get("data-at") or "", "host": host,
+                            "warnings": slide_warn, "spoken": timeline.window_text(t0, t1)[:500],
+                            "demo": (a.get("data-demo") or "")[:180],
+                            "scene_type": _scene_type_of(body),
+                            "text": plain[:400],
+                            "has_count": bool(re.search(r'data-anim="[^"]*\bcount\b', body)),
+                            "has_stat": bool(re.search(r'class="[^"]*\b(?:huge|stat|steps)\b', body))})
         warnings.extend(slide_warn)
     # The user's presenter sections, inside this video's stretch. They win
     # over a slide's own presenter layout: the slide's window keeps only the
@@ -2716,6 +3108,7 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
     Cinematic adds the object entrance. The slide HTML is not changed."""
     css = (ASSET_DIR / "design.css").read_text(encoding="utf-8")
     js = (ASSET_DIR / "runtime.js").read_text(encoding="utf-8")
+    fxjs = (ASSET_DIR / "transitions.js").read_text(encoding="utf-8")
     host_on = bool(host) and compiled.get("host_on")
     video = (host or {}).get("video") if host_on and mode == "preview" else None
     frame_mode = pip_frame_key(pip_frame, None if pip_frame is not None else (host or {}).get("pip_frame"))
@@ -2730,6 +3123,9 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
                       "asides": _aside_payloads(compiled.get("slides") or [], bubble),
                       "clips": clip_cfg, "visual": visual_cfg,
                       "demos": demos or [],
+                      "fx": [{"id": s.get("id"), "t": s.get("t0"), "dur": s.get("fx_dur"),
+                              "style": s.get("fx"), "amp": s.get("fx_amp"), "why": s.get("fx_reason")}
+                             for s in (compiled.get("slides") or []) if s.get("fx")],
                       "host": {"on": True, "layouts": HOST_LAYOUTS, "focus": float(host.get("focus", HOST_FOCUS)),
                                "video": video, "sections": compiled.get("host_sections") or [],
                                "fade": HOST_SECTION_FADE, "windows": windows,
@@ -2749,8 +3145,9 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
             f"<div id=\"slides\">{compiled['html']}</div>"
             "<div id=\"hud\"><div id=\"progress-track\"></div><div id=\"progress\"></div>"
             "<div id=\"hud-left\"></div><div id=\"hud-right\"></div></div>"
+            "<canvas id=\"fx\" width=\"1920\" height=\"1080\"></canvas>"
             "</div></div>"
-            f"<script>window.__EXPLAINER = {cfg};</script><script>{js}</script></body></html>")
+            f"<script>window.__EXPLAINER = {cfg};</script><script>{fxjs}</script><script>{js}</script></body></html>")
 
 
 # ---------------------------------------------------------------------------
@@ -3502,9 +3899,13 @@ class Project:
         values, logos or timing change."""
         n = n or self.data.get("current") or 0
         host = self.host()
+        media_key = sorted((c.get("id"), c.get("slide"), c.get("status"))
+                           for c in load_youtube(self.data).get("clips") or [])
         key = json.dumps([n, self.data.get("values"), self.data.get("logo_choices"),
                           self.data.get("logos"), self.data.get("timing"), self.data.get("span"),
-                          bool(host), (host or {}).get("sections")], sort_keys=True, default=str)
+                          bool(host), (host or {}).get("sections"),
+                          transition_mode_key(None, self.data.get("transition_mode")),
+                          self.data.get("slide_fx") or {}, media_key], sort_keys=True, default=str)
         with self.lock:
             if self._compiled and self._compiled[0] == key:
                 return self._compiled[1]
@@ -3517,6 +3918,9 @@ class Project:
             plan=self.plan(), logos=logos, values=self.data.get("values") or {},
             logo_choices=self.data.get("logo_choices") or {}, span=self.span(), host_on=bool(host),
             host_sections=(host or {}).get("sections") or [])
+        apply_transition_plan(out, mode=transition_mode_key(None, self.data.get("transition_mode")),
+                              overrides=self.data.get("slide_fx") or {},
+                              media_ids=media_ids_of(self.data))
         with self.lock:
             self._compiled = (key, out)
         return out
@@ -4017,7 +4421,7 @@ def run_create(project: Project, client, *, audio_src: Path, spoken_text: str, e
                test: Optional[dict] = None, presenter: Optional[dict] = None,
                root: Optional[Path] = None, share: Optional[str] = None,
                pip_frame: Optional[str] = None, bubble: Optional[str] = None,
-               visual_style: Optional[str] = None) -> dict:
+               visual_style: Optional[str] = None, transition_mode: Optional[str] = None) -> dict:
     """The whole first pass: prepare, (match the presenter clips,) plan,
     build. Returns the job result."""
     prepare(project, audio_src=audio_src, spoken_text=spoken_text, eleven_key=eleven_key, pauses=pauses,
@@ -4026,6 +4430,8 @@ def run_create(project: Project, client, *, audio_src: Path, spoken_text: str, e
         project.data["pip_frame"] = pip_frame_key(pip_frame, project.data.get("pip_frame"))
         project.data["bubble"] = bubble_mode_key(bubble, project.data.get("bubble"))
         project.data["visual_style"] = visual_style_key(visual_style, project.data.get("visual_style"))
+        project.data["transition_mode"] = transition_mode_key(
+            transition_mode, project.data.get("transition_mode"))
     project.save()
     if cancel.is_set():
         raise Cancelled()

@@ -3649,6 +3649,7 @@
                         <select id="xvPipFrame" class="xv-input" style="width:auto; height:34px;" title="Corner windows: sometimes inside a monitor, laptop, phone or TV"><option value="mix" selected>corner frame sometimes</option><option value="off">plain corner only</option><option value="monitor">corner: monitor</option><option value="laptop">corner: laptop</option><option value="phone">corner: phone</option><option value="tv">corner: TV</option></select>
                         <select id="xvBubble" class="xv-input" style="width:auto; height:34px;" title="A guide character with a short line from the narration, lower left"><option value="some" selected>guide notes sometimes</option><option value="off">no guide notes</option><option value="often">guide notes often</option></select>
                         <select id="xvVisual" class="xv-input" style="width:auto; height:34px;" title="Classic draws scene objects flat. Cinematic draws the same cars, buildings and houses with volume and motion. Text slides stay as they are."><option value="classic" selected>scenes: classic</option><option value="cinematic">scenes: cinematic</option></select>
+                        <select id="xvTransition" class="xv-input" style="width:auto; height:34px;" title="Stylized transitions on presenter entrances, clips, numbered steps and section changes. Other slides keep the simple push. Full is the default."><option value="full" selected>transitions: full</option><option value="subtle">transitions: subtle</option><option value="off">transitions: off</option></select>
                     </div>
                     <div id="xvHostNote" style="font-size:0.75em; color:#64748b; margin-bottom:14px;"></div>
                     <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
@@ -3720,9 +3721,14 @@
                         </div>
                         <div id="xvPane-needs" class="xv-pane on"></div>
                         <div id="xvPane-slides" class="xv-pane">
-                            <div style="display:flex; gap:6px; margin-bottom:6px;">
+                            <div style="display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap; align-items:center;">
                                 <button class="xv-btn small" onclick="xvSelectFlagged()">Tick flagged</button>
                                 <button class="xv-btn small" onclick="xvSelectNone()">Clear ticks</button>
+                                <select id="xvFxMode" class="xv-input" style="width:auto; height:28px; padding:0 6px;" title="Full plays the stylized transitions. Subtle is shorter and quieter. Off keeps the simple cut." onchange="xvTransitionMode(this.value)">
+                                    <option value="full">transitions full</option>
+                                    <option value="subtle">transitions subtle</option>
+                                    <option value="off">transitions off</option>
+                                </select>
                                 <span id="xvChecking" style="font-size:0.72em; color:#64748b; align-self:center;"></span>
                             </div>
                             <div id="xvSlideList"></div>
@@ -12379,8 +12385,9 @@ Thank you for watching!`;
             const pipFrame = document.getElementById('xvPipFrame').value;
             const bubble = document.getElementById('xvBubble').value;
             const visual = document.getElementById('xvVisual').value;
+            const transitionMode = (document.getElementById('xvTransition') || {}).value || 'full';
             const d = await _xvPost('/api/explainer/start', { voiceover: audio, script: script, text: extractHeyGenSection(script) || '', logos: logos,
-                test: test, presenter: presenter, share: share, pip_frame: pipFrame, bubble: bubble, visual_style: visual });
+                test: test, presenter: presenter, share: share, pip_frame: pipFrame, bubble: bubble, visual_style: visual, transition_mode: transitionMode });
             if (!d.success) {
                 btn.disabled = false;
                 _xvStatus('❌ ' + _xvEsc(d.error || 'Could not start.') + (d.needs_key ? ' <a href="#" onclick="closeExplainerModal(); openApiKeysModal(); return false;">🔑 API Keys</a>' : ''), '#f87171');
@@ -12445,7 +12452,7 @@ Thank you for watching!`;
             const note = document.getElementById('xvFrameNote');
             if (s.current) {
                 const yclips = ((s.youtube || {}).clips || []).map(c => [c.id, c.slide, c.audio, c.file, c.start, c.end, c.status]);
-                const key = s.current + '|' + JSON.stringify([s.values, s.logo_choices, s.logos, s.span, s.pip_frame, s.bubble, s.visual_style, yclips, s.host && [s.host.created, s.host.focus, s.host.sections, s.host.pip_frame]]);
+                const key = s.current + '|' + JSON.stringify([s.values, s.logo_choices, s.logos, s.span, s.pip_frame, s.bubble, s.visual_style, s.transition_mode, s.slide_fx, yclips, s.host && [s.host.created, s.host.focus, s.host.sections, s.host.pip_frame]]);
                 if (key !== _xv.frameKey) {
                     _xv.frameKey = key;
                     document.getElementById('xvFrame').src = _xvApi('/preview?' + _xvQ() + '&v=' + s.current + '&_=' + Date.now());
@@ -12487,6 +12494,8 @@ Thank you for watching!`;
                   + (hostLow ? ' ℹ️ The presenter clips are 1080p and will be scaled up: Presenter → Rescan picks up 4K upscales.' : '');
             document.getElementById('xvNeedsCount').textContent = left ? '(' + left + ')' : '';
             document.getElementById('xvSlidesCount').textContent = (s.slides || []).length ? '(' + s.slides.length + ')' : '';
+            const fxMode = document.getElementById('xvFxMode');
+            if (fxMode && document.activeElement !== fxMode) fxMode.value = s.transition_mode || 'full';
             const clipN = ((s.youtube || {}).clips || []).length;
             const clipCount = document.getElementById('xvClipCount');
             if (clipCount) clipCount.textContent = clipN ? '(' + clipN + ')' : '';
@@ -12993,6 +13002,16 @@ Thank you for watching!`;
                 + (running ? ' disabled' : '') + ' onclick="event.stopPropagation()" onchange="xvSlideHost(this.dataset.id, this.value)">'
                 + Object.keys(_XV_HOST_NAMES).map(k => '<option value="' + k + '"' + ((m.host || '') === k ? ' selected' : '') + '>' + (k ? '🧑‍💼 ' : '') + _XV_HOST_NAMES[k] + '</option>').join('') + '</select>';
             const clipSel = m => _xvClipSelect(m.id, running);
+            const fxChoices = [['auto', 'Auto'], ['none', 'None'], ['glitch', 'Glitch'], ['paint', 'Ink wipe'], ['warp', 'Warp'], ['pixel', 'Pixel'], ['lightleak', 'Light leak'], ['burn', 'Film burn'], ['shatter', 'Shatter']];
+            const fxSel = m => {
+                const cur = ((_xv.state.slide_fx || {})[m.id]) || 'auto';
+                const note = m.fx ? '<span style="color:#f5b83d;" title="' + _xvEsc(m.fx_reason || 'auto') + '">' + _xvEsc(m.fx) + '</span>'
+                    : (m.fx_blocked === 'spacing' ? '<span style="color:#64748b;" title="A step or scene change was due, and the previous transition was too recent">held</span>' : '');
+                return '<select class="xv-input" title="Transition into this slide" style="width:auto; padding:1px 4px; height:auto; font-size:0.95em; margin-left:4px;" data-id="' + _xvEsc(m.id) + '"'
+                    + (running ? ' disabled' : '') + ' onclick="event.stopPropagation()" onchange="xvSlideFx(this.dataset.id, this.value)">'
+                    + fxChoices.map(o => '<option value="' + o[0] + '"' + (cur === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('')
+                    + '</select>' + (note ? ' ' + note : '');
+            };
             document.getElementById('xvSlideList').innerHTML = list.length ? list.map(m => {
                 const ws = _xvAllWarnings(m);
                 const major = ws.filter(w => !w.minor);
@@ -13000,7 +13019,7 @@ Thank you for watching!`;
                     + '<input type="checkbox" ' + (_xv.selected.has(m.id) ? 'checked ' : '') + 'onclick="event.stopPropagation(); xvToggleSlide(this.parentNode.dataset.id, this.checked)">'
                     + '<div style="flex:1; min-width:0;"><div><strong style="color:#e2e8f0;">' + _xvEsc(m.id) + '</strong> · ' + _xvFmt(m.t0) + '–' + _xvFmt(m.t1)
                     + ' · ' + (icon[m.kind] || '') + ' ' + _xvEsc(m.kind) + (m.section ? ' · <span style="color:#64748b;">' + _xvEsc(m.section) + '</span>' : '')
-                    + (major.length ? ' <span style="color:#fbbf24;">⚠️ ' + major.length + '</span>' : '') + hostSel(m) + clipSel(m) + '</div>'
+                    + (major.length ? ' <span style="color:#fbbf24;">⚠️ ' + major.length + '</span>' : '') + hostSel(m) + clipSel(m) + fxSel(m) + '</div>'
                     + '<div style="color:#94a3b8; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">' + _xvEsc(m.idea || '') + '</div>'
                     + ws.map(w => '<div style="color:' + (w.minor ? '#64748b' : '#fbbf24') + '; font-size:0.95em;">• ' + _xvEsc(w.msg) + '</div>').join('')
                     + '</div></div>';
@@ -13095,7 +13114,7 @@ Thank you for watching!`;
         }
         function xvGoSlide(id) {
             const m = ((_xv.state && _xv.state.slides) || []).find(x => x.id === id);
-            if (m) xvScrubTo(Math.min(m.t0 + 0.45, (m.t0 + m.t1) / 2));   // just past the 0.4 s transition
+            if (m) xvScrubTo(Math.min(m.t0 + Math.max(0.45, (m.fx_dur || 0) + 0.08), (m.t0 + m.t1) / 2));
         }
         function xvStep(dir) {
             const list = (_xv.state && _xv.state.slides) || [];
@@ -13317,6 +13336,8 @@ Thank you for watching!`;
         async function xvHostFocus(v) { await _xvApply(await _xvPost(_xvApi('/host'), { focus: +v })); }
         async function xvHostShare(v) { await _xvApply(await _xvPost(_xvApi('/host'), { share: v })); }
         async function xvLook(key, v) { const body = {}; body[key] = v; await _xvApply(await _xvPost(_xvApi('/host'), body)); }
+        async function xvTransitionMode(v) { await _xvApply(await _xvPost(_xvApi('/transitions'), { mode: v })); }
+        async function xvSlideFx(id, v) { await _xvApply(await _xvPost(_xvApi('/transitions'), { slide: id, fx: v })); }
         async function xvSlideHost(id, layout) {
             const d = await _xvPost(_xvApi('/layout'), { slide: id, host: layout });
             await _xvApply(d);
