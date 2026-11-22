@@ -1,0 +1,8 @@
+Same three slides in each style. Type, figures and entrance motion are the slide HTML;
+only the picture behind them changes.
+classic_*.png  the current particle field.
+rich_*.png     painted still, Ken Burns, grain, veil, vignette.
+cinematic_*.png  the same still as far/mid/near layers, plus a light shaft.
+chart_compare.mp4  a few seconds of each style on the chart slide.
+Grok Imagine did not run. No API key was used. These are not mocked model images;
+they are the painted pictures the app uses when a key is missing or a generation fails.

@@ -45,6 +45,12 @@ when the slide ends, so later slides stay on the spoken words. Per clip, the
 audio is muted under the narration (the default), replaces the narration, or
 is sidechain-ducked under it.
 
+Pictures: a saved visual_style of classic (the default) keeps this particle field.
+rich and cinematic keep the same type, figures and motion, and add a still
+behind each slide — a slow move, grain and light, and in cinematic three
+depth layers. Stills are cached in the project. Grok Imagine is used when a
+key is set; otherwise the still is painted. See explainer_imagery.py.
+
 The module has no Flask dependency; web_gui.py wires the routes and passes in
 the Anthropic client, the ElevenLabs key and its pause detector.
 """
@@ -159,6 +165,22 @@ BUBBLE_MAX = 46                  # characters in the bubble, so it stays two sho
 HERE = Path(__file__).resolve().parent
 ASSET_DIR = HERE / "static" / "explainer"
 PROJECT_ID_RE = re.compile(r"^\d{8}_\d{6}_[0-9a-f]{4}$")
+
+# Picture treatment. Re-exported so the dialog can persist it the same way as
+# the corner frame and the guide character. classic is the particle field.
+# The app directory is on the path even when this file is loaded by path
+# (the look tests do that, from the repo root).
+import sys as _imagery_sys
+_APP_DIR = str(HERE)
+if _APP_DIR not in _imagery_sys.path:
+    _imagery_sys.path.insert(0, _APP_DIR)
+from explainer_imagery import (  # noqa: E402
+    VISUAL_STYLE_DEFAULT,
+    VISUAL_STYLES,
+    grok_key_present,
+    imagery_for_page,
+    visual_style_key,
+)
 
 
 class Cancelled(Exception):
@@ -2550,7 +2572,7 @@ def compile_composition(raw: str, timeline: Timeline, *, duration: float, plan: 
 def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer",
               host: Optional[dict] = None, pip_frame: Optional[str] = None,
               bubble: Optional[str] = None, clips: Optional[list] = None,
-              media_origin: str = "") -> str:
+              media_origin: str = "", visual: Optional[dict] = None) -> str:
     """A self-contained page: design CSS, the compiled slides, the runtime.
     The runtime exposes __seek(t), __check() and __ready for the renderer;
     in preview mode it answers postMessage seeks from the dialog. With a
@@ -2559,7 +2581,10 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
     Corner windows carry their device frame, and guide-character cues carry
     a drawn bubble, both as local images. Assigned YouTube clips (`clips`)
     play in preview as each slide's picture; the renderer lays the same
-    files on with ffmpeg, holding the last frame when the clip is shorter."""
+    files on with ffmpeg, holding the last frame when the clip is shorter.
+    `visual` is the picture treatment (classic / rich / cinematic). Classic,
+    or a treatment with no plates, keeps the particle field. The slide HTML
+    is not changed."""
     css = (ASSET_DIR / "design.css").read_text(encoding="utf-8")
     js = (ASSET_DIR / "runtime.js").read_text(encoding="utf-8")
     host_on = bool(host) and compiled.get("host_on")
@@ -2568,11 +2593,19 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
     windows = framed_windows(compiled.get("host_windows") or [], frame_mode) if host_on else []
     clip_cfg = [{k: c.get(k) for k in ("id", "slide", "src", "audio", "seconds", "t0", "t1", "label")}
                 for c in (clips or [])]
+    style = visual_style_key((visual or {}).get("style"))
+    plates = (visual or {}).get("plates") or []
+    if style == "classic" or not plates:
+        visual_cfg = {"style": "classic", "plates": []}
+        style = "classic"
+    else:
+        visual_cfg = {"style": style, "grade": (visual or {}).get("grade") or {},
+                      "grain": (visual or {}).get("grain") or "", "plates": plates}
     cfg = json.dumps({"duration": compiled["duration"], "fps": FPS, "mode": mode,
                       "start": compiled.get("start", 0.0), "end": compiled.get("end", compiled["duration"]),
                       "sections": compiled.get("sections") or [],
                       "asides": _aside_payloads(compiled.get("slides") or [], bubble),
-                      "clips": clip_cfg,
+                      "clips": clip_cfg, "visual": visual_cfg,
                       "host": {"on": True, "layouts": HOST_LAYOUTS, "focus": float(host.get("focus", HOST_FOCUS)),
                                "video": video, "sections": compiled.get("host_sections") or [],
                                "fade": HOST_SECTION_FADE, "windows": windows,
@@ -2582,7 +2615,7 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
     csp = ("default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
            "script-src 'unsafe-inline'; font-src data:"
            + (("; media-src 'self'" + (f" {origin}" if origin else "")) if media else ""))
-    cls = f"mode-{mode}" + (" host-on" if host_on else "")
+    cls = f"mode-{mode}" + (" host-on" if host_on else "") + ("" if style == "classic" else f" look-{style}")
     return (f"<!doctype html><html class=\"{cls}\"><head><meta charset=\"utf-8\">"
             f"<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">"
             f"<title>{_html.escape(title)}</title><style>{css}</style></head>"
@@ -3858,7 +3891,8 @@ def run_create(project: Project, client, *, audio_src: Path, spoken_text: str, e
                pauses: Callable, logos: list, images_dir: Path, cancel, status, log,
                test: Optional[dict] = None, presenter: Optional[dict] = None,
                root: Optional[Path] = None, share: Optional[str] = None,
-               pip_frame: Optional[str] = None, bubble: Optional[str] = None) -> dict:
+               pip_frame: Optional[str] = None, bubble: Optional[str] = None,
+               visual_style: Optional[str] = None) -> dict:
     """The whole first pass: prepare, (match the presenter clips,) plan,
     build. Returns the job result."""
     prepare(project, audio_src=audio_src, spoken_text=spoken_text, eleven_key=eleven_key, pauses=pauses,
@@ -3866,6 +3900,7 @@ def run_create(project: Project, client, *, audio_src: Path, spoken_text: str, e
     with project.lock:
         project.data["pip_frame"] = pip_frame_key(pip_frame, project.data.get("pip_frame"))
         project.data["bubble"] = bubble_mode_key(bubble, project.data.get("bubble"))
+        project.data["visual_style"] = visual_style_key(visual_style, project.data.get("visual_style"))
     project.save()
     if cancel.is_set():
         raise Cancelled()
@@ -4505,8 +4540,10 @@ def write_page(project: Project, compiled: dict, mode: str, name: str) -> Path:
     page.parent.mkdir(parents=True, exist_ok=True)
     host = project.host()
     frame, bubble = look_of(project.data, host)
+    style = visual_style_key(None, project.data.get("visual_style"))
+    visual = imagery_for_page(project.dir, compiled.get("slides") or [], style)
     page.write_text(page_html(compiled, mode=mode, title=project.data.get("title") or "Explainer",
-                              host=host, pip_frame=frame, bubble=bubble), encoding="utf-8")
+                              host=host, pip_frame=frame, bubble=bubble, visual=visual), encoding="utf-8")
     return page
 
 

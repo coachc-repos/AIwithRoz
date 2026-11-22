@@ -10447,6 +10447,7 @@ def _xv_state(p) -> dict:
         "span": d.get("span"), "host": None,
         "pip_frame": _xv.pip_frame_key(None, ((d.get("host") or {}).get("pip_frame") or d.get("pip_frame"))),
         "bubble": _xv.bubble_mode_key(None, d.get("bubble")),
+        "visual_style": _xv.visual_style_key(None, d.get("visual_style")),
         "youtube": _xv.yt_public(p),
     }
     host = p.host()
@@ -10501,6 +10502,8 @@ def explainer_options():
                     "presenters": _xv_presenters(title, [v["seconds"] for v in voiceovers]),
                     "host_shares": _xv.HOST_SHARES, "pip_frames": list(_xv.PIP_FRAME_MODES),
                     "bubble_modes": list(_xv.BUBBLE_MODES),
+                    "visual_styles": list(_xv.VISUAL_STYLES),
+                    "imagery_grok": bool(_xv.grok_key_present()),
                     "chrome": bool(_xv.find_chrome()), "claude": bool((os.getenv("ANTHROPIC_API_KEY") or "").strip()),
                     "elevenlabs": bool(_eleven_key()), "model": _xv.MODEL_LABEL,
                     "render_workers": _xv.RENDER_WORKERS})
@@ -10585,6 +10588,7 @@ def explainer_start():
     share = _xv.host_share_key(data.get("share"))
     pip_frame = _xv.pip_frame_key(data.get("pip_frame"))
     bubble = _xv.bubble_mode_key(data.get("bubble"))
+    visual_style = _xv.visual_style_key(data.get("visual_style"))
     pid = _xv.new_project_id()
     folder = _get_run_output_dir(title) / "explainer" / pid
     folder.mkdir(parents=True, exist_ok=True)
@@ -10592,7 +10596,8 @@ def explainer_start():
     project.write("script.txt", script)
     project.write("spoken.txt", spoken)
     project.data.update(title=title, created=time.time(), voiceover=voiceover, text_source=source,
-                        model=_xv.MODEL, status="running", pip_frame=pip_frame, bubble=bubble)
+                        model=_xv.MODEL, status="running", pip_frame=pip_frame, bubble=bubble,
+                        visual_style=visual_style)
     project.save()
     counts = _xv.production_counts(script)
     logger.info(f"🎞️ Explainer video for {title[:60]!r}: {voiceover}, {len(spoken.split()):,} spoken words "
@@ -10606,7 +10611,7 @@ def explainer_start():
                               pauses=_audio_pauses, logos=logos, images_dir=_xv_images_dir(title),
                               cancel=cancel, status=status, log=_xv_log, test=test, presenter=presenter,
                               root=_get_run_output_dir(title, create=False), share=share,
-                              pip_frame=pip_frame, bubble=bubble)
+                              pip_frame=pip_frame, bubble=bubble, visual_style=visual_style)
 
     _xv.start_job(project, "create", job, _xv_log)
     return jsonify({"success": True, "project": pid, "state": _xv_state(project)})
@@ -10640,6 +10645,13 @@ def explainer_preview(pid):
         host = {**host, "video": (f"/api/explainer/{pid}/file?title={urllib.parse.quote(p.data.get('title') or '')}"
                                   f"&path={urllib.parse.quote(host['proxy'])}&v={int(host.get('created') or 0)}")}
     compiled = p.compile(n)
+    visual_style = _xv.visual_style_key(None, p.data.get("visual_style"))
+    visual = _xv.imagery_for_page(p.dir, compiled.get("slides") or [], visual_style)
+    _vstats = visual.get("stats") or {}
+    if _vstats:
+        logger.info(f"🖼️ Explainer pictures ({visual.get('style')}): "
+                    f"{_vstats.get('grok', 0)} generated, {_vstats.get('painted', 0)} painted, "
+                    f"{_vstats.get('cache_hits', 0)} from cache")
     quote_title = urllib.parse.quote(p.data.get("title") or "")
 
     def _clip_url(rel, _pid=pid, _title=quote_title):
@@ -10650,7 +10662,7 @@ def explainer_preview(pid):
         origin = ""
     page = _xv.page_html(compiled, mode="preview", title=p.data.get("title") or "Explainer", host=host,
                          pip_frame=frame, bubble=bubble, clips=_xv.preview_clip_payloads(p, compiled, _clip_url),
-                         media_origin=origin)
+                         media_origin=origin, visual=visual)
     resp = Response(page, mimetype="text/html")
     resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -10958,15 +10970,19 @@ def explainer_host(pid):
     if _xv.job_running(p.id):
         return jsonify({"success": False, "error": "Wait for the running job to finish."}), 409
     host = p.host()
-    if "pip_frame" in data or "bubble" in data:
+    if "pip_frame" in data or "bubble" in data or "visual_style" in data:
         if "pip_frame" in data and data.get("pip_frame") not in _xv.PIP_FRAME_MODES:
             return jsonify({"success": False, "error": "Unknown corner frame."}), 400
         if "bubble" in data and data.get("bubble") not in _xv.BUBBLE_MODES:
             return jsonify({"success": False, "error": "Unknown guide setting."}), 400
+        if "visual_style" in data and data.get("visual_style") not in _xv.VISUAL_STYLES:
+            return jsonify({"success": False, "error": "Unknown picture style."}), 400
         if not any(k in data for k in ("focus", "share", "remove", "source")):
             with p.lock:
                 if "bubble" in data:
                     p.data["bubble"] = data["bubble"]
+                if "visual_style" in data:
+                    p.data["visual_style"] = data["visual_style"]
                 if "pip_frame" in data:
                     p.data["pip_frame"] = data["pip_frame"]
                     if host:

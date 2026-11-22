@@ -130,11 +130,124 @@
         ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r);
         ctx.closePath();
     }
+    // Picture treatment. classic keeps the particle field below. rich and
+    // cinematic draw cached stills (and, for cinematic, depth layers) behind
+    // the slide HTML, then a grade. Type and motion stay on the slides.
+    var VISUAL = CFG.visual || { style: 'classic', plates: [] };
+    var GRADE = VISUAL.grade || {};
+    (VISUAL.plates || []).forEach(function (p) {
+        (p.layers || []).forEach(function (L) {
+            var im = document.createElement('img');
+            im.alt = '';
+            im.src = L.uri;
+            im.style.cssText = 'position:absolute; left:-4px; top:-4px; width:1px; height:1px; opacity:0; pointer-events:none;';
+            stage.appendChild(im);
+            L.im = im;
+        });
+    });
+    if (VISUAL.grain) {
+        var grainIm = document.createElement('img');
+        grainIm.alt = '';
+        grainIm.src = VISUAL.grain;
+        grainIm.style.cssText = 'position:absolute; left:-4px; top:-4px; width:1px; height:1px; opacity:0; pointer-events:none;';
+        stage.appendChild(grainIm);
+        VISUAL.grainIm = grainIm;
+    }
+    function drawCover(im, z, ox, oy, alpha) {
+        if (!im || !im.complete || !im.naturalWidth || alpha <= 0) return;
+        var scale = Math.max(1920 / im.naturalWidth, 1080 / im.naturalHeight) * z;
+        var w = im.naturalWidth * scale, h = im.naturalHeight * scale;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(im, 960 - w / 2 + ox, 540 - h / 2 + oy, w, h);
+        ctx.restore();
+    }
+    function plateAlpha(p, t) {
+        var a0 = +p.t0, a1 = +p.t1, fade = 0.4;
+        if (t < a0 || t >= a1 + fade) return 0;
+        var a = 1;
+        if (t < a0 + fade && a0 > 0.05) a = (t - a0) / fade;
+        if (t >= a1) a = Math.min(a, 1 - (t - a1) / fade);
+        return a < 0 ? 0 : a;
+    }
+    function drawGrain(t) {
+        var im = VISUAL.grainIm, a = +GRADE.grain || 0;
+        if (!im || !im.complete || !im.naturalWidth || a <= 0) return;
+        ctx.save();
+        ctx.globalAlpha = Math.min(0.45, a);
+        var s = 256, ox = Math.floor(t * 37) % s, oy = Math.floor(t * 21) % s;
+        for (var y = -s; y < 1080; y += s) {
+            for (var x = -s; x < 1920; x += s) ctx.drawImage(im, x + ox, y + oy, s, s);
+        }
+        ctx.restore();
+    }
+    function drawGrade(t) {
+        var veil = +GRADE.veil || 0;
+        if (veil > 0) {
+            for (var i = 0; i < 16; i++) {
+                ctx.fillStyle = 'rgba(5,8,14,' + (veil * Math.pow(1 - i / 16, 1.45)).toFixed(3) + ')';
+                ctx.fillRect(0, i * 42, 1920, 42);
+            }
+        }
+        var warm = +GRADE.warm || 0;
+        if (warm > 0) {
+            var rings = [240, 150, 80];
+            for (var r = 0; r < rings.length; r++) {
+                ctx.fillStyle = 'rgba(255,186,110,' + (0.09 * warm * (1 - r / rings.length)).toFixed(3) + ')';
+                ctx.beginPath();
+                ctx.ellipse(1520, 840, rings[r] * 1.35, rings[r], 0, 0, 6.283);
+                ctx.fill();
+            }
+        }
+        var shaft = +GRADE.shaft || 0;
+        if (shaft > 0) {
+            var shift = (t % 7) * 8;
+            ctx.fillStyle = 'rgba(255,214,160,' + (0.09 * shaft).toFixed(3) + ')';
+            ctx.beginPath();
+            ctx.moveTo(1340 + shift, -20); ctx.lineTo(1580 + shift, -20);
+            ctx.lineTo(1060 + shift, 1100); ctx.lineTo(840 + shift, 1100);
+            ctx.fill();
+        }
+        var vig = +GRADE.vignette || 0;
+        if (vig > 0) {
+            for (var e = 0; e < 14; e++) {
+                ctx.fillStyle = 'rgba(0,0,0,' + (vig * Math.pow(e / 14, 1.6) * 0.5).toFixed(3) + ')';
+                var m = e * 11;
+                ctx.fillRect(0, 0, 1920, m + 8);
+                ctx.fillRect(0, 1080 - (m + 8), 1920, m + 8);
+                ctx.fillRect(0, 0, m + 8, 1080);
+                ctx.fillRect(1920 - (m + 8), 0, m + 8, 1080);
+            }
+        }
+        drawGrain(t);
+    }
+    function drawRichBg(t) {
+        ctx.fillStyle = '#090c12';
+        ctx.fillRect(0, 0, 1920, 1080);
+        var plates = VISUAL.plates || [];
+        for (var i = 0; i < plates.length; i++) {
+            var p = plates[i], a = plateAlpha(p, t);
+            if (a <= 0) continue;
+            var span = Math.max(0.001, (+p.t1) - (+p.t0));
+            var u = clamp((t - (+p.t0)) / span, 0, 1);
+            var layers = p.layers || [];
+            for (var j = 0; j < layers.length; j++) {
+                var L = layers[j];
+                var depth = +L.depth || 1;
+                var z = 1.08 + (+L.zoom || 0) * u;
+                drawCover(L.im, z, depth * (+L.dx || 0) * (u - 0.5), depth * (+L.dy || 0) * (u - 0.5), a * (+L.opacity || 1));
+            }
+        }
+        drawGrade(t);
+    }
     var dpr = 0;
     function drawBg(t, holes, frame) {
         var k = window.devicePixelRatio || 1;
         if (k !== dpr) { dpr = k; canvas.width = 1920 * k; canvas.height = 1080 * k; canvas.style.width = '1920px'; canvas.style.height = '1080px'; }
         ctx.setTransform(k, 0, 0, k, 0, 0);
+        if ((VISUAL.style || 'classic') !== 'classic' && (VISUAL.plates || []).length) {
+            drawRichBg(t);
+        } else {
         ctx.fillStyle = '#090c12';
         ctx.fillRect(0, 0, 1920, 1080);
         for (var r = 0; r < ROWS.length; r++) {
@@ -148,6 +261,7 @@
                 ctx.arc(x, y, row.rad, 0, 6.283);
             }
             ctx.fill();
+        }
         }
         // Presenter areas: cut out, as far as the slide showing them is faded in.
         // A framed corner cuts the device's screen, not the whole corner.
