@@ -214,6 +214,31 @@ def phrase_span(phrase: str, words: list, t0: float, t1: float) -> Optional[tupl
     return toks[best_i][1], toks[best_i + m - 1][2]
 
 
+def narration_lag(t0: float, clock: Optional[dict]) -> float:
+    """How far wall time sits ahead of the narration for a slide that starts at wall `t0`.
+
+    The intro holds the picture and the narration waits. Slides that begin
+    after that gap are later on the wall clock by `intro_dur`. Word timestamps
+    stay in narration time, so a cue found there is shifted back by this lag.
+    """
+    clock = clock or {}
+    try:
+        intro = float(clock.get("intro_dur") or 0)
+        hook = float(clock.get("hook_end") or 0)
+        start = float(t0)
+    except (TypeError, ValueError):
+        return 0.0
+    if intro <= 0.001 or start < hook + intro - 0.02:
+        return 0.0
+    return intro
+
+
+def to_narration(t0: float, t1: float, clock: Optional[dict] = None) -> tuple:
+    """(narration start, narration end, lag back to the wall clock)."""
+    lag = narration_lag(t0, clock)
+    return float(t0) - lag, float(t1) - lag, lag
+
+
 def line_cues(lines: list, chosen: list, words: list, t0: float, t1: float) -> list:
     """One cue per chosen line, in reading order.
 
@@ -479,7 +504,7 @@ def _removed(prefs: dict) -> set:
 
 
 def collect_marks(script: str, slides: list, words: list, wav_path=None, prefs: Optional[dict] = None,
-                  html: str = "") -> list:
+                  html: str = "", clock: Optional[dict] = None) -> list:
     """Every detected phrase, including ones that will not be drawn."""
     prefs = prefs or emphasis_prefs({})
     gone = _removed(prefs)
@@ -488,7 +513,8 @@ def collect_marks(script: str, slides: list, words: list, wav_path=None, prefs: 
     marks = []
     for slide in slides or []:
         sid = str(slide.get("id") or "")
-        t0, t1 = float(slide.get("t0") or 0), float(slide.get("t1") or 0)
+        wall0, wall1 = float(slide.get("t0") or 0), float(slide.get("t1") or 0)
+        t0, t1, lag = to_narration(wall0, wall1, clock)
         spoken = slide.get("spoken") or ""
         visible = _slide_plain(html, sid) or slide.get("text") or ""
         on = slide_enabled(prefs, sid)
@@ -504,7 +530,7 @@ def collect_marks(script: str, slides: list, words: list, wav_path=None, prefs: 
             span = phrase_span(phrase["phrase"], words, t0, t1)
             marks.append({
                 "slide": sid, "phrase": phrase["phrase"], "kind": phrase["kind"], "source": phrase["kind"],
-                "t": round(span[0], 3) if span else None, "on_slide": in_visible, "enabled": on,
+                "t": round(span[0] + lag, 3) if span else None, "on_slide": in_visible, "enabled": on,
             })
             count += 1
         if on and count < MAX_MARKS and levels:
@@ -515,9 +541,11 @@ def collect_marks(script: str, slides: list, words: list, wav_path=None, prefs: 
                 if count >= MAX_MARKS:
                     break
                 visible_hit = contains_phrase(visible, hit["phrase"])
+                heard = hit.get("t")
                 marks.append({
                     "slide": sid, "phrase": hit["phrase"], "kind": "audio", "source": "audio",
-                    "t": hit.get("t"), "on_slide": visible_hit, "enabled": on,
+                    "t": round(float(heard) + lag, 3) if heard is not None else None,
+                    "on_slide": visible_hit, "enabled": on,
                 })
                 count += 1
     for extra in prefs.get("added") or []:
@@ -530,12 +558,13 @@ def collect_marks(script: str, slides: list, words: list, wav_path=None, prefs: 
             continue
         if any(m["slide"] == sid and norm_phrase(m["phrase"]) == norm_phrase(phrase) for m in marks):
             continue
-        t0, t1 = float(slide.get("t0") or 0), float(slide.get("t1") or 0)
+        wall0, wall1 = float(slide.get("t0") or 0), float(slide.get("t1") or 0)
+        t0, t1, lag = to_narration(wall0, wall1, clock)
         span = phrase_span(phrase, words, t0, t1)
         visible = _slide_plain(html, sid) or slide.get("text") or ""
         marks.append({
             "slide": sid, "phrase": phrase[:80], "kind": "added", "source": "added",
-            "t": round(span[0], 3) if span else None,
+            "t": round(span[0] + lag, 3) if span else None,
             "on_slide": contains_phrase(visible, phrase), "enabled": slide_enabled(prefs, sid),
         })
     return marks
@@ -1043,8 +1072,12 @@ def _data_uri(path: Path) -> str:
     return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-def article_runtime(project, slides: list) -> list:
-    """What the page draws. The image is embedded so the renderer's file page can show it."""
+def article_runtime(project, slides: list, clock: Optional[dict] = None) -> list:
+    """What the page draws. The image is embedded so the renderer's file page can show it.
+
+    Cue times are wall-clock times. Word timestamps are narration times, so a
+    slide after the intro is searched without the pause and the hit is shifted back.
+    """
     by_id = {s.get("id"): s for s in slides or []}
     words = _words(project)
     out = []
@@ -1053,8 +1086,11 @@ def article_runtime(project, slides: list) -> list:
         path = project.dir / "articles" / Path(item.get("file") or "").name
         if not slide or not path.is_file():
             continue
-        cues = line_cues(item.get("lines") or [], item.get("chosen") or [], words,
-                         float(slide.get("t0") or 0), float(slide.get("t1") or 0))
+        wall0, wall1 = float(slide.get("t0") or 0), float(slide.get("t1") or 0)
+        narr0, narr1, lag = to_narration(wall0, wall1, clock)
+        cues = line_cues(item.get("lines") or [], item.get("chosen") or [], words, narr0, narr1)
+        for cue in cues:
+            cue["t"] = round(min(cue["t"] + lag, max(wall0 + ENTRANCE, wall1 - 0.05)), 3)
         out.append({
             "id": item.get("id"), "slide": slide.get("id"), "src": _data_uri(path),
             "w": int(item.get("width") or 0), "h": int(item.get("height") or 0),
@@ -1064,24 +1100,25 @@ def article_runtime(project, slides: list) -> list:
     return out
 
 
-def public_emphasis(project, slides: list, html: str = "") -> dict:
+def public_emphasis(project, slides: list, html: str = "", clock: Optional[dict] = None) -> dict:
     prefs = emphasis_prefs(project.data)
     wav = project.dir / "narration.wav"
-    marks = collect_marks(_script(project), slides, _words(project), wav if wav.is_file() else None, prefs, html)
+    marks = collect_marks(_script(project), slides, _words(project), wav if wav.is_file() else None, prefs, html, clock)
     return {"enabled": prefs["enabled"], "slides": prefs["slides"], "marks": marks}
 
 
-def emphasis_runtime(project, slides: list, html: str = "") -> dict:
+def emphasis_runtime(project, slides: list, html: str = "", clock: Optional[dict] = None) -> dict:
     prefs = emphasis_prefs(project.data)
     wav = project.dir / "narration.wav"
-    marks = collect_marks(_script(project), slides, _words(project), wav if wav.is_file() else None, prefs, html)
+    marks = collect_marks(_script(project), slides, _words(project), wav if wav.is_file() else None, prefs, html, clock)
     return {"marks": drawable_marks(marks, slides), "accent": ACCENT}
 
 
 def page_layers(project, compiled: dict) -> tuple:
     slides = compiled.get("slides") or []
     html = compiled.get("html") or ""
-    return article_runtime(project, slides), emphasis_runtime(project, slides, html)
+    clock = compiled.get("clock") or {}
+    return article_runtime(project, slides, clock), emphasis_runtime(project, slides, html, clock)
 
 
 def _mutate_prefs(project, fn) -> dict:

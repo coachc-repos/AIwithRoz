@@ -17,6 +17,7 @@ body {
 body.mode-render #viewport { background: var(--bg); }
 #stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); transform-origin: 0 0; }
 #bg { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
+#fx { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; z-index: 940; pointer-events: none; }
 #slides { position: absolute; inset: 0; }
 section.slide { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; overflow: hidden; display: none; font-size: 34px; line-height: 1.35; }
 section.slide.on { display: block; }

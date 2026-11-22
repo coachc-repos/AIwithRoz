@@ -103,6 +103,18 @@ def check_timing(mod) -> None:
     assert abs(by_id["l2"] - 13.0) < 0.05
     # The catalog line is not in the narration, so it takes an even slot.
     assert by_id["l4"] > by_id["l2"]
+    clock = {"intro_dur": 4.0, "hook_end": 2.0}
+    assert mod.narration_lag(1.2, clock) == 0.0
+    assert mod.to_narration(0.4, 1.8, clock) == (0.4, 1.8, 0.0)
+    narr0, narr1, lag = mod.to_narration(6.0, 10.0, clock)
+    assert (narr0, narr1, lag) == (2.0, 6.0, 4.0)
+    shifted = mod.line_cues(
+        [{"id": "l0", "text": "until it is honed", "x": 0.1, "y": 0.2, "w": 0.5, "h": 0.05}],
+        ["l0"],
+        [{"text": "until", "start": 3.2, "end": 3.5}, {"text": "it", "start": 3.5, "end": 3.6},
+         {"text": "is", "start": 3.6, "end": 3.7}, {"text": "honed", "start": 3.7, "end": 4.1}],
+        narr0, narr1)
+    assert abs(shifted[0]["t"] + lag - 7.2) < 0.05
     even = mod.line_cues(LINES, ["l0", "l2", "l3"], [], 10, 16)
     times = [c["t"] for c in even]
     assert times[0] == 10.9
@@ -388,6 +400,7 @@ def check_ui(app: str) -> None:
     html = (ROOT / app / "templates" / "index.html").read_text(encoding="utf-8")
     assert 'data-pane="articles"' in html
     assert "xvArticlePaste" in html and "xvEmphasisGlobal" in html
+    assert 'id="xvEmphasis"' in html and 'id="xvBookends"' in html and "xv-gap" in html
     js = (ROOT / app / "static" / "explainer" / "runtime.js").read_text(encoding="utf-8")
     assert "placeArticle" in js and "placeEmphasis" in js
     assert "textDecoration" not in js

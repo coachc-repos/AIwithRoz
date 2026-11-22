@@ -78,26 +78,43 @@
         }
         return best;
     }
+    function clipTail(t) {
+        if (!window.XVFx) return null;
+        var best = null;
+        for (var i = 0; i < CLIPS.length; i++) {
+            var c = CLIPS[i];
+            var extra = XVFx.clipExtra(c, slides);
+            if (extra > 0.02 && t >= +c.t1 && t < +c.t1 + extra) best = c;
+        }
+        return best;
+    }
     function placeClip(t, playing) {
         if (!clipVid) return null;
-        var c = clipAt(t);
+        var strict = clipAt(t);
+        var c = strict || clipTail(t);
         if (!c) {
             clipVid.style.visibility = 'hidden';
             if (!clipVid.paused) clipVid.pause();
             clipId = '';
+            if (window.XVFx) XVFx.clearMedia(clipVid);
             return null;
         }
         clipVid.style.visibility = '';
         clipLocal = Math.max(0, t - (+c.t0));
-        clipPlaying = !!playing;
+        // The overlap after the slide is picture only. Narration stays on the slide window.
+        clipPlaying = !!playing && !!strict;
         if (clipId !== c.id || clipVid.getAttribute('src') !== c.src) {
             clipId = c.id;
-            clipVid.muted = c.audio === 'mute';
-            clipVid.volume = c.audio === 'mix' ? 0.2 : 1;
             if (clipVid.getAttribute('src') !== c.src) clipVid.src = c.src;
         }
+        if (!strict) clipVid.muted = true;
+        else {
+            clipVid.muted = c.audio === 'mute';
+            clipVid.volume = c.audio === 'mix' ? 0.2 : 1;
+        }
         applyClip();
-        return c;
+        if (window.XVFx) XVFx.styleMedia(clipVid, c, t, !!strict);
+        return strict;
     }
 
     function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
@@ -263,6 +280,7 @@
                  host: HOST.on && LAYOUTS[el.dataset.host] ? el.dataset.host : '',
                  items: [], cams: [], prepped: false };
     });
+    if (window.XVFx) XVFx.prepare(slides);
 
     function baseTransform(e) {
         var b = e.style.transform || '';
@@ -630,20 +648,75 @@
     function placeDemos(t) {
         for (var i = 0; i < DEMOS.length; i++) {
             var d = DEMOS[i];
-            var on = t >= +d.t0 && t < +d.t1;
+            var extra = window.XVFx ? XVFx.clipExtra(d, slides) : 0;
+            var strict = t >= +d.t0 && t < +d.t1;
+            var on = strict || (extra > 0.02 && t >= +d.t1 && t < +d.t1 + extra);
             d.el.style.display = on ? 'block' : 'none';
+            if (!on) { if (window.XVFx) XVFx.clearMedia(d.el); continue; }
+            if (window.XVFx) XVFx.styleMedia(d.el, d, t, strict);
         }
     }
 
     function transitionOf(s) { var n = slides[s.i + 1]; return n ? n.trans : 'cut'; }
+    var BOOKS = CFG.bookends || {};
+    var bookPlaying = false;
+    function bookendVideo(key) {
+        var b = BOOKS[key];
+        if (!b || !b.src || MODE !== 'preview') return null;
+        if (b.el) return b.el;
+        var v = document.createElement('video');
+        v.playsInline = true;
+        v.preload = 'auto';
+        v.setAttribute('playsinline', '');
+        v.src = b.src;
+        v.style.cssText = 'position:absolute;left:0;top:0;width:1920px;height:1080px;object-fit:contain;background:#000;z-index:820;visibility:hidden;pointer-events:none;';
+        stage.appendChild(v);
+        b.el = v;
+        return v;
+    }
+    function placeBookends(t) {
+        ['intro', 'end'].forEach(function (key) {
+            var b = BOOKS[key];
+            var v = bookendVideo(key);
+            if (!b || !v) return;
+            var extra = (b.exit && +b.exit.dur) || 0;
+            var on = t >= +b.t0 - 0.001 && t < +b.t1 + extra;
+            v.style.visibility = on ? '' : 'hidden';
+            if (!on) { if (!v.paused) v.pause(); return; }
+            var local = Math.max(0, t - (+b.t0));
+            var o = 1;
+            if (b.enter && b.enter.style && local < +b.enter.dur) o = local / Math.max(0.05, +b.enter.dur);
+            var remain = (+b.t1 + extra) - t;
+            if (b.exit && b.exit.style && remain < +b.exit.dur) o = Math.min(o, Math.max(0, remain) / Math.max(0.05, +b.exit.dur));
+            v.style.opacity = o >= 0.999 ? '' : Math.max(0, o).toFixed(3);
+            v.muted = b.audio !== 'clip';
+            v.volume = b.audio === 'mix' ? 0.35 : 1;
+            var hold = v.duration && local >= v.duration - 0.05;
+            var want = hold ? Math.max(0, v.duration - 0.04) : local;
+            if (bookPlaying && !hold) {
+                if (v.paused) { v.currentTime = want; var pr = v.play(); if (pr && pr.catch) pr.catch(function () {}); }
+                else if (Math.abs(v.currentTime - want) > 0.35) v.currentTime = want;
+            } else {
+                if (!v.paused) v.pause();
+                if (Math.abs((v.currentTime || 0) - want) > 0.08) v.currentTime = want;
+            }
+        });
+    }
+    function slideTail(s) {
+        if (BOOKS.intro && Math.abs(s.t1 - (+BOOKS.intro.t0)) < 0.08) return (BOOKS.intro.enter && +BOOKS.intro.enter.dur) || 0;
+        if (BOOKS.end && Math.abs(s.t1 - (+BOOKS.end.t0)) < 0.08) return (BOOKS.end.enter && +BOOKS.end.enter.dur) || 0;
+        return window.XVFx ? XVFx.tail(s, slides, TR) : (transitionOf(s) === 'cut' ? 0 : TR);
+    }
 
     var active = [];
     function seek(t) {
         t = clamp(+t || 0, 0, DUR);
+        var fx = window.XVFx ? XVFx.active(slides, t) : null;
+        if (window.XVFx) XVFx.current = fx;
         var vis = [], holes = {};
         for (var i = 0; i < slides.length; i++) {
             var s = slides[i];
-            var tail = transitionOf(s) === 'cut' ? 0 : TR;
+            var tail = slideTail(s);
             if (t >= s.t0 && t < s.t1 + tail) vis.push(s);
             else if (s.t0 > t + 1) break;
         }
@@ -655,16 +728,22 @@
             prep(s);
             s.el.classList.add('on');
             var o = 1, ty = 0;
-            if (t < s.t0 + TR && s.i > 0 && s.trans !== 'cut') {
-                var q = E.out(clamp((t - s.t0) / TR, 0, 1));
-                o = q; ty = s.trans === 'push' ? (1 - q) * 70 : 0;
+            var inFx = fx && (s === fx.inn || s === fx.out);
+            if (inFx) {
+                o = XVFx.paint(s, fx);
+            } else {
+                if (window.XVFx) XVFx.clear(s);
+                if (t < s.t0 + TR && s.i > 0 && s.trans !== 'cut') {
+                    var q = E.out(clamp((t - s.t0) / TR, 0, 1));
+                    o = q; ty = s.trans === 'push' ? (1 - q) * 70 : 0;
+                }
+                if (t >= s.t1) {
+                    var q2 = E.inout(clamp((t - s.t1) / TR, 0, 1));
+                    o *= 1 - q2; ty -= transitionOf(s) === 'push' ? q2 * 90 : 0;
+                }
+                s.el.style.opacity = o >= 1 ? '' : o.toFixed(3);
+                s.el.style.transform = ty ? 'translateY(' + ty.toFixed(2) + 'px)' : '';
             }
-            if (t >= s.t1) {
-                var q2 = E.inout(clamp((t - s.t1) / TR, 0, 1));
-                o *= 1 - q2; ty -= transitionOf(s) === 'push' ? q2 * 90 : 0;
-            }
-            s.el.style.opacity = o >= 1 ? '' : o.toFixed(3);
-            s.el.style.transform = ty ? 'translateY(' + ty.toFixed(2) + 'px)' : '';
             if (s.host) holes[s.host] = Math.max(holes[s.host] || 0, o);
             s.el.style.zIndex = String(s.i + 1);
             for (var j = 0; j < s.items.length; j++) apply(s, s.items[j], t);
@@ -700,6 +779,8 @@
         }
         sceneMotion(t);
         placeDemos(t);
+        if (window.XVFx) XVFx.overlay(fx);
+        placeBookends(t);
         drawBg(t, holes, frame);
         placeHost(holes, frame);
         placeFrame(frame, frame ? (holes.pip || 0) : 0);
@@ -767,8 +848,10 @@
         var w = iw * s, h = ih * s;
         return { x: (bw - w) / 2, y: (bh - h) / 2, w: w, h: h };
     }
-    function markerPath(x, y, w, h, seed) {
-        var base = y + h + Math.max(4, h * 0.16);
+    function markerPath(x, y, w, h, seed, drop) {
+        // drop is how far below the line box the stroke sits. The article
+        // passes a larger drop so the thick stroke clears descenders.
+        var base = y + h + (drop == null ? Math.max(4, h * 0.16) : drop);
         var amp = Math.max(1.3, Math.min(7, h * 0.1));
         var d = '', n = 8;
         for (var i = 0; i <= n; i++) {
@@ -851,7 +934,9 @@
             var lw = (+ln.w) * fit.w;
             var lh = Math.max(8, (+ln.h) * fit.h);
             var seed = hash(String(ln.id || n));
-            svg += '<path data-pen="1" d="' + markerPath(lx, ly, lw, lh, seed) + '" data-p="' + clamp((t - (+ln.t)) / 0.42, 0, 1).toFixed(4) + '" data-sw="' + Math.max(7, Math.min(16, lh * 0.22)).toFixed(1) + '"/>';
+            var swLine = Math.max(7, Math.min(16, lh * 0.22));
+            var drop = swLine * 0.55 + Math.max(7, lh * 0.2);
+            svg += '<path data-pen="1" d="' + markerPath(lx, ly, lw, lh, seed, drop) + '" data-p="' + clamp((t - (+ln.t)) / 0.42, 0, 1).toFixed(4) + '" data-sw="' + swLine.toFixed(1) + '"/>';
         }
         artSvg.setAttribute('viewBox', '0 0 ' + bw + ' ' + bh);
         artSvg.innerHTML = svg;
@@ -1054,6 +1139,7 @@
             var d = ev.data || {};
             if (d.xv === 'seek') {
                 lastT = +d.t || 0;
+                bookPlaying = !!d.playing;
                 seek(lastT);
                 syncHost(lastT, !!d.playing);
                 var shown = placeClip(lastT, !!d.playing);
