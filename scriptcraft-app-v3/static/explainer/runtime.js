@@ -592,9 +592,9 @@
             }
             var smoke = g.querySelectorAll('.sc-smoke');
             for (var s = 0; s < smoke.length; s++) {
-                var rise = ((t * (hook ? 28 : 16) + s * 14) % 34);
+                var rise = ((t * (hook ? 10 : 6) + s * 5) % 12);
                 smoke[s].setAttribute('transform', 'translate(0 ' + (-rise).toFixed(2) + ')');
-                smoke[s].setAttribute('opacity', (0.15 + 0.4 * (1 - rise / 34)).toFixed(3));
+                smoke[s].setAttribute('opacity', (0.2 + 0.45 * (1 - rise / 12)).toFixed(3));
             }
         }
         var flows = document.querySelectorAll('.sc-flow');

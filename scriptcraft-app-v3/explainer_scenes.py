@@ -69,8 +69,9 @@ def _classic() -> dict:
     # scaled render cannot open a hairline of background between them.
     return {
         "house": """<rect x="36" y="80" width="148" height="70" fill="#6b4630"/>
+            <rect x="148" y="44" width="16" height="40" fill="#5a4030"/>
             <polygon points="14,88 110,30 206,88" fill="#8a5a32"/>
-            <rect x="150" y="46" width="16" height="36" fill="#5a4030"/>
+            <rect x="144" y="38" width="24" height="8" fill="#6a5040"/>
             <rect x="56" y="96" width="28" height="22" fill="#f5b83d"/>
             <rect x="124" y="96" width="28" height="22" fill="#1a2232"/>
             <rect x="92" y="112" width="28" height="38" fill="#241810"/>""",
@@ -91,9 +92,11 @@ def _classic() -> dict:
             <rect x="130" y="64" width="16" height="12" fill="#f5b83d"/>
             <rect x="48" y="118" width="36" height="28" fill="#2a4038"/>
             <rect x="96" y="118" width="36" height="28" fill="#2a4038"/>""",
-        "car": """<circle cx="74" cy="90" r="16" fill="#121418"/>
-            <circle cx="170" cy="90" r="16" fill="#121418"/>
-            <rect x="24" y="50" width="192" height="42" rx="10" fill="#2a3446"/>
+        "car": """<circle cx="74" cy="92" r="16" fill="#4a5568"/>
+            <circle cx="170" cy="92" r="16" fill="#4a5568"/>
+            <circle cx="74" cy="92" r="7" fill="#d5dbe3"/>
+            <circle cx="170" cy="92" r="7" fill="#d5dbe3"/>
+            <rect x="24" y="50" width="192" height="40" rx="10" fill="#2a3446"/>
             <polygon points="74,52 100,26 164,26 184,52" fill="#3a465c"/>""",
         "tree": """<rect x="52" y="78" width="18" height="64" fill="#6b4630"/>
             <circle cx="60" cy="64" r="40" fill="#2f6a3c"/>""",
@@ -113,10 +116,14 @@ def _classic() -> dict:
         "chart": """<polygon points="156,28 174,40 174,108 156,100" fill="#121820"/>
             <rect x="16" y="20" width="148" height="90" rx="6" fill="#1c2432"/>
             <polyline points="32,86 58,70 80,76 108,48 140,58" fill="none" stroke="#f5b83d" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>""",
-        "powerline": """<rect x="96" y="28" width="14" height="74" fill="#2a3446"/>
-            <rect x="78" y="24" width="50" height="8" fill="#3a465c"/>
-            <line x1="78" y1="28" x2="8" y2="78" stroke="#8a94a6" stroke-width="3" stroke-linecap="round"/>
-            <line x1="128" y1="28" x2="210" y2="72" stroke="#8a94a6" stroke-width="3" stroke-linecap="round"/>""",
+        "powerline": """<ellipse cx="110" cy="104" rx="22" ry="4" fill="#000" opacity="0.35"/>
+            <polygon points="98,92 122,92 128,104 92,104" fill="#3a465c"/>
+            <rect x="104" y="24" width="12" height="72" fill="#2a3446"/>
+            <rect x="64" y="20" width="92" height="8" fill="#3a465c"/>
+            <rect x="72" y="28" width="6" height="8" fill="#6a5430"/>
+            <rect x="142" y="28" width="6" height="8" fill="#6a5430"/>
+            <path d="M75 36 Q 30 62 0 52" fill="none" stroke="#8a94a6" stroke-width="3" stroke-linecap="round"/>
+            <path d="M145 36 Q 186 58 220 50" fill="none" stroke="#8a94a6" stroke-width="3" stroke-linecap="round"/>""",
     }
 
 
@@ -127,17 +134,16 @@ def _cinematic() -> dict:
     return {
         "house": """
             <ellipse cx="110" cy="158" rx="78" ry="8" fill="#000" opacity="0.35"/>
-            <polygon points="160,108 204,118 204,152 160,152" fill="#3a2a1e"/>
-            <rect x="32" y="90" width="140" height="62" fill="url(#scg-wall)"/>
+            <rect x="32" y="90" width="148" height="62" fill="url(#scg-wall)"/>
             <rect x="32" y="90" width="8" height="62" fill="#c4a078" opacity="0.45"/>
+            <rect x="156" y="48" width="16" height="48" fill="#5a4030"/>
+            <rect x="164" y="48" width="8" height="48" fill="#3a281c"/>
             <polygon points="16,96 110,24 204,96 188,110 32,110" fill="url(#scg-roof)"/>
-            <polygon points="110,24 204,96 188,110 118,40" fill="#3a2418"/>
-            <rect x="156" y="52" width="16" height="36" fill="#5a4030"/>
-            <rect x="164" y="52" width="8" height="36" fill="#3a281c"/>
-            <rect x="152" y="46" width="24" height="10" fill="#6a5040"/>
-            <polygon points="18,144 176,144 184,156 10,156" fill="#5c4634"/>
-            <rect x="24" y="108" width="8" height="46" fill="#2c2118"/>
-            <rect x="168" y="108" width="8" height="46" fill="#1a140e"/>
+            <polygon points="110,24 204,96 188,110" fill="#3a2418"/>
+            <rect x="152" y="40" width="24" height="12" fill="#6a5040"/>
+            <polygon points="28,144 180,144 188,156 20,156" fill="#5c4634"/>
+            <rect x="48" y="106" width="8" height="40" fill="#2c2118"/>
+            <rect x="152" y="106" width="8" height="40" fill="#1a140e"/>
             <rect x="84" y="114" width="28" height="42" fill="#2a1c14"/>
             <rect x="88" y="118" width="9" height="14" fill="#4a3424"/>
             <rect x="99" y="118" width="9" height="14" fill="#3a281c"/>
@@ -236,28 +242,32 @@ def _cinematic() -> dict:
             <rect class="sc-glow" x="54" y="152" width="10" height="5" fill="#3cc878"/>
             <rect x="98" y="144" width="44" height="24" fill="#24302c"/>
             <rect class="sc-glow" x="108" y="154" width="10" height="5" fill="#3cc878"/>
-            <rect x="248" y="40" width="8" height="36" fill="#3a4452"/>
-            <line x1="252" y1="42" x2="196" y2="16" stroke="#c5d0dc" stroke-width="3" stroke-linecap="round"/>""",
+            <rect x="228" y="36" width="8" height="28" fill="#3a4452"/>
+            <circle cx="232" cy="36" r="3" fill="#c5d0dc"/>
+            <line x1="232" y1="36" x2="206" y2="28" stroke="#c5d0dc" stroke-width="3" stroke-linecap="round"/>""",
         "car": """
-            <ellipse cx="120" cy="112" rx="92" ry="6" fill="#000" opacity="0.4"/>
-            <g class="sc-wheel" data-cx="74" data-cy="100">
-              <circle cx="74" cy="100" r="16" fill="#101216"/>
-              <circle cx="74" cy="100" r="8" fill="#d5dbe3"/>
-              <rect x="72" y="88" width="4" height="24" rx="1" fill="#f4f7fb"/>
-              <circle cx="74" cy="100" r="3" fill="#2a3138"/>
+            <ellipse cx="120" cy="114" rx="92" ry="6" fill="#000" opacity="0.4"/>
+            <g class="sc-wheel" data-cx="72" data-cy="100">
+              <circle cx="72" cy="100" r="15" fill="#5c6778"/>
+              <ellipse cx="66" cy="94" rx="6" ry="4" fill="#9aa6b8" opacity="0.7"/>
+              <circle cx="72" cy="100" r="8" fill="#e6edf4"/>
+              <rect x="70" y="88" width="4" height="24" rx="1" fill="#f7f9fb"/>
+              <circle cx="72" cy="100" r="3" fill="#2c343c"/>
             </g>
-            <g class="sc-wheel" data-cx="168" data-cy="100">
-              <circle cx="168" cy="100" r="16" fill="#101216"/>
-              <circle cx="168" cy="100" r="8" fill="#d5dbe3"/>
-              <rect x="166" y="88" width="4" height="24" rx="1" fill="#f4f7fb"/>
-              <circle cx="168" cy="100" r="3" fill="#2a3138"/>
+            <g class="sc-wheel" data-cx="166" data-cy="100">
+              <circle cx="166" cy="100" r="15" fill="#5c6778"/>
+              <ellipse cx="160" cy="94" rx="6" ry="4" fill="#9aa6b8" opacity="0.7"/>
+              <circle cx="166" cy="100" r="8" fill="#e6edf4"/>
+              <rect x="164" y="88" width="4" height="24" rx="1" fill="#f7f9fb"/>
+              <circle cx="166" cy="100" r="3" fill="#2c343c"/>
             </g>
-            <path d="M22 74 C22 68 44 66 70 68 L92 48 C100 42 114 42 156 44 L186 68 L214 70 L214 86 C214 92 206 92 196 92 L44 92 C32 92 22 88 22 82 Z" fill="url(#scg-body)"/>
-            <path d="M98 52 L126 50 L118 74 L84 76 Z" fill="url(#scg-glass)"/>
-            <path d="M132 50 L156 48 L172 74 L122 76 Z" fill="#163044"/>
-            <path d="M104 54 L116 53 L112 64 L98 66 Z" fill="#fff" opacity="0.45"/>
-            <rect x="196" y="76" width="14" height="10" rx="2" fill="#ffe7a8"/>
-            <rect x="28" y="78" width="12" height="8" rx="2" fill="#e85d5d"/>""",
+            <path d="M26 78 C26 68 50 64 74 66 L96 46 C106 38 120 38 154 40 L184 62 L212 66 L212 84 C212 92 204 92 196 92 L184 92 A 22 18 0 0 0 148 92 L90 92 A 22 18 0 0 0 54 92 L36 92 C28 92 26 86 26 80 Z" fill="url(#scg-body)"/>
+            <path d="M102 52 L130 48 L122 74 L88 76 Z" fill="url(#scg-glass)"/>
+            <path d="M106 54 L118 52 L114 64 L100 66 Z" fill="#fff" opacity="0.45"/>
+            <path d="M138 52 L170 60 L162 76 L130 74 Z" fill="url(#scg-glass)"/>
+            <path d="M144 56 L160 60 L156 68 L140 66 Z" fill="#fff" opacity="0.35"/>
+            <rect x="194" y="74" width="14" height="10" rx="2" fill="#ffe7a8"/>
+            <rect x="32" y="76" width="12" height="8" rx="2" fill="#e85d5d"/>""",
         "tree": """
             <ellipse cx="70" cy="158" rx="34" ry="6" fill="#000" opacity="0.32"/>
             <polygon points="58,96 50,156 86,156 78,96" fill="#5a3a24"/>
@@ -278,7 +288,7 @@ def _cinematic() -> dict:
             <rect x="176" y="40" width="12" height="72" fill="#3a342e"/>
             <rect x="164" y="34" width="28" height="10" fill="#6a6058"/>
             <g class="sc-smoke">
-              <ellipse cx="178" cy="36" rx="10" ry="7" fill="#d5dee8" opacity="0.55"/>
+              <ellipse cx="178" cy="40" rx="9" ry="6" fill="#d5dee8" opacity="0.6"/>
             </g>
             <rect x="34" y="102" width="26" height="18" fill="#1a140e"/>
             <rect class="sc-glow" x="36" y="104" width="22" height="14" fill="#ffc56a"/>
@@ -315,13 +325,18 @@ def _cinematic() -> dict:
             <polyline points="34,82 54,68 74,74 98,50 122,58 138,44" fill="none" stroke="#f5b83d" stroke-width="8" stroke-linejoin="round" stroke-linecap="round" opacity="0.25"/>
             <polyline points="34,80 54,66 74,72 98,48 122,56 138,42" fill="none" stroke="#f5b83d" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>""",
         "powerline": """
-            <rect x="96" y="30" width="16" height="74" fill="#2a3448"/>
-            <rect x="96" y="30" width="5" height="74" fill="#8aa0bc" opacity="0.45"/>
-            <rect x="78" y="24" width="52" height="10" fill="#4a5c78"/>
-            <line x1="80" y1="29" x2="8" y2="78" stroke="#d5dee8" stroke-width="3" stroke-linecap="round"/>
-            <line x1="128" y1="29" x2="210" y2="70" stroke="#d5dee8" stroke-width="3" stroke-linecap="round"/>
-            <rect x="92" y="46" width="14" height="6" fill="#6a5430"/>
-            <rect x="92" y="62" width="14" height="6" fill="#6a5430"/>""",
+            <ellipse cx="110" cy="104" rx="26" ry="5" fill="#000" opacity="0.35"/>
+            <polygon points="96,94 124,94 132,106 88,106" fill="#3a4458"/>
+            <rect x="102" y="22" width="16" height="76" fill="#2a3448"/>
+            <rect x="102" y="22" width="5" height="76" fill="#8aa0bc" opacity="0.45"/>
+            <rect x="58" y="18" width="104" height="10" fill="#4a5c78"/>
+            <rect x="68" y="28" width="8" height="12" rx="2" fill="#6a5430"/>
+            <rect x="104" y="28" width="8" height="12" rx="2" fill="#6a5430"/>
+            <rect x="144" y="28" width="8" height="12" rx="2" fill="#6a5430"/>
+            <path d="M72 40 Q 34 62 0 50" fill="none" stroke="#d5dee8" stroke-width="3" stroke-linecap="round"/>
+            <path d="M72 40 Q 28 84 0 92" fill="none" stroke="#d5dee8" stroke-width="3" stroke-linecap="round"/>
+            <path d="M152 40 Q 188 62 220 50" fill="none" stroke="#d5dee8" stroke-width="3" stroke-linecap="round"/>
+            <path d="M152 40 Q 194 84 220 92" fill="none" stroke="#d5dee8" stroke-width="3" stroke-linecap="round"/>""",
     }
 
 
