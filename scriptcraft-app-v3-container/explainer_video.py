@@ -1886,26 +1886,24 @@ def save_channel_bookend(kind: str, src: Optional[Path] = None, *, start=0, end=
     return {**rec, "kind": kind, "file": str(video) if video.is_file() else ""}
 
 
-def _is_hook_slide(slide: dict, hook_until: Optional[float]) -> bool:
-    label = f"{slide.get('section') or ''} {slide.get('section_key') or ''} {slide.get('role') or ''}"
-    if _HOOK_RE.search(label) or str(slide.get("role") or "") == "hook":
-        return True
+def _is_hook_slide(slide: dict, hook_until: Optional[float] = None) -> bool:
+    """A slide of the hook section, not every slide that happens to precede the first chapter.
+
+    `hook_until` is unused. Earlier code treated that whole stretch as the hook,
+    so an intro landed after s04 when only s01 was the hook.
+    """
+    label = " ".join(str(slide.get(k) or "") for k in ("section", "section_key", "role", "kind"))
     if str(slide.get("kind") or "") == "chapter":
         return False
-    if hook_until is None:
-        return False
-    try:
-        t0, t1 = float(slide.get("t0") or 0), float(slide.get("t1") or 0)
-    except (TypeError, ValueError):
-        return False
-    return t0 < hook_until - 0.02 and t1 <= hook_until + 0.05
+    return bool(_HOOK_RE.search(label) or str(slide.get("role") or "") == "hook")
 
 
 def intro_anchor_index(slides: list, after: Optional[str] = None) -> int:
     """Index of the slide the intro follows.
 
-    An explicit slide id wins. Otherwise the last hook slide. With no hook,
-    that is the first slide (the intro follows slide 1).
+    An explicit slide id wins. Otherwise the last slide whose section is the
+    hook (or a cold open). Later slides before the first chapter are not the
+    hook. With no hook section, the intro follows slide 1.
     """
     slides = slides or []
     if not slides:

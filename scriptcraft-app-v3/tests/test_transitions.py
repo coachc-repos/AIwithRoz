@@ -480,6 +480,21 @@ def check_bookends(xv) -> None:
         {"id": "b", "kind": "slide", "section": "Markets", "section_key": "m", "t0": 3.0, "t1": 8.0, "text": "Second"},
     ]
     assert xv.intro_anchor_index(plain) == 0  # no hook: after slide 1
+    # Slides before the first chapter are not the hook. Only the hook section is.
+    opened = [
+        {"id": "s01", "kind": "scene", "section": "Hook", "section_key": "hook", "t0": 0.0, "t1": 2.0, "text": "Cold open"},
+        {"id": "s02", "kind": "slide", "section": "Setup", "section_key": "setup", "t0": 2.0, "t1": 4.0, "text": "Next"},
+        {"id": "s03", "kind": "slide", "section": "Setup", "section_key": "setup", "t0": 4.0, "t1": 6.0, "text": "More"},
+        {"id": "s04", "kind": "slide", "section": "Setup", "section_key": "setup", "t0": 6.0, "t1": 8.0, "text": "Still not the hook"},
+        {"id": "ch", "kind": "chapter", "section": "The drop", "section_key": "c1", "t0": 8.0, "t1": 9.0, "text": "Chapter"},
+    ]
+    assert xv.intro_anchor_index(opened) == 0
+    placed = {"html": "", "slides": [dict(s) for s in opened], "end": 9.0, "duration": 9.0,
+              "start": 0.0, "host_windows": [], "host_sections": [], "sections": ["Hook"]}
+    xv.apply_bookends(placed, intro={"source": "custom", "file": "/tmp/intro.mp4", "seconds": 2,
+                                    "start": 0, "end": 2, "audio": "mute", "label": "Intro"},
+                      end=None, at_end=False)
+    assert [s["id"] for s in placed["slides"][:3]] == ["s01", xv.INTRO_ID, "s02"]
     intro = {"source": "channel", "file": "/tmp/intro.mp4", "seconds": 5, "start": 1, "end": 3.5, "audio": "clip", "label": "Intro"}
     end = {"source": "channel", "file": "/tmp/end.mp4", "seconds": 4, "start": 0, "end": 2, "audio": "clip", "label": "End"}
     assert abs(xv.bookend_duration(intro) - 2.5) < 0.01
