@@ -80,17 +80,24 @@ def write_imagery_samples(folder) -> list:
         {"id": "chapter", "kind": "chapter", "t0": 5.0, "t1": 6.4},
         {"id": "grid", "kind": "scene", "t0": 6.4, "t1": 11.4},
         {"id": "street", "kind": "scene", "t0": 11.4, "t1": 16.4},
+        {"id": "bots", "kind": "scene", "t0": 16.4, "t1": 21.4, "spoken": "Lots of bots running"},
+        {"id": "tracker", "kind": "scene", "t0": 21.4, "t1": 26.4, "spoken": "One rule for every bot"},
+        {"id": "demo", "kind": "slide", "t0": 26.4, "t1": 31.0,
+         "spoken": "Let me show you how the bot sends the invoice.", "demo": "The invoice bot sending one invoice"},
     ]
     html = _sample_html()
-    compiled = {"html": html, "slides": slides, "duration": 16.4, "start": 0.0, "end": 16.4,
+    compiled = {"html": html, "slides": slides, "duration": 31.0, "start": 0.0, "end": 31.0,
                 "sections": ["Hook"], "host_windows": [], "host_sections": []}
     work = folder / "_pages"
     work.mkdir(parents=True, exist_ok=True)
     pages = {}
     for style in ("classic", "cinematic"):
         page = work / f"{style}.html"
+        demos = [{"slide": "demo", "t0": 26.4, "t1": 31.0, "label": "Demo video",
+                  "note": "The invoice bot sending one invoice"}] if style == "cinematic" else []
         page.write_text(ev.page_html(compiled, mode="render", title="Scene objects",
-                                     bubble="off", visual={"style": style}), encoding="utf-8")
+                                     bubble="off", visual={"style": style}, demos=demos),
+                        encoding="utf-8")
         pages[style] = page
     chrome = ev.find_chrome()
     if not chrome:
@@ -98,7 +105,8 @@ def write_imagery_samples(folder) -> list:
         note.write_text("Chrome was not available, so no stills were captured.\n", encoding="utf-8")
         shutil.rmtree(work, ignore_errors=True)
         return [note]
-    shots = [("hook", 2.4), ("datacenter", 8.8), ("street", 13.6)]
+    shots = [("hook", 2.4), ("datacenter", 8.8), ("street", 13.6),
+             ("bots", 19.2), ("tracker", 24.2), ("demo_empty", 28.2)]
     written = []
 
     async def grab():
@@ -106,6 +114,8 @@ def write_imagery_samples(folder) -> list:
             for style, path in pages.items():
                 await ch.open(path, 1.0, transparent=False)
                 for name, t in shots:
+                    if name == "demo_empty" and style != "cinematic":
+                        continue
                     dest = folder / f"{name}_{style}.png"
                     dest.write_bytes(await ch.frame(t))
                     written.append(dest)
@@ -117,13 +127,14 @@ def write_imagery_samples(folder) -> list:
     shutil.rmtree(work, ignore_errors=True)
     note = folder / "SOURCES.txt"
     note.write_text(
-        "Real headless-Chrome frames of the same three scenes.\n"
-        "hook_*.png at 2.4s, a close car and buildings, before the chapter card.\n"
-        "datacenter_*.png at 8.8s, the hall, houses, batteries and a power line.\n"
-        "street_*.png at 13.6s, cars, a factory and trees.\n"
-        "objects_compare.mp4 plays classic then cinematic for each scene, so the motion shows.\n"
-        "classic is the flat object. cinematic is the same placement with volume and motion.\n"
-        "No image was generated or mocked. Text cards are not in these frames.\n",
+        "Real headless-Chrome frames. No mocked pictures.\n"
+        "hook, datacenter and street: the same scene in classic (flat) and cinematic (volume).\n"
+        "edge_before.png / edge_after.png: zoomed crop of the street car before and after smoothing.\n"
+        "edge_4k.png: the same crop from a scale-2 capture, which is how the 4K render draws it.\n"
+        "bots_*.png and tracker_*.png: topic characters on the wave background.\n"
+        "objects_compare.mp4: the bots and the tracker, cinematic, while they come in.\n"
+        "demo_empty_cinematic.png: the preview placeholder. The final render does not draw it.\n"
+        "demo_filled.png: a slide whose placeholder was replaced by an uploaded clip.\n",
         encoding="utf-8")
     written.append(note)
     return written
@@ -181,7 +192,69 @@ def _sample_html() -> str:
         place("car", 80, 780, 460, 230, 1.5),
         place("car", 620, 830, 340, 170, 1.15),
     ]))
-    return hook + chapter + grid + street
+    bots = _bots_section()
+    tracker = _tracker_section()
+    demo = (
+        '<section class="slide kind-slide" id="demo" data-kind="slide" data-t0="26.400" data-t1="31.000" '
+        'data-sidx="0" data-slabel="DEMO" data-hud="on" data-transition="cut" data-tracker="" '
+        'data-demo="The invoice bot sending one invoice">'
+        '<div class="pad col gap-m"><div class="kicker">DEMO</div>'
+        '<h1 class="h2">Let me show you.</h1>'
+        '<div class="card" style="max-width:760px"><div class="h3">The invoice bot</div>'
+        '<div class="lead">Narration keeps going.</div></div></div></section>'
+    )
+    return hook + chapter + grid + street + bots + tracker + demo
+
+
+def _bots_section() -> str:
+    from explainer_scenes import BOT_COLORS, bot_card
+    items = [
+        ("circle", BOT_COLORS[0], "Invoice Agent", 140, 340, 0.25),
+        ("squircle", BOT_COLORS[1], "IG Carousel", 760, 340, 0.45),
+        ("blob", BOT_COLORS[2], "Content Bot", 1380, 340, 0.65),
+        ("squircle", BOT_COLORS[5], "Brand Partnership", 140, 700, 0.85),
+        ("drop", BOT_COLORS[4], "Inbox Triage", 760, 700, 1.05),
+        ("circle", BOT_COLORS[3], "Health Agent", 1380, 700, 1.25),
+    ]
+    cards = "".join(bot_card(*item) for item in items)
+    return (
+        '<section class="slide kind-scene" id="bots" data-kind="scene" data-t0="16.400" data-t1="21.400" '
+        'data-sidx="0" data-slabel="BOTS" data-hud="off" data-transition="cut" data-tracker="">'
+        '<div class="scene sc-open"><div class="pad">'
+        '<h1 class="h1" data-anim="words" data-t="+0.15">Lots of bots running</h1>'
+        + cards + '</div></div></section>'
+    )
+
+
+def _tracker_section() -> str:
+    from explainer_scenes import BOT_COLORS, bot, check_badge, connector
+    lines = "".join([
+        connector(960, 500, 340, 700, 0.7),
+        connector(960, 500, 960, 720, 0.85),
+        connector(960, 500, 1580, 700, 1.0),
+    ])
+    figs = "".join([
+        bot("blob", BOT_COLORS[2], 890, 300, 120, 1),
+        bot("circle", BOT_COLORS[0], 250, 720, 150, 1),
+        bot("squircle", BOT_COLORS[1], 880, 740, 150, 1),
+        bot("squircle", BOT_COLORS[5], 1500, 720, 150, 1),
+    ])
+    badges = "".join([
+        check_badge(400, 730, 1.3),
+        check_badge(1030, 750, 1.5),
+        check_badge(1650, 730, 1.7),
+    ])
+    return (
+        '<section class="slide kind-scene" id="tracker" data-kind="scene" data-t0="21.400" data-t1="26.400" '
+        'data-sidx="0" data-slabel="TRACKER" data-hud="off" data-transition="cut" data-tracker="">'
+        '<div class="scene sc-open">'
+        '<h1 class="h1" data-anim="words" data-t="+0.1" style="position:absolute; left:160px; top:70px; margin:0">One rule for every bot</h1>'
+        '<div class="sc-message" data-anim="fade" data-t="+0.35" style="position:absolute; left:520px; top:200px">'
+        'Ping me when you start, finish or get stuck</div>'
+        '<div class="sc-hub" data-anim="pop" data-t="+0.55" style="position:absolute; left:790px; top:450px">Agent Tracker</div>'
+        '<svg class="fill" viewBox="0 0 1920 1080" style="position:absolute; inset:0">'
+        f'{lines}{figs}{badges}</svg></div></section>'
+    )
 
 
 def _sample_movie(folder, pages, chrome):
@@ -196,9 +269,7 @@ def _sample_movie(folder, pages, chrome):
         shutil.rmtree(frames)
     frames.mkdir()
     # (style, start, end) so the clip shows the entrance, then the settle.
-    spans = (("classic", 1.6, 3.3), ("cinematic", 1.6, 3.3),
-             ("classic", 8.0, 9.6), ("cinematic", 8.0, 9.6),
-             ("classic", 12.8, 14.4), ("cinematic", 12.8, 14.4))
+    spans = (("cinematic", 17.0, 19.4), ("cinematic", 22.0, 24.6))
     fps = 10
 
     async def grab():

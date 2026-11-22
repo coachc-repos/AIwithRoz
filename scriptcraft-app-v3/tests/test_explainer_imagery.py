@@ -96,11 +96,65 @@ def test_text_slide_markup_is_unchanged_and_cards_are_not_restyled():
     assert "data:image/jpeg" not in cine
 
 
+def test_bots_pills_and_smooth_edges():
+    card = sc.bot_card("drop", "#a07858", "Inbox Triage", 10, 20, 0.4)
+    assert "Inbox Triage" in card and "#sc-bot-drop" in card and "sc-pill" in card
+    assert "geometricPrecision" in sc.sprite("cinematic")
+    assert "crispEdges" not in sc.sprite("cinematic")
+    assert "sc-eye" in sc.sprite("cinematic")
+    line = sc.connector(0, 0, 100, 40, 0.5)
+    assert "stroke-dasharray=\"2 8\"" in line and "stroke-linecap=\"round\"" in line
+
+
+def test_demo_placeholder_and_local_upload(tmp_path):
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    project = ev.open_project(folder)
+    slides = [{"id": "s01", "t0": 1.0, "t1": 9.0, "spoken": "Let me show you the invoice bot.", "demo": ""}]
+    assert ev.demo_note(slides[0]["spoken"])
+    assert ev.demo_note("Markets fell today") == ""
+    assert ev.sync_demo_placeholders(project, slides) == 1
+    assert ev.sync_demo_placeholders(project, slides) == 0
+    clips = ev.load_youtube(project.data)["clips"]
+    assert clips[0]["status"] == "placeholder" and clips[0]["audio"] == "mute"
+    compiled = {"slides": slides}
+    assert ev.demo_payloads(compiled, clips, "render") == []
+    shown = ev.demo_payloads(compiled, clips, "preview")
+    assert shown and "show you" in shown[0]["note"].lower()
+    src = tmp_path / "rec.mp4"
+    src.write_bytes(b"fake")
+
+    def probe(_path):
+        return {"seconds": 4.0, "w": 640, "h": 360, "audio": False}
+
+    def run(cmd):
+        Path(cmd[-1]).parent.mkdir(parents=True, exist_ok=True)
+        Path(cmd[-1]).write_bytes(b"cut")
+
+    clip = ev.yt_add_upload(project, src, label="Invoice demo", start=0.5, end=2.5, probe=probe, run=run)
+    assert clip["status"] == "ready" and clip["audio"] == "mute"
+    assert abs(clip["seconds"] - 2.0) < 0.01
+    assert (project.dir / clip["file"]).read_bytes() == b"cut"
+    bad = tmp_path / "notes.txt"
+    bad.write_text("nope")
+    try:
+        ev.yt_add_upload(project, bad, probe=probe, run=run)
+        raise AssertionError("a text file is not a clip")
+    except ev.YoutubeError:
+        pass
+    ev.yt_assign(project, clip["id"], "s01", known={"s01"})
+    left = ev.load_youtube(project.data)["clips"]
+    assert any(c["id"] == clip["id"] and c["slide"] == "s01" for c in left)
+    assert not any(c.get("status") == "placeholder" and c.get("slide") == "s01" for c in left)
+    assert ev.demo_payloads(compiled, left, "preview") == []
+
+
 def test_runtime_does_not_restyle_text_and_does_move_scene_parts():
     js = (ROOT / "static" / "explainer" / "runtime.js").read_text(encoding="utf-8")
     css = (ROOT / "static" / "explainer" / "design.css").read_text(encoding="utf-8")
     assert "WAVE_ROWS" in js and "WAVE_SPEED" in js
     assert "ctx.fillStyle = '#090c12'" in js
     assert "isPopTarget" not in js and "xv-glint" not in js and "depthOfField" not in js
-    assert "sc-wheel" in js and "sc-glow" in js and "sc-smoke" in js
+    assert "sc-wheel" in js and "sc-glow" in js and "sc-smoke" in js and "sc-eye" in js
+    assert "geometricPrecision" in css and "crispEdges" not in css and "crispEdges" not in js
     assert "look-cinematic" not in css and "xv-glint" not in css

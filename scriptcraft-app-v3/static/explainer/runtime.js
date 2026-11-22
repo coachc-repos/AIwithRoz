@@ -502,7 +502,11 @@
             var amp = (hook ? 22 : 12) * depth;
             var dx = Math.sin(t * 0.33 + i) * amp;
             var dy = Math.cos(t * 0.21 + i) * amp * 0.18;
-            svg.style.transform = 'translate(' + dx.toFixed(2) + 'px,' + dy.toFixed(2) + 'px)';
+            // Move inside the SVG, in its own units, so the edges stay anti-aliased.
+            var bw = (svg.width && svg.width.baseVal && svg.width.baseVal.value) || 200;
+            var vw = (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width) || bw;
+            var ku = vw / (bw || 1);
+            g.setAttribute('transform', 'translate(' + (dx * ku).toFixed(2) + ' ' + (dy * ku).toFixed(2) + ')');
             var spin = (t * (hook ? 240 : 150)) % 360;
             var wheels = g.querySelectorAll('.sc-wheel');
             for (var w = 0; w < wheels.length; w++) {
@@ -514,12 +518,34 @@
                 var flick = Math.sin(t * (hook ? 4.2 : 2.4) + k * 1.7);
                 glows[k].setAttribute('opacity', flick > 0.82 ? '0.45' : '1');
             }
+            var eyes = g.querySelectorAll('.sc-eye');
+            for (var e = 0; e < eyes.length; e++) {
+                eyes[e].setAttribute('opacity', Math.sin(t * (hook ? 2.2 : 1.4) + e) > 0.92 ? '0.15' : '1');
+            }
             var smoke = g.querySelectorAll('.sc-smoke');
             for (var s = 0; s < smoke.length; s++) {
                 var rise = ((t * (hook ? 28 : 16) + s * 14) % 34);
                 smoke[s].setAttribute('transform', 'translate(0 ' + (-rise).toFixed(2) + ')');
                 smoke[s].setAttribute('opacity', (0.15 + 0.4 * (1 - rise / 34)).toFixed(3));
             }
+        }
+    }
+
+    var DEMOS = CFG.demos || [];
+    DEMOS.forEach(function (d) {
+        var el = document.createElement('div');
+        el.className = 'sc-demo';
+        el.innerHTML = '<div class="k">Demo video</div><div class="t"></div><div class="n"></div>';
+        el.querySelector('.t').textContent = d.label || 'Demo video';
+        el.querySelector('.n').textContent = d.note || 'Upload a screen recording in Clips. Narration keeps playing.';
+        stage.appendChild(el);
+        d.el = el;
+    });
+    function placeDemos(t) {
+        for (var i = 0; i < DEMOS.length; i++) {
+            var d = DEMOS[i];
+            var on = t >= +d.t0 && t < +d.t1;
+            d.el.style.display = on ? 'block' : 'none';
         }
     }
 
@@ -585,6 +611,7 @@
             }
         }
         sceneMotion(t);
+        placeDemos(t);
         drawBg(t, holes, frame);
         placeHost(holes, frame);
         placeFrame(frame, frame ? (holes.pip || 0) : 0);

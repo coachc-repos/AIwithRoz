@@ -1,7 +1,8 @@
-Real headless-Chrome frames of the same three scenes.
-hook_*.png at 2.4s, a close car and buildings, before the chapter card.
-datacenter_*.png at 8.8s, the hall, houses, batteries and a power line.
-street_*.png at 13.6s, cars, a factory and trees.
-objects_compare.mp4 plays classic then cinematic for each scene, so the motion shows.
-classic is the flat object. cinematic is the same placement with volume and motion.
-No image was generated or mocked. Text cards are not in these frames.
+Real headless-Chrome frames. No mocked pictures.
+hook, datacenter and street: the same scene in classic (flat) and cinematic (volume).
+edge_before.png / edge_after.png: zoomed crop of the street car before and after smoothing at 1080p.
+edge_4k.png: the same crop from a scale-2 capture, which is how the 4K render draws it.
+bots_*.png and tracker_*.png: topic characters on the wave background.
+objects_compare.mp4: the bots and the tracker, cinematic, while they come in.
+demo_empty_cinematic.png: the preview placeholder. The final render does not draw an empty slot.
+demo_filled.png: the same kind of slide after an uploaded clip is assigned. Narration stays; the clip is muted.

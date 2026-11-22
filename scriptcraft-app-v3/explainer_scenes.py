@@ -219,7 +219,7 @@ def _cinematic() -> dict:
             <circle cx="248" cy="32" r="3" fill="#8a94a6"/>""",
         "car": """
             <ellipse cx="120" cy="108" rx="100" ry="8" fill="#000" opacity="0.4"/>
-            <path d="M24 74 L70 74 L92 46 L156 44 L186 70 L216 70 L216 100 L24 100 Z" fill="url(#scg-body)"/>
+            <path d="M24 78 C24 74 40 70 70 72 L92 50 C100 44 112 44 156 46 L186 72 L214 74 L214 98 C214 104 208 106 200 106 L40 106 C28 106 24 100 24 94 Z" fill="url(#scg-body)" stroke="#1a2230" stroke-width="2" stroke-linejoin="round"/>
             <path d="M24 74 L70 74 L64 100 L24 100 Z" fill="#10151c"/>
             <path d="M96 50 L122 48 L114 72 L78 74 Z" fill="url(#scg-glass)"/>
             <path d="M128 48 L154 46 L168 72 L118 74 Z" fill="#163044"/>
@@ -315,9 +315,92 @@ def sprite(style: str) -> str:
         symbols.append(
             f'<symbol id="sc-{name}" viewBox="0 0 {bw} {bh}">{parts[name]}</symbol>'
         )
+    symbols.extend(_bot_symbols(style == "cinematic"))
     return (
-        '<svg id="sc-lib" width="0" height="0" style="position:absolute;left:0;top:0" '
-        'aria-hidden="true">' + defs + "".join(symbols) + "</svg>"
+        '<svg id="sc-lib" width="0" height="0" shape-rendering="geometricPrecision" '
+        'stroke-linejoin="round" stroke-linecap="round" '
+        'style="position:absolute;left:0;top:0" aria-hidden="true">'
+        + defs + "".join(symbols) + "</svg>"
+    )
+
+
+BOT_SHAPES = ("circle", "squircle", "blob", "drop")
+# Pastels from the reference sheet, used when a topic does not name a color.
+BOT_COLORS = ("#a78bfa", "#4c8dff", "#5dbea3", "#6bcb77", "#a07858", "#5b8def")
+
+
+def _bot_symbols(cinematic: bool) -> list:
+    """Friendly blob characters. Eyes sit a little to one side, like the reference."""
+    bodies = {
+        "circle": '<ellipse cx="80" cy="82" rx="54" ry="52" fill="currentColor"/>',
+        "squircle": '<rect x="26" y="28" width="108" height="104" rx="32" fill="currentColor"/>',
+        "blob": '<path d="M80 28 C118 26 140 52 136 86 C132 122 108 138 78 134 C40 128 22 100 30 70 C38 40 52 30 80 28 Z" fill="currentColor"/>',
+        "drop": '<path d="M80 24 C108 24 128 52 124 84 C120 118 100 142 80 142 C60 142 40 118 36 84 C32 52 52 24 80 24 Z" fill="currentColor"/>',
+    }
+    eyes = (
+        '<ellipse class="sc-eye" cx="86" cy="74" rx="6" ry="11" fill="#fff"/>'
+        '<ellipse class="sc-eye" cx="106" cy="74" rx="6" ry="11" fill="#fff"/>'
+    )
+    shade = (
+        '<ellipse cx="62" cy="64" rx="22" ry="16" fill="#fff" opacity="0.22"/>'
+        '<ellipse cx="98" cy="108" rx="28" ry="16" fill="#000" opacity="0.12"/>'
+        '<ellipse cx="80" cy="148" rx="46" ry="8" fill="#000" opacity="0.28"/>'
+    ) if cinematic else ""
+    out = []
+    for shape, body in bodies.items():
+        out.append(
+            f'<symbol id="sc-bot-{shape}" viewBox="0 0 160 160">{shade}{body}{eyes}</symbol>'
+        )
+    out.append(
+        '<symbol id="sc-check" viewBox="0 0 48 48">'
+        '<circle cx="24" cy="24" r="20" fill="#0b0f16" stroke="#f2f4f8" stroke-width="3"/>'
+        '<path d="M14 25 L21 32 L35 16" fill="none" stroke="#f2f4f8" stroke-width="4" '
+        'stroke-linecap="round" stroke-linejoin="round"/>'
+        '</symbol>'
+    )
+    return out
+
+
+def bot(shape: str, fill: str, x: float, y: float, size: float = 140, depth: float = 1) -> str:
+    """One character. `fill` is a CSS color. The label sits in HTML, not in the symbol."""
+    if shape not in BOT_SHAPES:
+        shape = "circle"
+    return (
+        f'<svg class="sc sc-bot" data-sc="bot" data-shape="{shape}" data-depth="{depth:g}" '
+        f'x="{x:g}" y="{y:g}" width="{size:g}" height="{size:g}" viewBox="0 0 160 160" '
+        f'shape-rendering="geometricPrecision" style="color:{fill}">'
+        f'<use href="#sc-bot-{shape}"/></svg>'
+    )
+
+
+def bot_card(shape: str, fill: str, label: str, left: float, top: float, delay: float) -> str:
+    """A character plus a dark pill, popping in at `delay` seconds after the slide starts."""
+    import html as _html
+    safe = _html.escape(label or "", quote=True)
+    return (
+        f'<div class="sc-fig" data-anim="pop" data-t="+{delay:.2f}" '
+        f'style="position:absolute; left:{left:g}px; top:{top:g}px; width:300px; text-align:center;">'
+        f'{bot(shape, fill, 80, 0, 140)}'
+        f'<div class="sc-pill">{safe}</div></div>'
+    )
+
+
+def check_badge(x: float, y: float, delay: float) -> str:
+    return (
+        f'<svg class="sc" data-sc="check" x="{x:g}" y="{y:g}" width="52" height="52" viewBox="0 0 48 48" '
+        f'data-anim="pop" data-t="+{delay:.2f}" shape-rendering="geometricPrecision">'
+        f'<use href="#sc-check"/></svg>'
+    )
+
+
+def connector(x1: float, y1: float, x2: float, y2: float, delay: float = 0.6) -> str:
+    """A dotted line that fades on. Coordinates are in the scene svg.
+
+    It stays dotted. The draw animation would replace the dots with a solid stroke.
+    """
+    return (
+        f'<line x1="{x1:g}" y1="{y1:g}" x2="{x2:g}" y2="{y2:g}" stroke="#8a94a6" stroke-width="3" '
+        f'stroke-dasharray="2 8" stroke-linecap="round" data-anim="fade" data-t="+{delay:.2f}"/>'
     )
 
 

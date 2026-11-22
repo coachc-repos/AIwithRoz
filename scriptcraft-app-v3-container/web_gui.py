@@ -10477,6 +10477,8 @@ def _xv_state(p) -> dict:
         out["stills"] = sorted(str(x.relative_to(p.dir)) for x in (p.dir / "stills").glob(f"sheet_v{n:03d}_*.png"))
         out["start"], out["end"] = comp["start"], comp["end"]
         out["host_windows"] = comp.get("host_windows") or []
+        if _xv.sync_demo_placeholders(p, comp.get("slides") or []):
+            out["youtube"] = _xv.yt_public(p)
     return out
 
 
@@ -10655,7 +10657,8 @@ def explainer_preview(pid):
         origin = ""
     page = _xv.page_html(compiled, mode="preview", title=p.data.get("title") or "Explainer", host=host,
                          pip_frame=frame, bubble=bubble, clips=_xv.preview_clip_payloads(p, compiled, _clip_url),
-                         media_origin=origin, visual={"style": visual_style})
+                         media_origin=origin, visual={"style": visual_style},
+                         demos=_xv.demo_payloads(compiled, _xv.load_youtube(p.data)["clips"], "preview"))
     resp = Response(page, mimetype="text/html")
     resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -10753,10 +10756,45 @@ def explainer_youtube(pid):
         elif action == "remove_video":
             _xv.yt_cancel((data.get("id") or "").strip())
             _xv.yt_delete_video(p, (data.get("id") or "").strip())
+        elif action == "upload":
+            return jsonify({"success": False, "error": "Upload the file with the clip form."}), 400
         else:
             return jsonify({"success": False, "error": "Unknown clip action."}), 400
     except _xv.YoutubeError as e:
         return jsonify({"success": False, "error": str(e)}), 400
+    return jsonify({"success": True, **_xv_state(p)})
+
+
+@app.route("/api/explainer/<pid>/clip-upload", methods=["POST"])
+def explainer_clip_upload(pid):
+    """A local screen recording becomes a clip. Optional In/Out trim. Narration stays (mute)."""
+    title = _xv_title()
+    p = _xv_project(title, pid)
+    if p is None:
+        return jsonify({"success": False, "error": "Project not found."}), 404
+    up = request.files.get("file")
+    if up is None or not up.filename:
+        return jsonify({"success": False, "error": "Choose an mp4, mov or webm."}), 400
+    name = re.sub(r"[^A-Za-z0-9._ -]+", "_", Path(up.filename).name).strip(" .")
+    if Path(name).suffix.lower() not in _xv.UPLOAD_EXTS:
+        return jsonify({"success": False, "error": "Upload an mp4, mov, webm or m4v."}), 400
+    folder = p.dir / "working" / "media"
+    folder.mkdir(parents=True, exist_ok=True)
+    raw = folder / ("src_" + uuid.uuid4().hex[:8] + Path(name).suffix.lower())
+    up.save(raw)
+    start = request.form.get("start") or "0"
+    end = request.form.get("end") or ""
+    try:
+        start_s = _xv.parse_timecode(start)
+        end_s = _xv.parse_timecode(end) if str(end).strip() else None
+        _xv.yt_add_upload(p, raw, label=(request.form.get("label") or Path(name).stem),
+                          start=start_s, end=end_s)
+    except _xv.YoutubeError as e:
+        raw.unlink(missing_ok=True)
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        raw.unlink(missing_ok=True)
+        return jsonify({"success": False, "error": "Could not read that video. " + str(e)[:180]}), 400
     return jsonify({"success": True, **_xv_state(p)})
 
 

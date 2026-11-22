@@ -226,6 +226,8 @@ DESIGN SYSTEM
 - Illustrated scenes: flat navy sky (the scene class), a few faint stars (small circles with data-loop="twinkle"), and the ground as one rect. Do not draw a house, building, car, tree, factory, data center, server, phone, chart monitor or power line out of boxes. Place the app's object instead, inside the scene svg:
   <svg class="sc" data-sc="house" data-depth="1" x="200" y="640" width="220" height="170" viewBox="0 0 220 170"><use href="#sc-house"/></svg>
   data-sc is one of: house, building, datacenter, car, tree, factory, server, phone, chart, powerline. Set that symbol's viewBox (house 220x170, building 190x240, datacenter 340x180, car 240x120, tree 140x170, factory 220x170, server 80x160, phone 90x170, chart 200x130, powerline 220x110) and size width/height to match. data-depth is 0.4 for something far, 1 for the middle, 1.6 or more for something close. The hook (before the first chapter card) should put more objects close to the camera. The app draws the flat or the detailed version. Logos inside scenes use <image data-logo>. A few short labels only.
+- Topic pictures, not a generic street: if the script is about agents, bots, apps or AI tools, build the scene from bot characters instead of houses and cars. A bot is <svg class="sc sc-bot" data-sc="bot" data-shape="circle|squircle|blob|drop" width="140" height="140" viewBox="0 0 160 160" style="color:#a78bfa"><use href="#sc-bot-circle"/></svg> (the href matches the shape; color is one pastel: #a78bfa purple, #4c8dff blue, #5dbea3 teal, #6bcb77 green, #a07858 brown). Under it, a <div class="sc-pill">Label from the narration</div>. For a grid ("lots of bots"), several of these with data-anim="pop" and data-t="+0.3", "+0.5", "+0.7"... For a hub ("one rule for every bot"), a <div class="sc-message">the rule</div>, one bot, a <div class="sc-hub">Agent Tracker</div>, dotted <line stroke-dasharray="1 10" data-anim="draw"> connectors, and <svg ... data-anim="pop"><use href="#sc-check"/></svg> badges. Labels are the script's own names, not invented ones. Other topics can use the same idea for a product: a phone or chart object plus a sc-pill with the product name.
+- Demo video: when the narration says it will show something ("let me show you", "here's how", a walkthrough), put data-demo="what the recording should show" on that section. Do not draw a fake screen recording. The app shows a placeholder the user can fill with their own video.
 
 COMPOSITION FORMAT
 Write each slide as one <section>, in time order, with nothing between sections:
@@ -377,6 +379,12 @@ YT_FORMAT = (
 )
 YT_AUDIO_MODES = ("mute", "clip", "mix")
 YT_AUDIO_DEFAULT = "mute"
+UPLOAD_EXTS = {".mp4", ".mov", ".webm", ".m4v"}
+_DEMO_HINT = re.compile(
+    r"\b(?:let me show you|here'?s how|i(?:'|’)ll show you|watch this|"
+    r"walk you through|step by step|on the screen)\b",
+    re.I,
+)
 # The narration keeps the clock. Documented here and in the clips tab.
 CLIP_TIMING_NOTE = (
     "The narration keeps the timing. A clip shorter than its slide plays once and "
@@ -903,6 +911,11 @@ def yt_assign(project: "Project", clip_id: str, slide: str, *, known: Optional[s
         if cur is None:
             raise YoutubeError("That clip is no longer in the list.")
         if _slide:
+            bundle["clips"] = [c for c in bundle["clips"]
+                               if not (c.get("id") != _id and c.get("slide") == _slide and c.get("status") == "placeholder")]
+            cur = next((c for c in bundle["clips"] if c.get("id") == _id), None)
+            if cur is None:
+                raise YoutubeError("That clip is no longer in the list.")
             for other in bundle["clips"]:
                 if other.get("id") != _id and other.get("slide") == _slide:
                     other["slide"] = ""
@@ -979,9 +992,120 @@ def yt_public(project: "Project") -> dict:
                       "start": c.get("start") or 0, "end": c.get("end") or 0, "seconds": c.get("seconds") or 0,
                       "audio": c.get("audio") or YT_AUDIO_DEFAULT, "slide": c.get("slide") or "",
                       "has_audio": bool(c.get("has_audio", True)), "status": c.get("status") or "",
-                      "error": c.get("error") or "", "file": rel,
+                      "error": c.get("error") or "", "file": rel, "note": c.get("note") or "",
+                      "source": c.get("source") or "",
                       "ready": bool(rel) and (project.dir / rel).is_file() and c.get("status") == "ready"})
     return {"videos": videos, "clips": clips, "timing": CLIP_TIMING_NOTE}
+
+
+def demo_note(spoken: str) -> str:
+    """A short note when this narration is asking for a screen recording."""
+    text = re.sub(r"\s+", " ", spoken or "").strip()
+    if not text or not _DEMO_HINT.search(text):
+        return ""
+    return text[:180]
+
+
+def demo_payloads(compiled: dict, clips: list, mode: str) -> list:
+    """Placeholder frames for the preview. The final render gets none, so an
+    empty slot falls back to the slide itself."""
+    if mode != "preview":
+        return []
+    filled = {c.get("slide") for c in clips or [] if c.get("status") == "ready" and c.get("slide")}
+    out = []
+    for s in (compiled or {}).get("slides") or []:
+        sid = s.get("id") or ""
+        if not sid or sid in filled:
+            continue
+        ph = next((c for c in clips or [] if c.get("slide") == sid and c.get("status") == "placeholder"), None)
+        note = ((ph or {}).get("note") or s.get("demo") or demo_note(s.get("spoken") or "")).strip()
+        if not note and not ph:
+            continue
+        out.append({"slide": sid, "t0": float(s.get("t0") or 0), "t1": float(s.get("t1") or 0),
+                    "label": "Demo video", "note": note[:180]})
+    return out
+
+
+def sync_demo_placeholders(project: "Project", slides: list) -> int:
+    """One empty Demo video clip per slide that asks for a recording.
+
+    A slide that already has any clip keeps it. Returns how many were added.
+    """
+    bundle = load_youtube(project.data)
+    taken = {c.get("slide") for c in bundle["clips"] if c.get("slide")}
+    new = []
+    for s in slides or []:
+        sid = s.get("id") or ""
+        note = (s.get("demo") or "").strip() or demo_note(s.get("spoken") or "")
+        if not sid or not note or sid in taken:
+            continue
+        new.append({"id": "yc_" + uuid.uuid4().hex[:8], "video": "", "label": "Demo video",
+                    "note": note[:180], "start": 0, "end": 0, "file": "", "seconds": 0,
+                    "width": 0, "height": 0, "has_audio": False, "audio": "mute",
+                    "slide": sid, "status": "placeholder", "error": "", "source": "demo",
+                    "created": time.time()})
+        taken.add(sid)
+    if not new:
+        return 0
+
+    def edit(bundle, _new=new):
+        have = {c.get("slide") for c in bundle["clips"] if c.get("slide")}
+        for rec in _new:
+            if rec["slide"] not in have:
+                bundle["clips"].append(rec)
+                have.add(rec["slide"])
+    _yt_mutate(project, edit)
+    return len(new)
+
+
+def yt_add_upload(project: "Project", src: Path, *, label: str = "", start: float = 0.0,
+                  end: Optional[float] = None, probe=None, run=None) -> dict:
+    """Save a local screen recording as a clip. `probe` and `run` stand in for
+    ffprobe and ffmpeg in tests. Audio defaults to mute so narration continues."""
+    src = Path(src)
+    if src.suffix.lower() not in UPLOAD_EXTS:
+        raise YoutubeError("Upload an mp4, mov, webm or m4v screen recording.")
+    if not src.is_file():
+        raise YoutubeError("That file is missing.")
+    info = (probe or probe_video)(src) or {}
+    dur = float(info.get("seconds") or 0)
+    if dur <= 0:
+        raise YoutubeError("Could not read that video.")
+    start = max(0.0, float(start or 0))
+    stop = dur if end is None else min(dur, float(end))
+    if stop - start < 0.2:
+        raise YoutubeError("The trim has to be at least 0.2 seconds and inside the video.")
+    vid = "up_" + uuid.uuid4().hex[:8]
+    vrel = f"working/media/{vid}{src.suffix.lower()}"
+    full = project.dir / vrel
+    full.parent.mkdir(parents=True, exist_ok=True)
+    if full.resolve() != src.resolve():
+        shutil.copyfile(src, full)
+    cid = "yc_" + uuid.uuid4().hex[:8]
+    crel = f"working/media/{cid}.mp4"
+    dest = project.dir / crel
+    cmd = cut_clip_cmd(full, dest, start, stop, audio=bool(info.get("audio", True)))
+    if run is not None:
+        run(cmd)
+    else:
+        _cut_range(full, dest, start, stop)
+    width, height = int(info.get("w") or info.get("width") or 0), int(info.get("h") or info.get("height") or 0)
+    has_audio = bool(info.get("audio", True))
+    video = {"id": vid, "url": "", "title": _clip_label(label) or src.name, "youtube_id": "",
+             "seconds": round(dur, 3), "width": width, "height": height, "has_audio": has_audio,
+             "status": "ready", "error": "", "progress": 1, "message": "", "file": vrel,
+             "source": "upload", "created": time.time()}
+    clip = {"id": cid, "video": vid, "label": _clip_label(label) or src.stem[:40],
+            "note": "", "start": round(start, 3), "end": round(stop, 3), "file": crel,
+            "seconds": round(stop - start, 3), "width": width, "height": height,
+            "has_audio": has_audio, "audio": "mute", "slide": "", "status": "ready",
+            "error": "", "source": "upload", "created": time.time()}
+
+    def add(bundle, _v=video, _c=clip):
+        bundle["videos"].append(_v)
+        bundle["clips"].append(_c)
+        return _c
+    return _yt_mutate(project, add)
 
 
 def preview_clip_payloads(project: "Project", compiled: dict, url_of: Callable[[str], str]) -> list:
@@ -2524,7 +2648,8 @@ def compile_composition(raw: str, timeline: Timeline, *, duration: float, plan: 
             idea = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body)).strip()[:140]
         slides_meta.append({"id": sid, "t0": t0, "t1": t1, "kind": kind, "section": label or "",
                             "idea": idea, "at": a.get("data-at") or "", "host": host, "warnings": slide_warn,
-                            "spoken": timeline.window_text(t0, t1)[:500]})
+                            "spoken": timeline.window_text(t0, t1)[:500],
+                            "demo": (a.get("data-demo") or "")[:180]})
         warnings.extend(slide_warn)
     # The user's presenter sections, inside this video's stretch. They win
     # over a slide's own presenter layout: the slide's window keeps only the
@@ -2575,7 +2700,8 @@ def compile_composition(raw: str, timeline: Timeline, *, duration: float, plan: 
 def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer",
               host: Optional[dict] = None, pip_frame: Optional[str] = None,
               bubble: Optional[str] = None, clips: Optional[list] = None,
-              media_origin: str = "", visual: Optional[dict] = None) -> str:
+              media_origin: str = "", visual: Optional[dict] = None,
+              demos: Optional[list] = None) -> str:
     """A self-contained page: design CSS, the compiled slides, the runtime.
     The runtime exposes __seek(t), __check() and __ready for the renderer;
     in preview mode it answers postMessage seeks from the dialog. With a
@@ -2602,6 +2728,7 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
                       "sections": compiled.get("sections") or [],
                       "asides": _aside_payloads(compiled.get("slides") or [], bubble),
                       "clips": clip_cfg, "visual": visual_cfg,
+                      "demos": demos or [],
                       "host": {"on": True, "layouts": HOST_LAYOUTS, "focus": float(host.get("focus", HOST_FOCUS)),
                                "video": video, "sections": compiled.get("host_sections") or [],
                                "fade": HOST_SECTION_FADE, "windows": windows,
@@ -4540,7 +4667,9 @@ def write_page(project: Project, compiled: dict, mode: str, name: str) -> Path:
     style = visual_style_key(None, project.data.get("visual_style"))
     page.write_text(page_html(compiled, mode=mode, title=project.data.get("title") or "Explainer",
                               host=host, pip_frame=frame, bubble=bubble,
-                              visual={"style": style}), encoding="utf-8")
+                              visual={"style": style},
+                              demos=demo_payloads(compiled, load_youtube(project.data)["clips"], mode)),
+                    encoding="utf-8")
     return page
 
 

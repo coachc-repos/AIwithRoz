@@ -12846,6 +12846,25 @@ Thank you for watching!`;
             if (downloading && !_xv.poll) _xv.poll = setInterval(xvRefresh, 2000);
             return d;
         }
+        async function xvClipUpload(ev) {
+            if (ev) ev.preventDefault();
+            const input = document.getElementById('xvUpFile');
+            if (!input || !input.files || !input.files[0]) { _xvStatus('Choose a video file first.', '#f87171'); return; }
+            const fd = new FormData();
+            fd.append('title', _xv.title);
+            fd.append('file', input.files[0]);
+            fd.append('start', (document.getElementById('xvUpStart') || {}).value || '0');
+            fd.append('end', (document.getElementById('xvUpEnd') || {}).value || '');
+            fd.append('label', (document.getElementById('xvUpLabel') || {}).value || '');
+            let d;
+            try { d = await (await fetch(_xvApi('/clip-upload'), { method: 'POST', body: fd })).json(); }
+            catch (e) { d = { success: false, error: e.message }; }
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Upload failed.'), '#f87171'); return; }
+            _xv.state = Object.assign(_xv.state || {}, d);
+            _xv.clipKey = '';
+            _xvRenderState(_xv.state);
+            _xvStatus('Uploaded. Assign it to a slide.', '#34d399');
+        }
         async function xvYtDownload() { await _xvYt({ action: 'download', url: (document.getElementById('xvYtUrl') || {}).value || '' }); }
         async function xvYtAdd() {
             const video = (document.getElementById('xvYtVideo') || {}).value || '';
@@ -12891,7 +12910,15 @@ Thank you for watching!`;
             const dis = running ? ' disabled' : '';
             const ready = (yt.videos || []).filter(v => v.status === 'ready');
             const audioOpts = [['mute', 'Mute (keep narration)'], ['clip', 'Clip audio only'], ['mix', 'Mix (ducked under narration)']];
-            let html = '<div class="xv-item"><span class="xv-label">YouTube video</span>'
+            let html = '<div class="xv-item"><span class="xv-label">Your screen recording</span>'
+                + '<div style="color:#64748b; font-size:0.78em; margin:2px 0 8px;">Upload an mp4, mov or webm. In and Out are optional (blank Out means the whole file). It is muted under the narration unless you change that. Assign it to a slide that says Demo video, or to any slide.</div>'
+                + '<form id="xvUpForm" onsubmit="xvClipUpload(event)" style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">'
+                + '<input id="xvUpFile" type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm,.m4v" class="xv-input" style="flex:1; min-width:160px;"' + dis + '>'
+                + '<input id="xvUpStart" class="xv-input" placeholder="In 0:00" style="width:84px;"' + dis + '>'
+                + '<input id="xvUpEnd" class="xv-input" placeholder="Out" style="width:84px;"' + dis + '>'
+                + '<input id="xvUpLabel" class="xv-input" placeholder="Label" style="width:120px;"' + dis + '>'
+                + '<button class="xv-btn small primary" type="submit"' + dis + '>Upload</button></form></div>'
+                + '<div class="xv-item"><span class="xv-label">YouTube video</span>'
                 + '<div style="color:#64748b; font-size:0.78em; margin:2px 0 8px;">Paste a public YouTube link. It is saved as an mp4 (up to 1080p) in this project’s working/media folder. Private and age-restricted videos are refused. ffmpeg has to be installed.</div>'
                 + '<div style="display:flex; gap:6px;"><input id="xvYtUrl" class="xv-input" placeholder="https://www.youtube.com/watch?v=…" onkeydown="if (event.key===\'Enter\') xvYtDownload()">'
                 + '<button class="xv-btn small primary" onclick="xvYtDownload()"' + dis + '>Download</button></div></div>';
@@ -12921,6 +12948,11 @@ Thank you for watching!`;
             html += (yt.clips || []).map(c => {
                 const on = slides.find(m => m.id === c.slide);
                 const where = c.slide ? (on ? 'On ' + c.slide : 'Was on ' + c.slide + ' (not in this version)') : 'Not on a slide';
+                if (c.status === 'placeholder') {
+                    return '<div class="xv-item"><div style="color:#fbbf24; font-weight:650;">Demo video · ' + _xvEsc(where) + '</div>'
+                        + '<div style="color:#94a3b8; font-size:0.78em; margin-top:4px;">' + _xvEsc(c.note || 'Upload a recording and assign it here.') + '</div>'
+                        + '<div style="color:#64748b; font-size:0.75em; margin-top:4px;">Shown in the preview until you fill it. The final render leaves this slide as designed if it is still empty.</div></div>';
+                }
                 return '<div class="xv-item" data-ytclip="' + _xvEsc(c.id) + '"><div style="display:flex; gap:6px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">'
                     + '<input class="xv-input" data-k="label" value="' + _xvEsc(c.label || '') + '" placeholder="Label" style="flex:1; min-width:80px;"' + dis + '>'
                     + '<input class="xv-input" data-k="start" value="' + _xvFmtT(c.start) + '" style="width:84px;"' + dis + '>'
