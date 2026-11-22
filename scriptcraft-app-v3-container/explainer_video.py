@@ -46,10 +46,11 @@ audio is muted under the narration (the default), replaces the narration, or
 is sidechain-ducked under it.
 
 Pictures: the particle waves stay on every style (denser and a little faster
-than the original field). visual_style classic is those waves. cinematic
-keeps the same type, figures and timing, and adds a short 3D entrance on the
-objects only, stronger on the hook (before the first chapter card). A saved
-"rich" means cinematic. See explainer_imagery.py.
+than the original field). Text slides are otherwise unchanged. visual_style
+classic draws scene objects as the old flat shapes. cinematic draws the same
+objects with volume, materials and motion (wheels, window glow, smoke,
+parallax), stronger on the hook. A saved "rich" means cinematic.
+See explainer_scenes.py.
 
 The module has no Flask dependency; web_gui.py wires the routes and passes in
 the Anthropic client, the ElevenLabs key and its pause detector.
@@ -180,6 +181,7 @@ from explainer_imagery import (  # noqa: E402
     page_visual,
     visual_style_key,
 )
+from explainer_scenes import sprite as scene_sprite  # noqa: E402
 
 
 class Cancelled(Exception):
@@ -221,7 +223,9 @@ DESIGN SYSTEM
 - The blend: presentation slides for stats, lists, definitions, timelines, comparisons and quotes; illustrated vector scenes for about a third of the runtime, for metaphor and story passages, drawn from the GROK IMAGINE briefs (not every brief needs a scene); a cold-open panorama with camera pans if the script describes one; a chapter card per section; the copyable asset (checklist or cheat sheet) as its own slide of kind asset.
 - Any slide where text alone would sit for more than about 8 seconds gets a supporting icon or small illustration (inline SVG).
 - Motion: headlines rise word by word, cards slide in, numbers count up, key figures pop or stamp (a ring burst on the biggest), charts draw or wipe on, bars grow from the bottom. Every element appears on the spoken words it illustrates and stays until the slide changes unless it is being swapped.
-- Illustrated scenes: flat navy sky (the scene class), a few faint stars (small circles with data-loop="twinkle"), a two-layer skyline of rects, and objects built from rects, polygons, ellipses and paths with 2-6px strokes and flat fills in the palette. Big readable silhouettes, a clear focal point, at most a few short labels. Logos inside scenes use <image data-logo>. Give each scene a little life: data-loop on a few elements, cued pops or draws on the story beats.
+- Illustrated scenes: flat navy sky (the scene class), a few faint stars (small circles with data-loop="twinkle"), and the ground as one rect. Do not draw a house, building, car, tree, factory, data center, server, phone, chart monitor or power line out of boxes. Place the app's object instead, inside the scene svg:
+  <svg class="sc" data-sc="house" data-depth="1" x="200" y="640" width="220" height="170" viewBox="0 0 220 170"><use href="#sc-house"/></svg>
+  data-sc is one of: house, building, datacenter, car, tree, factory, server, phone, chart, powerline. Set that symbol's viewBox (house 220x170, building 190x240, datacenter 340x180, car 240x120, tree 140x170, factory 220x170, server 80x160, phone 90x170, chart 200x130, powerline 220x110) and size width/height to match. data-depth is 0.4 for something far, 1 for the middle, 1.6 or more for something close. The hook (before the first chapter card) should put more objects close to the camera. The app draws the flat or the detailed version. Logos inside scenes use <image data-logo>. A few short labels only.
 
 COMPOSITION FORMAT
 Write each slide as one <section>, in time order, with nothing between sections:
@@ -2607,12 +2611,13 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
     csp = ("default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
            "script-src 'unsafe-inline'; font-src data:"
            + (("; media-src 'self'" + (f" {origin}" if origin else "")) if media else ""))
-    cls = f"mode-{mode}" + (" host-on" if host_on else "") + ("" if style == "classic" else f" look-{style}")
+    cls = f"mode-{mode}" + (" host-on" if host_on else "")
     return (f"<!doctype html><html class=\"{cls}\"><head><meta charset=\"utf-8\">"
             f"<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">"
             f"<title>{_html.escape(title)}</title><style>{css}</style></head>"
             f"<body class=\"{cls}\"><div id=\"viewport\"><div id=\"stage\">"
             "<canvas id=\"bg\" width=\"1920\" height=\"1080\"></canvas>"
+            f"{scene_sprite(style)}"
             f"<div id=\"slides\">{compiled['html']}</div>"
             "<div id=\"hud\"><div id=\"progress-track\"></div><div id=\"progress\"></div>"
             "<div id=\"hud-left\"></div><div id=\"hud-right\"></div></div>"

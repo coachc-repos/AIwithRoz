@@ -1,35 +1,20 @@
 """Picture treatment for explainer slides.
 
-The background stays the particle waves on every style. classic is those
-waves only. cinematic adds a short 3D entrance on the objects (cards, icons,
-charts, figures), stronger on the hook (every slide before the first chapter
-card) and quieter after. Nothing here calls an image model, and nothing
-replaces the waves with a still, a gradient, or a vignette.
-
-`rich` is an old name for this treatment. It maps to cinematic.
+The background stays the particle waves on every style. Text slides are
+otherwise unchanged. classic draws scene objects as flat shapes. cinematic
+draws the same objects with volume and motion. `rich` means cinematic.
 """
 from __future__ import annotations
 
 VISUAL_STYLES = ("classic", "cinematic")
 VISUAL_STYLE_DEFAULT = "classic"
-# Old projects may still say rich. That is the cinematic object entrance.
+# Old projects may still say rich. That is the detailed scene objects.
 _ALIASES = {"rich": "cinematic"}
 
 # The wave field used to be 20 rows at speed 1. Denser, and a little faster.
 # Both styles use these. The runtime reads them from the page config.
 WAVE_ROWS = 34
 WAVE_SPEED = 1.4
-
-# Entrance intensity. Rotations stay small so a card stays a thin panel
-# (the same idea as the device frames: light from the upper left, no thick
-# extrusion). z is a fly-in from farther away, in stage pixels. push is the
-# peak camera scale. dof is the blur, in px, on objects that have already
-# landed while another one is still entering.
-POP = {
-    "body": {"rot": 11, "z": 64, "overshoot": 1.04, "glint": 0.42, "dof": 0.7, "push": 1.022, "shadow": 0.42},
-    "hook": {"rot": 20, "z": 128, "overshoot": 1.08, "glint": 0.82, "dof": 1.35, "push": 1.05, "shadow": 0.62},
-}
-
 
 def visual_style_key(choice: str | None = None, saved: str | None = None) -> str:
     """Which picture treatment to draw.
@@ -69,15 +54,13 @@ def page_visual(style: str | None, slides=None) -> dict:
         "waves": {"rows": WAVE_ROWS, "speed": WAVE_SPEED},
         "hookUntil": hook_until(slides),
     }
-    if style == "cinematic":
-        out["pop"] = POP
     return out
 
 
 def write_imagery_samples(folder) -> list:
-    """Hook and body stills, plus a short mp4, from the real page in Chrome.
+    """Same three scenes in classic and cinematic, from headless Chrome.
 
-    Classic and cinematic, same slides. No image model.
+    A hook street, a data-center yard, and a street of cars. No image model.
     """
     import asyncio
     import shutil
@@ -93,19 +76,20 @@ def write_imagery_samples(folder) -> list:
                 old.unlink()
     folder.mkdir(parents=True, exist_ok=True)
     slides = [
-        {"id": "hook", "kind": "slide", "t0": 0.0, "t1": 4.6},
-        {"id": "chapter", "kind": "chapter", "t0": 4.6, "t1": 6.2},
-        {"id": "body", "kind": "slide", "t0": 6.2, "t1": 11.0},
+        {"id": "hook", "kind": "scene", "t0": 0.0, "t1": 5.0},
+        {"id": "chapter", "kind": "chapter", "t0": 5.0, "t1": 6.4},
+        {"id": "grid", "kind": "scene", "t0": 6.4, "t1": 11.4},
+        {"id": "street", "kind": "scene", "t0": 11.4, "t1": 16.4},
     ]
     html = _sample_html()
-    compiled = {"html": html, "slides": slides, "duration": 11.0, "start": 0.0, "end": 11.0,
+    compiled = {"html": html, "slides": slides, "duration": 16.4, "start": 0.0, "end": 16.4,
                 "sections": ["Hook"], "host_windows": [], "host_sections": []}
     work = folder / "_pages"
     work.mkdir(parents=True, exist_ok=True)
     pages = {}
     for style in ("classic", "cinematic"):
         page = work / f"{style}.html"
-        page.write_text(ev.page_html(compiled, mode="render", title="Object entrance",
+        page.write_text(ev.page_html(compiled, mode="render", title="Scene objects",
                                      bubble="off", visual={"style": style}), encoding="utf-8")
         pages[style] = page
     chrome = ev.find_chrome()
@@ -114,8 +98,7 @@ def write_imagery_samples(folder) -> list:
         note.write_text("Chrome was not available, so no stills were captured.\n", encoding="utf-8")
         shutil.rmtree(work, ignore_errors=True)
         return [note]
-    # Mid-entrance, while the first card is still in the air.
-    shots = [("hook", 0.72), ("body", 7.05), ("hook_landing", 1.4)]
+    shots = [("hook", 2.4), ("datacenter", 8.8), ("street", 13.6)]
     written = []
 
     async def grab():
@@ -123,8 +106,6 @@ def write_imagery_samples(folder) -> list:
             for style, path in pages.items():
                 await ch.open(path, 1.0, transparent=False)
                 for name, t in shots:
-                    if style == "classic" and name == "hook_landing":
-                        continue
                     dest = folder / f"{name}_{style}.png"
                     dest.write_bytes(await ch.frame(t))
                     written.append(dest)
@@ -136,57 +117,71 @@ def write_imagery_samples(folder) -> list:
     shutil.rmtree(work, ignore_errors=True)
     note = folder / "SOURCES.txt"
     note.write_text(
-        "Real headless-Chrome frames of the same two slides.\n"
-        "hook_*.png at 0.72s, while the first card is entering.\n"
-        "hook_landing_cinematic.png at 1.4s, first card landed, second card still popping.\n"
-        "body_*.png at 7.05s, the same card entrance after the chapter card.\n"
-        "objects_compare.mp4 plays classic hook, cinematic hook, classic body, cinematic body.\n"
-        "The waves are the background in every frame. No still was generated or mocked.\n",
+        "Real headless-Chrome frames of the same three scenes.\n"
+        "hook_*.png at 2.4s, a close car and buildings, before the chapter card.\n"
+        "datacenter_*.png at 8.8s, the hall, houses, batteries and a power line.\n"
+        "street_*.png at 13.6s, cars, a factory and trees.\n"
+        "objects_compare.mp4 plays classic then cinematic for each scene, so the motion shows.\n"
+        "classic is the flat object. cinematic is the same placement with volume and motion.\n"
+        "No image was generated or mocked. Text cards are not in these frames.\n",
         encoding="utf-8")
     written.append(note)
     return written
 
 
+def _sky() -> str:
+    stars = "".join(
+        f'<circle cx="{x}" cy="{y}" r="1.6" fill="#8a94a6"/>'
+        for x, y in ((140, 90), (420, 140), (880, 70), (1300, 120), (1680, 80), (1100, 180))
+    )
+    return (
+        '<rect width="1920" height="1080" fill="#0c1526"/>'
+        '<rect y="690" width="1920" height="390" fill="#101820"/>' + stars
+    )
+
+
+def _scene(sid, kind, t0, t1, label, hud, inner) -> str:
+    return (
+        f'<section class="slide kind-{kind}" id="{sid}" data-kind="{kind}" data-t0="{t0:.3f}" '
+        f'data-t1="{t1:.3f}" data-sidx="0" data-slabel="{label}" data-hud="{hud}" '
+        f'data-transition="cut" data-tracker=""><div class="scene">'
+        f'<svg class="fill" viewBox="0 0 1920 1080">{_sky()}{inner}</svg></div></section>'
+    )
+
+
 def _sample_html() -> str:
-    icon = ('<svg data-anim="pop" data-t="0.95" data-dur="0.55" width="150" height="150" '
-            'viewBox="0 0 150 150" style="position:absolute; left:1480px; top:180px">'
-            '<rect x="18" y="18" width="114" height="114" rx="18" fill="#1a2232" stroke="#f5b83d" stroke-width="6"/>'
-            '<circle cx="75" cy="75" r="28" fill="#4c8dff"/></svg>')
-    hook = (
-        '<section class="slide kind-slide" id="hook" data-kind="slide" data-t0="0.000" data-t1="4.600" '
-        'data-sidx="0" data-slabel="HOOK" data-hud="on" data-transition="cut" data-tracker="">'
-        '<div class="pad col gap-m">'
-        '<div class="kicker" data-anim="fade" data-t="0.200">HOOK</div>'
-        '<h1 class="h1" data-anim="words" data-t="0.320" data-dur="0.500">The opening lands.</h1>'
-        '<div class="row gap-l" style="margin-top:24px">'
-        '<div class="card gold-edge" data-anim="rise" data-t="0.520" data-dur="0.800" style="width:640px">'
-        '<div class="h3">AI stocks</div><div class="lead">The card flies in, then sits.</div></div>'
-        '<div class="card" data-anim="pop" data-t="1.200" data-dur="0.550" style="width:420px">'
-        '<div class="h2 gold">2.3T</div><div class="lead">wiped in a day</div></div>'
-        '</div></div>' + icon + '</section>'
-    )
+    from explainer_scenes import place
+    hook = _scene("hook", "scene", 0, 5, "HOOK", "off", "".join([
+        place("building", 70, 500, 150, 190, 0.4),
+        place("building", 240, 460, 180, 230, 0.5),
+        place("building", 1500, 430, 210, 260, 0.45),
+        place("tree", 1240, 560, 120, 150, 0.75),
+        place("house", 980, 545, 230, 175, 1.0),
+        place("car", 80, 760, 560, 280, 1.8),
+        place("car", 760, 820, 300, 150, 1.15),
+    ]))
     chapter = (
-        '<section class="slide kind-chapter" id="chapter" data-kind="chapter" data-t0="4.600" data-t1="6.200" '
-        'data-sidx="0" data-slabel="" data-hud="off" data-transition="cut" data-tracker="">'
-        '<div class="pad center"><div class="kicker" data-anim="fade" data-t="4.800">CHAPTER</div>'
-        '<h1 class="h2" data-anim="words" data-t="5.000">The body</h1></div></section>'
+        '<section class="slide kind-chapter" id="chapter" data-kind="chapter" data-t0="5.000" '
+        'data-t1="6.400" data-sidx="0" data-slabel="" data-hud="off" data-transition="cut" data-tracker="">'
+        '<div class="pad center"><div class="kicker">CHAPTER</div><h1 class="h2">The grid</h1></div></section>'
     )
-    body = (
-        '<section class="slide kind-slide" id="body" data-kind="slide" data-t0="6.200" data-t1="11.000" '
-        'data-sidx="0" data-slabel="BODY" data-hud="on" data-transition="cut" data-tracker="">'
-        '<div class="pad col gap-m">'
-        '<div class="kicker" data-anim="fade" data-t="6.400">BODY</div>'
-        '<h1 class="h1" data-anim="words" data-t="6.500" data-dur="0.500">After the chapter.</h1>'
-        '<div class="row gap-l" style="margin-top:24px; align-items:flex-end">'
-        '<div class="card" data-anim="rise" data-t="6.850" data-dur="0.800" style="width:640px">'
-        '<div class="h3">The same card</div><div class="lead">Quieter than the hook.</div></div>'
-        '<div style="display:flex; align-items:flex-end; gap:18px; height:220px">'
-        '<div class="bar" data-anim="wipe-up" data-t="7.300" data-dur="0.600" style="height:90px"></div>'
-        '<div class="bar" data-anim="wipe-up" data-t="7.450" data-dur="0.600" style="height:160px; background:#4c8dff"></div>'
-        '<div class="bar" data-anim="wipe-up" data-t="7.600" data-dur="0.600" style="height:120px; background:#f05252"></div>'
-        '</div></div></div></section>'
-    )
-    return hook + chapter + body
+    grid = _scene("grid", "scene", 6.4, 11.4, "GRID", "off", "".join([
+        place("powerline", 60, 430, 280, 140, 0.35),
+        place("tree", 1560, 540, 130, 160, 0.55),
+        place("house", 1180, 545, 230, 175, 0.85),
+        place("house", 1440, 575, 190, 145, 0.75),
+        place("datacenter", 160, 400, 860, 450, 1.15),
+    ]))
+    street = _scene("street", "scene", 11.4, 16.4, "STREET", "off", "".join([
+        place("building", 40, 460, 170, 220, 0.4),
+        place("building", 230, 420, 200, 260, 0.5),
+        place("factory", 1240, 470, 400, 300, 0.95),
+        place("tree", 1080, 540, 140, 170, 0.8),
+        place("tree", 1700, 570, 120, 150, 0.7),
+        place("car", 80, 780, 460, 230, 1.5),
+        place("car", 620, 830, 340, 170, 1.15),
+    ]))
+    return hook + chapter + grid + street
 
 
 def _sample_movie(folder, pages, chrome):
@@ -201,8 +196,9 @@ def _sample_movie(folder, pages, chrome):
         shutil.rmtree(frames)
     frames.mkdir()
     # (style, start, end) so the clip shows the entrance, then the settle.
-    spans = (("classic", 0.40, 1.90), ("cinematic", 0.40, 1.90),
-             ("classic", 6.70, 8.15), ("cinematic", 6.70, 8.15))
+    spans = (("classic", 1.6, 3.3), ("cinematic", 1.6, 3.3),
+             ("classic", 8.0, 9.6), ("cinematic", 8.0, 9.6),
+             ("classic", 12.8, 14.4), ("cinematic", 12.8, 14.4))
     fps = 10
 
     async def grab():

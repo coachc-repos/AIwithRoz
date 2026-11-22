@@ -94,11 +94,8 @@ body.mode-preview .photo-spot::after { content: "Photo spot \00b7 add a photo yo
 .bar { width: 90px; background: var(--gold); border-radius: 10px 10px 0 0; }
 .divider { height: 2px; width: 100%; background: var(--line); }
 .scene { position: absolute; inset: 0; background: var(--navy); overflow: hidden; }
-/* Cinematic entrances tilt objects in this space. The origin is the upper
-   left, where the light is, so a thin panel stays thin. */
-html.look-cinematic section.slide { perspective: 1400px; perspective-origin: 22% 16%; }
-html.look-cinematic .xv-pop { position: relative; overflow: hidden; transform-style: preserve-3d; }
-.xv-glint { position: absolute; top: -35%; bottom: -35%; width: 14%; left: 0; background: rgba(255, 255, 255, 0.55); pointer-events: none; opacity: 0; z-index: 4; }
+/* Scene objects may drift a few pixels. The type on a slide is not one of these. */
+svg.sc { overflow: visible; }
 .camera { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 .ring-fx { position: absolute; border: 5px solid var(--gold); border-radius: 50%; pointer-events: none; opacity: 0; z-index: 50; }
 svg [data-anim], svg [data-loop], svg g[data-t] { transform-box: fill-box; transform-origin: center; }

@@ -116,10 +116,6 @@
     var WAVE_ROWS = Math.max(8, Math.round(+_waves.rows || 34));
     var WAVE_SPEED = (+_waves.speed > 0) ? +_waves.speed : 1.4;
     var STYLE = ((CFG.visual || {}).style === 'cinematic' || (CFG.visual || {}).style === 'rich') ? 'cinematic' : 'classic';
-    var POP = (CFG.visual || {}).pop || {
-        body: { rot: 11, z: 64, overshoot: 1.04, glint: 0.42, dof: 0.7, push: 1.022, shadow: 0.42 },
-        hook: { rot: 20, z: 128, overshoot: 1.08, glint: 0.82, dof: 1.35, push: 1.05, shadow: 0.62 }
-    };
     var HOOK_UNTIL = (CFG.visual || {}).hookUntil;
     var ROWS = [];
     (function () {
@@ -314,39 +310,6 @@
         return it.prefix + s + it.suffix;
     }
 
-    // Cinematic touches objects (cards, icons, charts, figures), not the type.
-    // It runs only while that object's own entrance is in progress.
-    var POP_CLASS = ['card', 'overlay-card', 'lower-third', 'skeleton', 'quote', 'chip', 'badge', 'stat', 'photo-spot', 'logo', 'bar'];
-    function isPopTarget(e) {
-        if (!e || !e.tagName || !e.classList) return false;
-        var tag = e.tagName.toLowerCase();
-        if (tag === 'span' || tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'p' || tag === 'li') return false;
-        if (e.classList.contains('w') || e.classList.contains('huge') || e.classList.contains('kicker')
-            || e.classList.contains('lead') || e.classList.contains('body') || e.classList.contains('h1')
-            || e.classList.contains('h2') || e.classList.contains('h3') || e.classList.contains('fill')
-            || e.classList.contains('scene') || e.classList.contains('camera')) return false;
-        var kinds = (e.dataset.anim || '').split(/\s+/);
-        if (kinds.indexOf('words') >= 0 || kinds.indexOf('count') >= 0 || kinds.indexOf('fade') >= 0) return false;
-        if (tag === 'svg' || tag === 'img' || tag === 'image') return true;
-        for (var i = 0; i < POP_CLASS.length; i++) if (e.classList.contains(POP_CLASS[i])) return true;
-        return false;
-    }
-    function hookBoost(s) {
-        if (HOOK_UNTIL === null || HOOK_UNTIL === undefined || HOOK_UNTIL === '') return s.i === 0;
-        return s.t0 < +HOOK_UNTIL - 0.02;
-    }
-    function popLevel(s) { return hookBoost(s) ? (POP.hook || POP.body) : POP.body; }
-    function centerIn(el, root) {
-        var x = el.offsetWidth / 2, y = el.offsetHeight / 2, n = el;
-        while (n && n !== root) {
-            x += n.offsetLeft; y += n.offsetTop;
-            var next = n.offsetParent;
-            if (!next || (root && !root.contains(next) && next !== root)) break;
-            n = next;
-        }
-        return { x: x, y: y };
-    }
-
     function prep(s) {
         if (s.prepped) return;
         s.prepped = true;
@@ -387,14 +350,6 @@
                     var fill = sh.getAttribute('fill') || getComputedStyle(sh).fill;
                     return { sh: sh, fill: fill && fill !== 'none' };
                 });
-            }
-            it.object = STYLE === 'cinematic' && !!main && isPopTarget(e);
-            var _tag = e.tagName.toLowerCase();
-            if (it.object && e.namespaceURI !== 'http://www.w3.org/2000/svg' && _tag !== 'img' && _tag !== 'image') {
-                var glint = document.createElement('div');
-                glint.className = 'xv-glint';
-                e.appendChild(glint);
-                it.glint = glint;
             }
             if (main === 'count') {
                 var txt = e.textContent.trim();
@@ -486,38 +441,6 @@
             if (it.out === 'down') tf += ' translateY(' + (q * 60).toFixed(2) + 'px)';
             else if (it.out === 'shrink') tf += ' scale(' + (1 - 0.4 * q).toFixed(4) + ')';
         }
-        // Object entrance. The 2D move above keeps its timing. This adds depth
-        // only while that entrance is running, then the object sits as drawn.
-        it._popping = false;
-        if (it.object && t >= it.t && r < 1) {
-            var k = popLevel(s), fly = 1 - p;
-            var rx = fly * (+k.rot || 11) * 0.7;
-            var ry = fly * (+k.rot || 11);
-            var tz = -fly * (+k.z || 64);
-            var depth = 'perspective(1200px) translateZ(' + tz.toFixed(1) + 'px) rotateX(' + rx.toFixed(2) + 'deg) rotateY(' + ry.toFixed(2) + 'deg)';
-            if (it.main !== 'pop' && it.main !== 'stamp') {
-                var sc = 1 + ((+k.overshoot || 1.04) - 1) * Math.sin(r * Math.PI);
-                depth += ' scale(' + sc.toFixed(4) + ')';
-            }
-            tf = depth + (tf ? ' ' + tf : '');
-            var blur = 3 + 14 * fly;
-            var alpha = (0.18 + 0.4 * (1 - fly)) * (+k.shadow || 0.4);
-            var trail = fly > 0.2 ? ' drop-shadow(' + (-22 * fly).toFixed(1) + 'px ' + (6 * fly).toFixed(1) + 'px 0 rgba(8,12,20,' + (0.28 * fly).toFixed(3) + '))' : '';
-            e.style.filter = 'drop-shadow(' + (8 + 8 * fly).toFixed(1) + 'px ' + (10 + 10 * fly).toFixed(1) + 'px ' + blur.toFixed(1) + 'px rgba(0,0,0,' + Math.min(0.72, alpha).toFixed(3) + '))' + trail;
-            e.style.transformOrigin = '22% 16%';
-            e.classList.add('xv-pop');
-            if (it.glint) {
-                var sweep = clamp((r - 0.12) / 0.7, 0, 1);
-                it.glint.style.opacity = (Math.sin(sweep * Math.PI) * (+k.glint || 0.4)).toFixed(3);
-                it.glint.style.transform = 'translateX(' + (-180 + sweep * 340).toFixed(1) + '%) skewX(-18deg)';
-            }
-            it._popping = true;
-        } else if (it.object) {
-            e.style.filter = '';
-            e.style.transformOrigin = '';
-            e.classList.remove('xv-pop');
-            if (it.glint) it.glint.style.opacity = '0';
-        }
         e.style.opacity = o >= 1 ? '' : o.toFixed(3);
         var full = (e.__base + tf).trim();
         e.style.transform = full;
@@ -544,37 +467,60 @@
         c.e.style.transform = 'translate(' + (960 - x * z).toFixed(2) + 'px,' + (540 - y * z).toFixed(2) + 'px) scale(' + z.toFixed(4) + ')';
     }
 
-    function depthOfField(s, t) {
-        var busy = false;
-        for (var i = 0; i < s.items.length; i++) {
-            var it = s.items[i];
-            if (it.object && t >= it.t && t < it.t + it.dur) busy = true;
-        }
-        var px = busy ? (+popLevel(s).dof || 0) : 0;
-        for (var j = 0; j < s.items.length; j++) {
-            var item = s.items[j];
-            if (!item.object || item._popping) continue;
-            var rr = (t - item.t) / (item.dur || 0.001);
-            item.e.style.filter = (px && rr >= 1) ? 'blur(' + px.toFixed(2) + 'px)' : '';
-        }
+    // Scene objects. Text, cards and numbers are not touched. Cinematic swaps
+    // in the detailed symbol (already in the page) and moves its parts.
+    // Classic leaves the flat symbol still. A hook scene, before the first
+    // chapter card, moves a little more.
+    var SVGNS = 'http://www.w3.org/2000/svg';
+    function sceneHook(node) {
+        var sec = node.closest ? node.closest('section') : null;
+        if (!sec || HOOK_UNTIL === null || HOOK_UNTIL === undefined || HOOK_UNTIL === '') return false;
+        return (+sec.dataset.t0 || 0) < +HOOK_UNTIL - 0.02;
     }
-    function objectCamera(s, t) {
-        var best = null, bestE = -1, bestR = 0;
-        for (var i = 0; i < s.items.length; i++) {
-            var it = s.items[i];
-            if (!it.object) continue;
-            var r = (t - it.t) / (it.dur || 0.001);
-            if (r <= 0.02 || r >= 0.98) continue;
-            var energy = Math.sin(r * Math.PI);
-            if (energy > bestE) { bestE = energy; best = it; bestR = r; }
+    function mountScene(svg) {
+        if (svg.__live) return svg.__live;
+        var use = svg.querySelector('use');
+        if (!use) { svg.__live = null; return null; }
+        var id = (use.getAttribute('href') || use.getAttribute('xlink:href') || '').replace('#', '');
+        var sym = id && document.getElementById(id);
+        if (!sym) { svg.__live = null; return null; }
+        var g = document.createElementNS(SVGNS, 'g');
+        Array.prototype.forEach.call(sym.childNodes, function (n) { g.appendChild(n.cloneNode(true)); });
+        svg.replaceChild(g, use);
+        svg.__live = g;
+        return g;
+    }
+    function sceneMotion(t) {
+        if (STYLE !== 'cinematic') return;
+        var nodes = document.querySelectorAll('svg.sc');
+        for (var i = 0; i < nodes.length; i++) {
+            var svg = nodes[i];
+            var g = mountScene(svg);
+            if (!g) continue;
+            var hook = sceneHook(svg);
+            var depth = +svg.dataset.depth || 1;
+            var amp = (hook ? 22 : 12) * depth;
+            var dx = Math.sin(t * 0.33 + i) * amp;
+            var dy = Math.cos(t * 0.21 + i) * amp * 0.18;
+            svg.style.transform = 'translate(' + dx.toFixed(2) + 'px,' + dy.toFixed(2) + 'px)';
+            var spin = (t * (hook ? 240 : 150)) % 360;
+            var wheels = g.querySelectorAll('.sc-wheel');
+            for (var w = 0; w < wheels.length; w++) {
+                var cx = wheels[w].dataset.cx, cy = wheels[w].dataset.cy;
+                wheels[w].setAttribute('transform', 'rotate(' + spin.toFixed(2) + ' ' + cx + ' ' + cy + ')');
+            }
+            var glows = g.querySelectorAll('.sc-glow');
+            for (var k = 0; k < glows.length; k++) {
+                var flick = Math.sin(t * (hook ? 4.2 : 2.4) + k * 1.7);
+                glows[k].setAttribute('opacity', flick > 0.82 ? '0.45' : '1');
+            }
+            var smoke = g.querySelectorAll('.sc-smoke');
+            for (var s = 0; s < smoke.length; s++) {
+                var rise = ((t * (hook ? 28 : 16) + s * 14) % 34);
+                smoke[s].setAttribute('transform', 'translate(0 ' + (-rise).toFixed(2) + ')');
+                smoke[s].setAttribute('opacity', (0.15 + 0.4 * (1 - rise / 34)).toFixed(3));
+            }
         }
-        if (!best) return '';
-        var push = +popLevel(s).push || 1.02;
-        var z = 1 + (push - 1) * Math.sin(bestR * Math.PI);
-        var c = centerIn(best.e, s.el);
-        var tx = -(c.x - 960) * (z - 1) * 0.7;
-        var ty = -(c.y - 540) * (z - 1) * 0.7;
-        return 'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px) scale(' + z.toFixed(4) + ')';
     }
 
     function transitionOf(s) { var n = slides[s.i + 1]; return n ? n.trans : 'cut'; }
@@ -604,17 +550,11 @@
                 o *= 1 - q2; ty -= transitionOf(s) === 'push' ? q2 * 90 : 0;
             }
             s.el.style.opacity = o >= 1 ? '' : o.toFixed(3);
+            s.el.style.transform = ty ? 'translateY(' + ty.toFixed(2) + 'px)' : '';
             if (s.host) holes[s.host] = Math.max(holes[s.host] || 0, o);
             s.el.style.zIndex = String(s.i + 1);
             for (var j = 0; j < s.items.length; j++) apply(s, s.items[j], t);
             for (var c = 0; c < s.cams.length; c++) camera(s.cams[c], t);
-            var slideTf = ty ? 'translateY(' + ty.toFixed(2) + 'px)' : '';
-            if (STYLE === 'cinematic') {
-                depthOfField(s, t);
-                var push = objectCamera(s, t);
-                if (push) slideTf = (slideTf + ' ' + push).trim();
-            }
-            s.el.style.transform = slideTf;
             if (s.hud) hudW = Math.max(hudW, o);
             if (o > labelW) { labelW = o; labelS = s; }
         });
@@ -644,6 +584,7 @@
                 }
             }
         }
+        sceneMotion(t);
         drawBg(t, holes, frame);
         placeHost(holes, frame);
         placeFrame(frame, frame ? (holes.pip || 0) : 0);

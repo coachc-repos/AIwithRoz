@@ -1,17 +1,15 @@
 # Explainer pictures
 
-The wave background stays. It is the same field as before: rows of flat dots on `#090c12`, no gradients. It is denser (`WAVE_ROWS`, default 34, was 20) and a little faster (`WAVE_SPEED`, default 1.4). Both styles use it.
+Text slides are unchanged, apart from the wave background. That field is the same flat dots as before, denser (`WAVE_ROWS` 34, was 20) and a little faster (`WAVE_SPEED` 1.4). Both styles use it.
 
-`visual_style` is saved like the corner frame and the guide.
+Scene illustrations use a small original library (`explainer_scenes.py`, no third-party art). A scene places an object with `<use href="#sc-house"/>` and `data-sc`. The names are house, building, datacenter, car, tree, factory, server, phone, chart, and powerline.
 
-| Style | What changes |
+| Style | Scene objects |
 | --- | --- |
-| `classic` (default) | The denser, faster waves. Objects animate exactly as before. |
-| `cinematic` | The same waves. While a card, icon, chart or figure is entering, it gets a short 3D fly-in (a small rotate, a z move, a scale overshoot), a contact shadow that tightens as it lands, a specular sweep, a faint motion trail, a little blur on the objects that have already landed, and a small camera push. Then it sits in its normal look. |
+| `classic` (default) | The flat silhouette: a box, a roof triangle, two circles. |
+| `cinematic` | The same object with a lit face and a darker side (light from the upper left), a contact shadow, glass, and motion: wheels turn, a few windows flicker, smoke rises, near objects drift more than far ones. |
 | `rich` | Old name. It means cinematic. |
 
-The hook is every slide before the first chapter card (or the first slide, when there is no chapter). Its entrance is stronger: more rotation, more travel, a brighter sweep, a slightly bigger camera push. Body slides use the quieter set. Both sets are `POP` in `explainer_imagery.py`.
+The hook is every scene before the first chapter card. Those objects drift a little more and the wheels turn a little faster. Headlines, cards, and numbers are not part of this.
 
-Type and number animations keep their timing. Headlines, word-by-word lines and counting numbers are not tilted or blurred. Light comes from the upper left, and the rotations stay small so a panel stays thin.
-
-Nothing in this path calls Grok Imagine or paints a still behind the slide.
+Gradients and a light noise filter live only inside the cinematic symbols, not on the page background.
