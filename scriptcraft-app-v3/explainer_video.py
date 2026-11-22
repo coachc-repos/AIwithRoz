@@ -52,6 +52,11 @@ objects with volume, materials and motion (wheels, window glow, smoke,
 parallax), stronger on the hook. A saved "rich" means cinematic.
 See explainer_scenes.py.
 
+Article screenshots and spoken-emphasis strokes are overlays
+(explainer_articles.py). They use the slide times the compiler already
+resolved. They do not restyle text cards, the wave field, bots, logos, or
+scene objects.
+
 The module has no Flask dependency; web_gui.py wires the routes and passes in
 the Anthropic client, the ElevenLabs key and its pause detector.
 """
@@ -2702,7 +2707,8 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
               host: Optional[dict] = None, pip_frame: Optional[str] = None,
               bubble: Optional[str] = None, clips: Optional[list] = None,
               media_origin: str = "", visual: Optional[dict] = None,
-              demos: Optional[list] = None) -> str:
+              demos: Optional[list] = None, articles: Optional[list] = None,
+              emphasis: Optional[dict] = None) -> str:
     """A self-contained page: design CSS, the compiled slides, the runtime.
     The runtime exposes __seek(t), __check() and __ready for the renderer;
     in preview mode it answers postMessage seeks from the dialog. With a
@@ -2713,7 +2719,9 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
     play in preview as each slide's picture; the renderer lays the same
     files on with ffmpeg, holding the last frame when the clip is shorter.
     `visual` picks classic or cinematic. Both keep the wave background.
-    Cinematic adds the object entrance. The slide HTML is not changed."""
+    Cinematic adds the object entrance. The slide HTML is not changed.
+    `articles` and `emphasis` are overlays: a screenshot over the waves, and
+    marker strokes under words that are already on the slide."""
     css = (ASSET_DIR / "design.css").read_text(encoding="utf-8")
     js = (ASSET_DIR / "runtime.js").read_text(encoding="utf-8")
     host_on = bool(host) and compiled.get("host_on")
@@ -2729,6 +2737,7 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
                       "sections": compiled.get("sections") or [],
                       "asides": _aside_payloads(compiled.get("slides") or [], bubble),
                       "clips": clip_cfg, "visual": visual_cfg,
+                      "articles": articles or [], "emphasis": emphasis or {"marks": []},
                       "demos": demos or [],
                       "host": {"on": True, "layouts": HOST_LAYOUTS, "focus": float(host.get("focus", HOST_FOCUS)),
                                "video": video, "sections": compiled.get("host_sections") or [],
@@ -4666,9 +4675,12 @@ def write_page(project: Project, compiled: dict, mode: str, name: str) -> Path:
     host = project.host()
     frame, bubble = look_of(project.data, host)
     style = visual_style_key(None, project.data.get("visual_style"))
+    import explainer_articles as _articles
+    article_layer, emphasis_layer = _articles.page_layers(project, compiled)
     page.write_text(page_html(compiled, mode=mode, title=project.data.get("title") or "Explainer",
                               host=host, pip_frame=frame, bubble=bubble,
                               visual={"style": style},
+                              articles=article_layer, emphasis=emphasis_layer,
                               demos=demo_payloads(compiled, load_youtube(project.data)["clips"], mode)),
                     encoding="utf-8")
     return page

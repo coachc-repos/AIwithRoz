@@ -450,6 +450,40 @@ and traces).
     video and AAC audio, faststart), with a 720p phone copy, a 4K PNG of
     each asset slide, and the audio levels.
 
+  **Articles.** The Articles tab, next to Clips, takes a screenshot of an
+  article: upload a PNG, JPEG or WebP, paste an image from the clipboard,
+  or paste an article URL. A URL is captured with Playwright if it is
+  installed, otherwise with headless Chrome. A paywalled page, a timeout,
+  or a missing browser returns a clear error and leaves upload as the way
+  in. The file is saved under the project in `articles/`, the same way
+  logos and clips are saved. OCR reads each line and its box. If
+  `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` and
+  `AZURE_DOCUMENT_INTELLIGENCE_KEY` are set, Azure Document Intelligence
+  is used. Otherwise Tesseract (`tesseract` plus `pytesseract`) or
+  RapidOCR (`rapidocr-onnxruntime`) is used. Nothing is read if none of
+  those is available, and the image is still saved. Keys stay in the
+  environment and are never written into the repo. Lines that match the
+  slide's narration are suggested. Click a line in the preview to keep or
+  drop it, and assign the article to a slide. On that slide the screenshot
+  tilts in over the wave background, then a marker stroke in the accent
+  color draws under each chosen line when the narration reaches that
+  sentence. Word timestamps are used when the project has them; otherwise
+  the strokes are spaced evenly after the entrance. The rest of the page
+  dims slightly and the frame eases toward the active line. The pixels of
+  the article are not redrawn.
+
+  **Emphasis underlines.** The same stroke can sit under a word that is
+  already on a text slide, at the moment it is spoken. Detection is
+  conservative, a few hits per slide. It reads `**bold**`, `*italics*`,
+  a word in CAPS (not a line that is mostly capitals), and SSML
+  `<emphasis>`, then words in the narration WAV that are louder than the
+  rest of the slide and also higher or held longer. Word times come from
+  the ElevenLabs alignment already stored on the project (or the pause
+  estimate). If the phrase is not on the slide, nothing is drawn. The
+  Slides tab has a global switch, a per-slide switch, and a list where a
+  hit can be removed or a phrase added. Text cards, the wave field, bots,
+  brand logos and scene objects are unchanged; the stroke is an overlay.
+
   On this Mac, 4K renders at about 60 frames a second (a 15-minute video
   in roughly 8 minutes). A 1:37 excerpt of a real script took 8 minutes
   and $1.39 to plan and build. Budget about $1.50 of Claude usage per

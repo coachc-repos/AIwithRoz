@@ -111,3 +111,11 @@ svg.sc { overflow: visible; }
 .sc-demo .t { font-size: 48px; font-weight: 750; margin: 18px 0 12px; }
 .sc-demo .n { font-size: 28px; color: #8a94a6; line-height: 1.35; }
 body.mode-preview .ph-pending { outline: 3px dashed var(--amber); outline-offset: 6px; border-radius: 6px; }
+
+/* Article sheet and emphasis strokes sit over the waves. They do not restyle cards. */
+#article-layer { position: absolute; inset: 0; z-index: 850; pointer-events: none; }
+#article-layer .sheet { position: absolute; transform-style: preserve-3d; }
+#article-layer img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+#article-layer svg.ink { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+#emphasis-ink { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; z-index: 920; pointer-events: none; overflow: visible; }
+section.slide.has-article > * { visibility: hidden; }
