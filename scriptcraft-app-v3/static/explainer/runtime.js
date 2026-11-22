@@ -658,7 +658,53 @@
     }
 
     function transitionOf(s) { var n = slides[s.i + 1]; return n ? n.trans : 'cut'; }
+    var BOOKS = CFG.bookends || {};
+    var bookPlaying = false;
+    function bookendVideo(key) {
+        var b = BOOKS[key];
+        if (!b || !b.src || MODE !== 'preview') return null;
+        if (b.el) return b.el;
+        var v = document.createElement('video');
+        v.playsInline = true;
+        v.preload = 'auto';
+        v.setAttribute('playsinline', '');
+        v.src = b.src;
+        v.style.cssText = 'position:absolute;left:0;top:0;width:1920px;height:1080px;object-fit:contain;background:#000;z-index:820;visibility:hidden;pointer-events:none;';
+        stage.appendChild(v);
+        b.el = v;
+        return v;
+    }
+    function placeBookends(t) {
+        ['intro', 'end'].forEach(function (key) {
+            var b = BOOKS[key];
+            var v = bookendVideo(key);
+            if (!b || !v) return;
+            var extra = (b.exit && +b.exit.dur) || 0;
+            var on = t >= +b.t0 - 0.001 && t < +b.t1 + extra;
+            v.style.visibility = on ? '' : 'hidden';
+            if (!on) { if (!v.paused) v.pause(); return; }
+            var local = Math.max(0, t - (+b.t0));
+            var o = 1;
+            if (b.enter && b.enter.style && local < +b.enter.dur) o = local / Math.max(0.05, +b.enter.dur);
+            var remain = (+b.t1 + extra) - t;
+            if (b.exit && b.exit.style && remain < +b.exit.dur) o = Math.min(o, Math.max(0, remain) / Math.max(0.05, +b.exit.dur));
+            v.style.opacity = o >= 0.999 ? '' : Math.max(0, o).toFixed(3);
+            v.muted = b.audio !== 'clip';
+            v.volume = b.audio === 'mix' ? 0.35 : 1;
+            var hold = v.duration && local >= v.duration - 0.05;
+            var want = hold ? Math.max(0, v.duration - 0.04) : local;
+            if (bookPlaying && !hold) {
+                if (v.paused) { v.currentTime = want; var pr = v.play(); if (pr && pr.catch) pr.catch(function () {}); }
+                else if (Math.abs(v.currentTime - want) > 0.35) v.currentTime = want;
+            } else {
+                if (!v.paused) v.pause();
+                if (Math.abs((v.currentTime || 0) - want) > 0.08) v.currentTime = want;
+            }
+        });
+    }
     function slideTail(s) {
+        if (BOOKS.intro && Math.abs(s.t1 - (+BOOKS.intro.t0)) < 0.08) return (BOOKS.intro.enter && +BOOKS.intro.enter.dur) || 0;
+        if (BOOKS.end && Math.abs(s.t1 - (+BOOKS.end.t0)) < 0.08) return (BOOKS.end.enter && +BOOKS.end.enter.dur) || 0;
         return window.XVFx ? XVFx.tail(s, slides, TR) : (transitionOf(s) === 'cut' ? 0 : TR);
     }
 
@@ -732,6 +778,7 @@
         sceneMotion(t);
         placeDemos(t);
         if (window.XVFx) XVFx.overlay(fx);
+        placeBookends(t);
         drawBg(t, holes, frame);
         placeHost(holes, frame);
         placeFrame(frame, frame ? (holes.pip || 0) : 0);
@@ -899,6 +946,7 @@
             var d = ev.data || {};
             if (d.xv === 'seek') {
                 lastT = +d.t || 0;
+                bookPlaying = !!d.playing;
                 seek(lastT);
                 syncHost(lastT, !!d.playing);
                 var shown = placeClip(lastT, !!d.playing);

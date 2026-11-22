@@ -1308,6 +1308,91 @@ def build_mux_cmd(video: Path, narration: Path, out: Path, start: float, dur: fl
             "-ar", "48000", "-ac", "2", "-t", f"{float(dur):.3f}", "-movflags", "+faststart", str(out)]
 
 
+def build_paused_mux_cmd(video: Path, narration: Path, out: Path, clock: dict, clips: list) -> list:
+    """Narration stops where the intro plays and continues after it, then the end clip.
+
+    Every narration second is present once. The intro and the end clip do not
+    cover any of it.
+    """
+    total = float(clock.get("total") or 0)
+    inputs = ["-i", str(video), "-i", str(narration)]
+    audible = []
+    for c in clips or []:
+        mode = c.get("audio") if c.get("audio") in BOOKEND_AUDIO or c.get("audio") in ("clip", "mix", "mute") else "mute"
+        if mode in ("clip", "mix") and c.get("path"):
+            audible.append(c)
+            inputs += ["-i", str(c["path"])]
+    chains, narr_labs = [], []
+    for i, piece in enumerate(clock.get("pieces") or []):
+        if piece.get("kind") != "narr":
+            continue
+        lab = f"n{i}"
+        delay = int(round(float(piece["wall0"]) * 1000))
+        chains.append(
+            f"[1:a]atrim={float(piece['narr0']):.3f}:{float(piece['narr1']):.3f},asetpts=PTS-STARTPTS,"
+            f"adelay={delay}|{delay},apad=whole_dur={total:.3f},"
+            f"aformat=sample_rates=48000:channel_layouts=stereo[{lab}]")
+        narr_labs.append(lab)
+    if len(narr_labs) > 1:
+        chains.append("".join(f"[{x}]" for x in narr_labs) +
+                      f"amix=inputs={len(narr_labs)}:duration=longest:dropout_transition=0:normalize=0[narr]")
+    elif narr_labs:
+        chains.append(f"[{narr_labs[0]}]anull[narr]")
+    else:
+        chains.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{max(0.1, total):.3f}[narr]")
+    tails, n_in = ["[narr]"], 1
+    for i, c in enumerate(audible):
+        skip = float(c.get("src_skip") or 0)
+        play = max(0.05, min(float(c["show"]), float(c.get("seconds") or c["show"])))
+        delay = int(round(float(c["offset"]) * 1000))
+        vol = 0.35 if c.get("audio") == "mix" else 1.0
+        lab = f"b{i}"
+        chains.append(
+            f"[{i + 2}:a]atrim={skip:.3f}:{skip + play:.3f},asetpts=PTS-STARTPTS,volume={vol:.2f},"
+            f"adelay={delay}|{delay},apad=whole_dur={total:.3f},"
+            f"aformat=sample_rates=48000:channel_layouts=stereo[{lab}]")
+        tails.append(f"[{lab}]")
+        n_in += 1
+    if n_in == 1:
+        chains.append("[narr]anull[aout]")
+    else:
+        chains.append("".join(tails) + f"amix=inputs={n_in}:duration=first:dropout_transition=0:normalize=0[aout]")
+    return ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *inputs, "-filter_complex", ";".join(chains),
+            "-map", "0:v:0", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+            "-ar", "48000", "-ac", "2", "-t", f"{total:.3f}", "-movflags", "+faststart", str(out)]
+
+
+def bookend_overlay_items(compiled: dict, intro: Optional[dict], end: Optional[dict]) -> list:
+    """Full-frame overlays for the intro and the end clip, in wall-clock time."""
+    clock = compiled.get("clock") or {}
+    slides = compiled.get("slides") or []
+    by = {s.get("id"): s for s in slides}
+    out = []
+
+    def item(spec, window, slide_id):
+        if not window or not spec or not spec.get("file"):
+            return None
+        slide = by.get(slide_id) or {}
+        nxt = None
+        for i, s in enumerate(slides):
+            if s.get("id") == slide_id and i + 1 < len(slides):
+                nxt = slides[i + 1]
+        path = spec.get("file")
+        return {"path": path, "audio": spec.get("audio") or "clip",
+                "offset": float(window["wall0"]), "show": float(window["dur"]),
+                "src_skip": float(spec.get("start") or 0), "seconds": float(window["dur"]),
+                "w": 1920, "h": 1080,
+                "head_fade": float(slide.get("fx_dur") or 0),
+                "tail": float(nxt.get("fx_dur") or 0) if nxt and nxt.get("fx_from") == slide_id else 0.0,
+                "enter_style": slide.get("fx") or "",
+                "leave_style": (nxt.get("fx") or "") if nxt and nxt.get("fx_from") == slide_id else "",
+                "fx_amp": float(slide.get("fx_amp") or 1)}
+
+    intro_item = item(intro, clock.get("intro"), INTRO_ID)
+    end_item = item(end, clock.get("end"), END_ID)
+    return [x for x in (intro_item, end_item) if x]
+
+
 # ---------------------------------------------------------------------------
 # Stylized transitions. They overlap the two slides, so the narration clock
 # does not move. Most slides keep the 0.4 s push. These fire on the way in:
@@ -1321,7 +1406,12 @@ TRANSITION_MODES = ("off", "subtle", "full")
 TRANSITION_DEFAULT = "full"
 TRANSITION_STYLES = ("glitch", "paint", "warp", "pixel", "lightleak", "burn", "shatter")
 SLIDE_FX_CHOICES = ("auto", "none") + TRANSITION_STYLES
+GAP_DURS = ("short", "normal", "long")
+GAP_SCALE = {"short": 0.62, "normal": 1.0, "long": 1.45}
 TRANSITION_GAP = 3
+INTRO_ID = "xv-intro"
+END_ID = "xv-end"
+BOOKEND_AUDIO = ("clip", "mute", "mix")  # clip = the video's own audio
 _HARD_REASONS = ("presenter", "media-enter", "media-leave")
 _REASON_ORDER = ("presenter", "media-enter", "media-leave", "step", "scene")
 TRANSITION_DURS = {
@@ -1358,11 +1448,32 @@ def slide_fx_key(choice: Optional[str] = None) -> str:
     return key if key in SLIDE_FX_CHOICES else "auto"
 
 
-def transition_duration(style: str, mode: str) -> float:
-    dur = TRANSITION_DURS.get(style, 0.5)
+def transition_duration(style: str, mode: str, dur_key: str = "normal", *, manual: bool = False) -> float:
+    """Full uses the style's own length. Subtle shortens an automatic one.
+
+    A hand-picked gap uses short / normal / long on the full length, including
+    when the global setting is subtle or off.
+    """
+    base = TRANSITION_DURS.get(style, 0.5)
+    if manual:
+        return round(base * GAP_SCALE.get(gap_dur_key(dur_key), 1.0), 3)
     if transition_mode_key(mode) == "subtle":
-        dur = round(dur * 0.70, 3)
-    return dur
+        return round(base * 0.70, 3)
+    return base
+
+
+def gap_dur_key(choice: Optional[str] = None) -> str:
+    key = (choice or "").strip().lower()
+    return key if key in GAP_DURS else "normal"
+
+
+def boundary_key(frm: str, to: str) -> str:
+    return f"{frm}>{to}"
+
+
+def parse_boundary_key(key: str) -> "tuple[str, str]":
+    frm, _, to = str(key or "").partition(">")
+    return frm, to
 
 
 def transition_intensity(mode: str) -> float:
@@ -1513,61 +1624,127 @@ def detect_transition_reasons(slide: dict, prev: Optional[dict], *,
     return reasons
 
 
-def _blank_event(slide: dict, index: int, reasons: list, blocked: str) -> dict:
+def _blank_event(slide: dict, index: int, reasons: list, blocked: str, frm: str = "") -> dict:
     try:
         t0 = round(float(slide.get("t0") or 0), 3)
     except (TypeError, ValueError):
         t0 = 0.0
-    return {"id": slide.get("id") or "", "index": index, "t": t0, "style": "", "dur": 0.0,
-            "amp": 0.0, "reason": "", "reasons": list(reasons), "blocked": blocked}
+    return {"id": slide.get("id") or "", "index": index, "t": t0, "frm": frm, "style": "", "dur": 0.0,
+            "amp": 0.0, "dur_key": "normal", "reason": "", "reasons": list(reasons), "blocked": blocked,
+            "origin": "held" if blocked == "spacing" else ("manual" if blocked == "none" else "")}
+
+
+def normalize_gaps(raw) -> dict:
+    """Boundary choices keyed `from>to`. A value may be a style string or {fx, dur}."""
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, val in raw.items():
+        frm, to = parse_boundary_key(key)
+        if not frm or not to:
+            continue
+        if isinstance(val, str):
+            fx, dur = slide_fx_key(val), "normal"
+        elif isinstance(val, dict):
+            fx, dur = slide_fx_key(val.get("fx")), gap_dur_key(val.get("dur"))
+        else:
+            continue
+        if fx == "auto":
+            continue
+        out[boundary_key(frm, to)] = {"fx": fx, "dur": dur}
+    return out
+
+
+def migrate_slide_fx(slides: list, slide_fx: Optional[dict]) -> dict:
+    """Old per-slide choices belong on the boundary into that slide."""
+    gaps = {}
+    ids = [s.get("id") or "" for s in slides or []]
+    for i in range(1, len(ids)):
+        choice = slide_fx_key((slide_fx or {}).get(ids[i]))
+        if choice == "auto":
+            continue
+        gaps[boundary_key(ids[i - 1], ids[i])] = {"fx": choice, "dur": "normal"}
+    return gaps
+
+
+def resolve_gaps(slides: list, data: Optional[dict] = None, *,
+                 gaps: Optional[dict] = None, slide_fx: Optional[dict] = None) -> dict:
+    """Saved boundary choices, with any older per-slide choice filled in."""
+    if data is not None and gaps is None:
+        gaps = (data or {}).get("gap_fx")
+        slide_fx = (data or {}).get("slide_fx")
+    out = normalize_gaps(gaps)
+    for key, val in migrate_slide_fx(slides, slide_fx).items():
+        out.setdefault(key, val)
+    return out
+
+
+def _gap_choice(prev: Optional[dict], slide: dict, overrides: dict, gaps: dict):
+    """(fx, dur_key, manual) for the boundary into `slide`."""
+    if prev:
+        found = gaps.get(boundary_key(prev.get("id") or "", slide.get("id") or ""))
+        if found:
+            return found["fx"], found["dur"], True
+    legacy = slide_fx_key(overrides.get(slide.get("id")))
+    if legacy != "auto":
+        return legacy, "normal", True
+    return "auto", "normal", False
 
 
 def plan_slide_transitions(slides: list, *, mode: str = "full", overrides: Optional[dict] = None,
-                           media_ids: Optional[set] = None, gap: int = TRANSITION_GAP) -> list:
+                           gaps: Optional[dict] = None, media_ids: Optional[set] = None,
+                           gap: int = TRANSITION_GAP) -> list:
     """One record per slide. `style` is empty when this entrance stays a plain cut.
 
     Presenter and media entrances and exits always play, even back to back.
     A step or a scene change plays only when the previous stylized transition
-    was at least `gap` slides earlier. A per-slide style forces that style.
-    `none` and mode `off` play nothing.
+    was at least `gap` slides earlier. A hand-picked style on the boundary
+    always plays: it ignores that spacing and the global off / subtle / full
+    setting. `none` on the boundary plays nothing.
     """
     mode = transition_mode_key(mode)
     overrides = overrides or {}
+    gaps = normalize_gaps(gaps)
     hook_until = _hook_until(slides)
     events, last, counts = [], -10 ** 6, {}
     for i, slide in enumerate(slides or []):
-        choice = slide_fx_key((overrides or {}).get(slide.get("id")))
         prev = slides[i - 1] if i else None
+        frm = (prev or {}).get("id") or ""
+        choice, dur_key, manual = _gap_choice(prev, slide, overrides, gaps)
         reasons = detect_transition_reasons(slide, prev, media_ids=media_ids, hook_until=hook_until)
-        if mode == "off":
-            events.append(_blank_event(slide, i, reasons, "off"))
+        if i == 0 or (manual and choice == "auto"):
+            events.append(_blank_event(slide, i, reasons, "first" if i == 0 else "", frm))
             continue
-        if choice == "none":
-            events.append(_blank_event(slide, i, reasons, "none"))
+        if manual and choice == "none":
+            events.append(_blank_event(slide, i, reasons, "none", frm))
             continue
-        if choice in TRANSITION_STYLES:
-            style, reason = choice, "override"
-        elif i == 0 or not reasons:
-            events.append(_blank_event(slide, i, reasons, "first" if i == 0 else ""))
+        if manual and choice in TRANSITION_STYLES:
+            style, reason = choice, "manual"
+        elif mode == "off":
+            events.append(_blank_event(slide, i, reasons, "off", frm))
+            continue
+        elif not reasons:
+            events.append(_blank_event(slide, i, reasons, "", frm))
             continue
         else:
             primary = next(r for r in _REASON_ORDER if r in reasons)
             hard = primary in _HARD_REASONS
             if not hard and i - last < gap:
-                events.append(_blank_event(slide, i, reasons, "spacing"))
+                events.append(_blank_event(slide, i, reasons, "spacing", frm))
                 continue
             n = counts.get(primary, 0)
             counts[primary] = n + 1
             cycle = _STYLE_CYCLE[primary]
-            style, reason = cycle[n % len(cycle)], primary
-        dur = transition_duration(style, mode)
-        amp = transition_intensity(mode)
+            style, reason, dur_key = cycle[n % len(cycle)], primary, "normal"
+        dur = transition_duration(style, mode, dur_key, manual=manual and reason == "manual")
+        amp = 1.0 if reason == "manual" else transition_intensity("full" if mode == "off" else mode)
         try:
             t0 = round(float(slide.get("t0") or 0), 3)
         except (TypeError, ValueError):
             t0 = 0.0
-        events.append({"id": slide.get("id") or "", "index": i, "t": t0, "style": style,
-                       "dur": dur, "amp": amp, "reason": reason, "reasons": reasons, "blocked": ""})
+        events.append({"id": slide.get("id") or "", "index": i, "t": t0, "frm": frm, "style": style,
+                       "dur": dur, "amp": amp, "dur_key": dur_key, "reason": reason, "reasons": reasons,
+                       "blocked": "", "origin": "manual" if reason == "manual" else "auto"})
         last = i
     return events
 
@@ -1586,13 +1763,13 @@ def _stamp_fx_html(html: str, sid: str, ev: dict) -> str:
 
 
 def apply_transition_plan(compiled: dict, *, mode: str = "full", overrides: Optional[dict] = None,
-                          media_ids: Optional[set] = None) -> dict:
+                          gaps: Optional[dict] = None, media_ids: Optional[set] = None) -> dict:
     """Write the chosen effect onto each slide and into the section tag.
 
     The slide text is not rewritten. An empty style leaves the 0.4 s push.
     """
     slides = compiled.get("slides") or []
-    events = plan_slide_transitions(slides, mode=mode, overrides=overrides, media_ids=media_ids)
+    events = plan_slide_transitions(slides, mode=mode, overrides=overrides, gaps=gaps, media_ids=media_ids)
     html = compiled.get("html") or ""
     fired = []
     by_id = {ev["id"]: ev for ev in events}
@@ -1604,8 +1781,13 @@ def apply_transition_plan(compiled: dict, *, mode: str = "full", overrides: Opti
         meta["fx_reason"] = ev.get("reason") or ""
         meta["fx_reasons"] = list(ev.get("reasons") or [])
         meta["fx_blocked"] = ev.get("blocked") or ""
-        if ev.get("style"):
+        meta["fx_origin"] = ev.get("origin") or ""
+        meta["fx_from"] = ev.get("frm") or ""
+        meta["fx_dur_key"] = ev.get("dur_key") or "normal"
+        if ev.get("style") and not str(meta.get("id") or "").startswith("xv-"):
             html = _stamp_fx_html(html, meta.get("id") or "", ev)
+            fired.append(ev)
+        elif ev.get("style"):
             fired.append(ev)
     compiled["html"] = html
     compiled["transitions"] = fired
@@ -1619,6 +1801,336 @@ def media_ids_of(data: Optional[dict]) -> set:
         if clip.get("slide") and clip.get("status") in ("ready", "placeholder"):
             ids.add(clip["slide"])
     return ids
+
+
+def format_trim(seconds: float) -> str:
+    """Seconds the scrubber can send back through parse_timecode unchanged."""
+    return f"{max(0.0, float(seconds)):.3f}"
+
+
+def clamp_trim(start, end, duration: float) -> "tuple[float, float]":
+    """In/out inside the file, at least 0.2 s. This is what the scrubber stores."""
+    dur = max(0.0, float(duration or 0))
+    a = max(0.0, float(start or 0))
+    b = dur if end is None or end == "" else float(end)
+    if dur:
+        a = min(a, max(0.0, dur - 0.2))
+        b = min(max(b, a + 0.2), dur)
+    else:
+        b = max(b, a + 0.2)
+    return round(a, 3), round(b, 3)
+
+
+def channel_root(path: Optional[Path] = None) -> Path:
+    """Where the reusable intro and end clip live, shared by every project."""
+    env = os.environ.get("SCRIPTCRAFT_CHANNEL_DIR", "").strip()
+    return Path(path or env or (Path.home() / ".scriptcraft" / "channel")).expanduser()
+
+
+def _bookend_meta_path(kind: str, root: Path) -> Path:
+    return root / f"{kind}.json"
+
+
+def load_channel_bookend(kind: str, root: Optional[Path] = None) -> dict:
+    """The saved channel intro or end clip, or an empty record."""
+    kind = "end" if kind == "end" else "intro"
+    folder = channel_root(root)
+    meta_path = _bookend_meta_path(kind, folder)
+    meta = {}
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    video = folder / f"{kind}.mp4"
+    return {"kind": kind, "file": str(video) if video.is_file() else "",
+            "start": float(meta.get("start") or 0), "end": meta.get("end"),
+            "audio": meta.get("audio") if meta.get("audio") in BOOKEND_AUDIO else "clip",
+            "label": meta.get("label") or ("Intro" if kind == "intro" else "End clip"),
+            "seconds": float(meta.get("seconds") or 0)}
+
+
+def save_channel_bookend(kind: str, src: Optional[Path] = None, *, start=0, end=None,
+                         audio: str = "clip", label: str = "", root: Optional[Path] = None,
+                         probe=None) -> dict:
+    """Copy a video into the channel folder, or just update its trim."""
+    kind = "end" if kind == "end" else "intro"
+    folder = channel_root(root)
+    folder.mkdir(parents=True, exist_ok=True)
+    video = folder / f"{kind}.mp4"
+    if src is not None:
+        src = Path(src)
+        if src.suffix.lower() not in UPLOAD_EXTS and src.suffix.lower() != ".mp4":
+            raise YoutubeError("Upload an mp4, mov, webm or m4v.")
+        if src.resolve() != video.resolve():
+            shutil.copyfile(src, video)
+    info = (probe or probe_video)(video) if video.is_file() else {}
+    dur = float((info or {}).get("seconds") or 0)
+    a, b = clamp_trim(start, end, dur or 0.2)
+    rec = {"start": a, "end": b, "audio": audio if audio in BOOKEND_AUDIO else "clip",
+           "label": (label or "")[:80], "seconds": dur}
+    _bookend_meta_path(kind, folder).write_text(json.dumps(rec), encoding="utf-8")
+    return {**rec, "kind": kind, "file": str(video) if video.is_file() else ""}
+
+
+def _is_hook_slide(slide: dict, hook_until: Optional[float]) -> bool:
+    label = f"{slide.get('section') or ''} {slide.get('section_key') or ''} {slide.get('role') or ''}"
+    if _HOOK_RE.search(label) or str(slide.get("role") or "") == "hook":
+        return True
+    if str(slide.get("kind") or "") == "chapter":
+        return False
+    if hook_until is None:
+        return False
+    try:
+        t0, t1 = float(slide.get("t0") or 0), float(slide.get("t1") or 0)
+    except (TypeError, ValueError):
+        return False
+    return t0 < hook_until - 0.02 and t1 <= hook_until + 0.05
+
+
+def intro_anchor_index(slides: list, after: Optional[str] = None) -> int:
+    """Index of the slide the intro follows.
+
+    An explicit slide id wins. Otherwise the last hook slide. With no hook,
+    that is the first slide (the intro follows slide 1).
+    """
+    slides = slides or []
+    if not slides:
+        return 0
+    if after:
+        for i, slide in enumerate(slides):
+            if slide.get("id") == after:
+                return i
+    hook_until = _hook_until(slides)
+    last = None
+    for i, slide in enumerate(slides):
+        if _is_hook_slide(slide, hook_until):
+            last = i
+    return 0 if last is None else last
+
+
+def resolve_bookend(data: Optional[dict], kind: str, root: Optional[Path] = None) -> dict:
+    """Channel asset, a per-project file, or off. Project trim wins when set."""
+    kind = "end" if kind == "end" else "intro"
+    saved = ((data or {}).get("bookends") or {}).get(kind) or {}
+    if not isinstance(saved, dict):
+        saved = {}
+    source = (saved.get("source") or "channel").strip().lower()
+    if source not in ("channel", "custom", "off"):
+        source = "channel"
+    if source == "off":
+        return {"source": "off", "file": "", "seconds": 0, "start": 0, "end": None, "audio": "clip",
+                "label": "Intro" if kind == "intro" else "End clip"}
+    if source == "custom" and saved.get("file"):
+        audio = saved.get("audio") if saved.get("audio") in BOOKEND_AUDIO else "clip"
+        return {"source": "custom", "file": saved.get("file") or "", "seconds": float(saved.get("seconds") or 0),
+                "start": float(saved.get("start") or 0), "end": saved.get("end"), "audio": audio,
+                "label": saved.get("label") or ("Intro" if kind == "intro" else "End clip")}
+    chan = load_channel_bookend(kind, root)
+    audio = saved.get("audio") if saved.get("audio") in BOOKEND_AUDIO else chan.get("audio") or "clip"
+    return {"source": "channel", "file": chan.get("file") or "", "seconds": float(chan.get("seconds") or 0),
+            "start": saved["start"] if "start" in saved else chan.get("start") or 0,
+            "end": saved["end"] if "end" in saved else chan.get("end"),
+            "audio": audio, "label": saved.get("label") or chan.get("label") or kind}
+
+
+def bookend_duration(spec: Optional[dict]) -> float:
+    """Trimmed length of an intro or end clip. 0 when it is off or missing."""
+    if not spec or spec.get("source") == "off" or not spec.get("file"):
+        return 0.0
+    try:
+        full = float(spec.get("seconds") or 0)
+    except (TypeError, ValueError):
+        full = 0.0
+    start = float(spec.get("start") or 0)
+    end = spec.get("end")
+    end_f = full if end is None or end == "" else float(end)
+    if full <= 0 and end_f <= start:
+        return 0.0
+    a, b = clamp_trim(start, end_f, full or max(end_f, start + 0.2))
+    return round(max(0.0, b - a), 3)
+
+
+def narration_clock(narr_end: float, *, hook_end: float, intro_dur: float, end_dur: float,
+                    tail: float = 0.0) -> dict:
+    """Wall-clock map. Narration is never cut or overlapped.
+
+    The intro sits at `hook_end` and holds the story for `intro_dur`. The end
+    clip starts after the last picture, which is `narr_end + tail` plus the intro.
+    """
+    narr_end = max(0.0, float(narr_end))
+    hook_end = min(max(0.0, float(hook_end)), narr_end)
+    intro_dur = max(0.0, float(intro_dur))
+    end_dur = max(0.0, float(end_dur))
+    tail = max(0.0, float(tail))
+    pieces = []
+    if hook_end > 0.001:
+        pieces.append({"kind": "narr", "narr0": 0.0, "narr1": round(hook_end, 3), "wall0": 0.0})
+    if intro_dur > 0.001:
+        pieces.append({"kind": "intro", "wall0": round(hook_end, 3), "dur": round(intro_dur, 3)})
+    rest = round(narr_end - hook_end, 3)
+    if rest > 0.001:
+        pieces.append({"kind": "narr", "narr0": round(hook_end, 3), "narr1": round(narr_end, 3),
+                       "wall0": round(hook_end + intro_dur, 3)})
+    narr_wall_end = round(narr_end + intro_dur, 3)
+    picture_end = round(narr_wall_end + tail, 3)
+    if end_dur > 0.001:
+        pieces.append({"kind": "end", "wall0": picture_end, "dur": round(end_dur, 3)})
+    total = round(picture_end + end_dur, 3)
+    covered = []
+    for piece in pieces:
+        if piece["kind"] == "narr":
+            covered.append((piece["narr0"], piece["narr1"]))
+    return {"hook_end": round(hook_end, 3), "intro_dur": round(intro_dur, 3), "end_dur": round(end_dur, 3),
+            "tail": round(tail, 3), "narr_end": round(narr_end, 3), "picture_end": picture_end,
+            "total": total, "pieces": pieces, "narr_covered": covered}
+
+
+def _slice_clock(clock: dict, start: float, length: float) -> dict:
+    """The same pieces, shifted so wall time `start` is 0, and clipped to `length`."""
+    pieces = []
+    stop = float(start) + float(length)
+    for piece in clock.get("pieces") or []:
+        if piece.get("kind") == "narr":
+            span = float(piece["narr1"]) - float(piece["narr0"])
+        else:
+            span = float(piece.get("dur") or 0)
+        w0 = float(piece["wall0"])
+        w1 = w0 + span
+        a, b = max(w0, float(start)), min(w1, stop)
+        if b - a < 0.02:
+            continue
+        if piece.get("kind") == "narr":
+            skip = a - w0
+            pieces.append({"kind": "narr", "narr0": round(float(piece["narr0"]) + skip, 3),
+                           "narr1": round(float(piece["narr0"]) + skip + (b - a), 3),
+                           "wall0": round(a - float(start), 3)})
+        else:
+            pieces.append({"kind": piece["kind"], "wall0": round(a - float(start), 3),
+                           "dur": round(b - a, 3)})
+    return {**clock, "pieces": pieces, "total": round(float(length), 3)}
+
+
+def _shift_times_in_html(html: str, ids: set, delta: float) -> str:
+    """Add `delta` to every cue time inside the named sections."""
+    if not ids or abs(delta) < 0.001:
+        return html
+
+    def shift_one(raw: str) -> str:
+        try:
+            return f"{float(raw) + delta:.3f}"
+        except ValueError:
+            return raw
+
+    def shift_cam(spec: str) -> str:
+        out = []
+        for key in spec.split(";"):
+            bits = key.split(",")
+            if bits and bits[0].strip():
+                bits[0] = shift_one(bits[0])
+            out.append(",".join(bits))
+        return ";".join(out)
+
+    parts = re.split(r"(?=<section\b)", html)
+    rebuilt = []
+    for part in parts:
+        m = re.search(r'\bid="([^"]+)"', part)
+        if not m or m.group(1) not in ids:
+            rebuilt.append(part)
+            continue
+        part = re.sub(r'(data-t0=")', lambda mm: mm.group(1), part)
+        def repl_attr(mm, _shift=shift_one):
+            return mm.group(1) + _shift(mm.group(2)) + mm.group(3)
+        part = re.sub(r'(data-t0=")([0-9.]+)(")', repl_attr, part)
+        part = re.sub(r'(data-t1=")([0-9.]+)(")', repl_attr, part)
+        part = re.sub(r'(data-t=")([0-9.]+)(")', repl_attr, part)
+        part = re.sub(r'(data-tout=")([0-9.]+)(")', repl_attr, part)
+        part = re.sub(r'(data-camt=")([^"]*)(")',
+                      lambda mm: mm.group(1) + shift_cam(mm.group(2)) + mm.group(3), part)
+        rebuilt.append(part)
+    return "".join(rebuilt)
+
+
+def _shift_windows(windows: list, hook_end: float, delta: float) -> list:
+    if abs(delta) < 0.001:
+        return windows
+    out = []
+    for w in windows or []:
+        t0, t1 = float(w.get("t0") or 0), float(w.get("t1") or 0)
+        if t1 <= hook_end + 0.01:
+            out.append(dict(w))
+        elif t0 >= hook_end - 0.01:
+            out.append({**w, "t0": round(t0 + delta, 3), "t1": round(t1 + delta, 3), "narr_lag": delta})
+        else:
+            out.append({**w, "t1": round(hook_end, 3)})
+            out.append({**w, "t0": round(hook_end + delta, 3), "t1": round(t1 + delta, 3), "narr_lag": delta})
+    return out
+
+
+def _synthetic(kind: str, t0: float, t1: float, label: str) -> dict:
+    return {"id": INTRO_ID if kind == "intro" else END_ID, "kind": kind, "t0": round(t0, 3),
+            "t1": round(t1, 3), "section": label, "section_key": kind, "idea": label,
+            "spoken": "", "text": label, "host": "", "media": True, "insert": True,
+            "warnings": [], "demo": "", "scene_type": "", "has_count": False, "has_stat": False}
+
+
+def apply_bookends(compiled: dict, *, intro: Optional[dict] = None, end: Optional[dict] = None,
+                   at_end: bool = True, after: Optional[str] = None) -> dict:
+    """Open a gap for the intro after the hook, and append the end clip.
+
+    Slide cue times after the gap move with it. Narration itself is not cut;
+    the render clock simply waits. `at_end` is false for a test clip that does
+    not reach the real ending, so the end clip stays off that cut.
+    """
+    slides = [dict(s) for s in (compiled.get("slides") or [])]
+    real = [s for s in slides if not s.get("insert")]
+    intro_dur = bookend_duration(intro)
+    end_dur = bookend_duration(end) if at_end else 0.0
+    if not real or (intro_dur <= 0 and end_dur <= 0):
+        compiled["clock"] = narration_clock(float(compiled.get("end") or 0), hook_end=0,
+                                            intro_dur=0, end_dur=0, tail=0)
+        return compiled
+    anchor = intro_anchor_index(real, after if intro_dur > 0 else None)
+    hook_end = float(real[anchor]["t1"])
+    narr_end = float(compiled.get("end") or real[-1]["t1"])
+    clock = narration_clock(narr_end, hook_end=hook_end if intro_dur else 0.0,
+                            intro_dur=intro_dur, end_dur=0.0, tail=0.0)
+    # End clip starts at the shifted picture end, not in the middle of narration.
+    picture_before_end = round(narr_end + intro_dur, 3)
+    if end_dur:
+        clock["pieces"].append({"kind": "end", "wall0": picture_before_end, "dur": round(end_dur, 3)})
+        clock["end_dur"] = round(end_dur, 3)
+        clock["picture_end"] = picture_before_end
+        clock["total"] = round(picture_before_end + end_dur, 3)
+    else:
+        clock["total"] = picture_before_end
+        clock["picture_end"] = picture_before_end
+    shifted_ids = set()
+    if intro_dur:
+        for slide in real[anchor + 1:]:
+            slide["t0"] = round(float(slide["t0"]) + intro_dur, 3)
+            slide["t1"] = round(float(slide["t1"]) + intro_dur, 3)
+            shifted_ids.add(slide["id"])
+        intro_slide = _synthetic("intro", hook_end, hook_end + intro_dur,
+                                 (intro or {}).get("label") or "Intro")
+        real = real[:anchor + 1] + [intro_slide] + real[anchor + 1:]
+    if end_dur:
+        real.append(_synthetic("end", picture_before_end, picture_before_end + end_dur,
+                               (end or {}).get("label") or "End clip"))
+    compiled["html"] = _shift_times_in_html(compiled.get("html") or "", shifted_ids, intro_dur)
+    compiled["host_windows"] = _shift_windows(compiled.get("host_windows") or [], hook_end, intro_dur)
+    compiled["slides"] = real
+    compiled["end"] = clock["total"]
+    compiled["duration"] = max(float(compiled.get("duration") or 0), clock["total"])
+    clock["anchor"] = real[anchor]["id"] if real else ""
+    clock["intro"] = {"wall0": round(hook_end, 3), "wall1": round(hook_end + intro_dur, 3),
+                      "dur": round(intro_dur, 3)} if intro_dur else None
+    clock["end"] = {"wall0": picture_before_end, "wall1": round(picture_before_end + end_dur, 3),
+                    "dur": round(end_dur, 3)} if end_dur else None
+    compiled["clock"] = clock
+    return compiled
 
 
 def _clip_fx_filters(style: str, amp: float, head: float, tail: float, show: float) -> str:
@@ -2466,11 +2978,14 @@ def _host_filter(plan: dict, a_t: float, b_t: float) -> "tuple[list, str]":
         a, b = max(win["t0"], a_t), min(win["t1"], b_t)
         if b - a < 0.5 / FPS:
             continue
+        # After an intro, the window sits later on the wall clock than in the
+        # narration. The footage keeps the narration time.
+        lag = float(win.get("narr_lag") or 0)
         box = _window_box(win, k)
         focus = plan["focus"] if win["layout"] in ("left", "right") else 0.5
         pieces = []
         for seg in plan["segments"]:
-            s, e = max(a, seg["t0"]), min(b, seg["t1"])
+            s, e = max(a - lag, seg["t0"]), min(b - lag, seg["t1"])
             if e - s < 0.5 / FPS:
                 continue
             sw, sh, x, y = _cover(seg["w"], seg["h"], box["w"], box["h"], focus)
@@ -2483,7 +2998,7 @@ def _host_filter(plan: dict, a_t: float, b_t: float) -> "tuple[list, str]":
             n += 1
         if not pieces:
             continue
-        start = pieces[0][1]
+        start = pieces[0][1] + lag
         if len(pieces) > 1:
             chains.append("".join(f"[{p}]" for p, _s in pieces) + f"concat=n={len(pieces)}:v=1:a=0[w{j}]")
         else:
@@ -3090,11 +3605,37 @@ def compile_composition(raw: str, timeline: Timeline, *, duration: float, plan: 
             "sections": [sec_labels.get(k) or k for k in order]}
 
 
+def _page_bookends(compiled: dict, urls: Optional[dict], mode: str) -> dict:
+    clock = compiled.get("clock") or {}
+    slides = compiled.get("slides") or []
+    urls = urls or {}
+
+    def pack(key, sid):
+        window = clock.get(key)
+        if not window:
+            return None
+        slide = next((s for s in slides if s.get("id") == sid), {}) or {}
+        nxt = None
+        for i, s in enumerate(slides):
+            if s.get("id") == sid and i + 1 < len(slides):
+                nxt = slides[i + 1]
+        exit_fx = nxt if nxt and nxt.get("fx_from") == sid else {}
+        return {"t0": window["wall0"], "t1": window["wall1"],
+                "src": (urls.get(key) or "") if mode == "preview" else "",
+                "audio": (urls.get(key + "_audio") or "clip"),
+                "enter": {"style": slide.get("fx") or "", "dur": slide.get("fx_dur") or 0, "amp": slide.get("fx_amp") or 1},
+                "exit": {"style": (exit_fx or {}).get("fx") or "", "dur": (exit_fx or {}).get("fx_dur") or 0,
+                         "amp": (exit_fx or {}).get("fx_amp") or 1}}
+
+    intro, end = pack("intro", INTRO_ID), pack("end", END_ID)
+    return {k: v for k, v in (("intro", intro), ("end", end)) if v}
+
+
 def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer",
               host: Optional[dict] = None, pip_frame: Optional[str] = None,
               bubble: Optional[str] = None, clips: Optional[list] = None,
               media_origin: str = "", visual: Optional[dict] = None,
-              demos: Optional[list] = None) -> str:
+              demos: Optional[list] = None, bookends: Optional[dict] = None) -> str:
     """A self-contained page: design CSS, the compiled slides, the runtime.
     The runtime exposes __seek(t), __check() and __ready for the renderer;
     in preview mode it answers postMessage seeks from the dialog. With a
@@ -3123,6 +3664,7 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
                       "asides": _aside_payloads(compiled.get("slides") or [], bubble),
                       "clips": clip_cfg, "visual": visual_cfg,
                       "demos": demos or [],
+                      "bookends": _page_bookends(compiled, bookends, mode),
                       "fx": [{"id": s.get("id"), "t": s.get("t0"), "dur": s.get("fx_dur"),
                               "style": s.get("fx"), "amp": s.get("fx_amp"), "why": s.get("fx_reason")}
                              for s in (compiled.get("slides") or []) if s.get("fx")],
@@ -3130,7 +3672,8 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
                                "video": video, "sections": compiled.get("host_sections") or [],
                                "fade": HOST_SECTION_FADE, "windows": windows,
                                "frames": _frame_payloads(windows)} if host_on else {"on": False}}).replace("</", "<\\/")
-    media = bool(video) or any(c.get("src") for c in clip_cfg)
+    media = bool(video) or any(c.get("src") for c in clip_cfg) or any(
+        (bookends or {}).get(k) for k in ("intro", "end"))
     origin = media_origin if str(media_origin).startswith(("http://", "https://")) else ""
     csp = ("default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
            "script-src 'unsafe-inline'; font-src data:"
@@ -3901,11 +4444,13 @@ class Project:
         host = self.host()
         media_key = sorted((c.get("id"), c.get("slide"), c.get("status"))
                            for c in load_youtube(self.data).get("clips") or [])
+        books = self.data.get("bookends") or {}
         key = json.dumps([n, self.data.get("values"), self.data.get("logo_choices"),
                           self.data.get("logos"), self.data.get("timing"), self.data.get("span"),
                           bool(host), (host or {}).get("sections"),
                           transition_mode_key(None, self.data.get("transition_mode")),
-                          self.data.get("slide_fx") or {}, media_key], sort_keys=True, default=str)
+                          self.data.get("slide_fx") or {}, self.data.get("gap_fx") or {},
+                          books, media_key], sort_keys=True, default=str)
         with self.lock:
             if self._compiled and self._compiled[0] == key:
                 return self._compiled[1]
@@ -3918,9 +4463,20 @@ class Project:
             plan=self.plan(), logos=logos, values=self.data.get("values") or {},
             logo_choices=self.data.get("logo_choices") or {}, span=self.span(), host_on=bool(host),
             host_sections=(host or {}).get("sections") or [])
+        audio_len = float(self.data.get("audio_seconds") or 0)
+        at_end = audio_len <= 0 or float(out.get("end") or 0) >= audio_len - 0.4
+        intro = resolve_bookend(self.data, "intro")
+        end = resolve_bookend(self.data, "end")
+        apply_bookends(out, intro=intro, end=end, at_end=at_end,
+                       after=(books.get("intro") or {}).get("after") or "")
+        gaps = resolve_gaps(out.get("slides") or [], self.data)
+        if self.data.get("slide_fx") and gaps != normalize_gaps(self.data.get("gap_fx")):
+            with self.lock:
+                self.data["gap_fx"] = gaps
+                self.data.pop("slide_fx", None)
+                self.save()
         apply_transition_plan(out, mode=transition_mode_key(None, self.data.get("transition_mode")),
-                              overrides=self.data.get("slide_fx") or {},
-                              media_ids=media_ids_of(self.data))
+                              gaps=gaps, media_ids=media_ids_of(self.data))
         with self.lock:
             self._compiled = (key, out)
         return out
@@ -4997,19 +5553,45 @@ def render_video(project: Project, page: Path, *, start: float, end: float, scal
         _run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0",
               "-i", str(lst), "-c", "copy", str(video)])
         dur = frames / FPS
+        compiled_now = project.compile()
+        clock = compiled_now.get("clock") or {}
         yclips = clip_render_plan(project, start, start + dur)
-        if yclips:
-            # The narration keeps the clock: a short clip holds its last frame,
-            # a long one is trimmed to the slide. This re-encodes the joined picture.
-            status(message=f"{label}: fitting YouTube clips into the frame…",
+        books = []
+        for raw in bookend_overlay_items(compiled_now, resolve_bookend(project.data, "intro"),
+                                        resolve_bookend(project.data, "end")):
+            path = Path(raw["path"])
+            if not path.is_file():
+                path = project.dir / raw["path"]
+            if not path.is_file():
+                continue
+            off = float(raw["offset"]) - float(start)
+            show = float(raw["show"])
+            skip = float(raw.get("src_skip") or 0)
+            if off < 0:
+                skip -= off
+                show += off
+                off = 0.0
+            if show < 0.05 or off >= dur:
+                continue
+            show = min(show, dur - off)
+            books.append({**raw, "path": str(path), "offset": round(off, 3), "show": round(show, 3),
+                          "src_skip": round(max(0.0, skip), 3), "seconds": round(show, 3)})
+        laid_clips = yclips + books
+        if laid_clips:
+            status(message=f"{label}: fitting clips into the frame…",
                    progress=lo + (hi - lo) * 0.97)
             laid = work / "with_clips.mp4"
-            _run(build_overlay_cmd(video, laid, yclips, int(round(STAGE_W * scale)),
+            _run(build_overlay_cmd(video, laid, laid_clips, int(round(STAGE_W * scale)),
                                    int(round(STAGE_H * scale)), crf=crf))
             video = laid
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(".part.mp4")
-        _run(build_mux_cmd(video, project.dir / "narration.wav", tmp, start, dur, yclips))
+        paused = float(clock.get("intro_dur") or 0) > 0.02 or float(clock.get("end_dur") or 0) > 0.02
+        if paused:
+            sliced = _slice_clock(clock, float(start), dur)
+            _run(build_paused_mux_cmd(video, project.dir / "narration.wav", tmp, sliced, yclips + books))
+        else:
+            _run(build_mux_cmd(video, project.dir / "narration.wav", tmp, start, dur, yclips))
         tmp.replace(out)
         return out
     finally:

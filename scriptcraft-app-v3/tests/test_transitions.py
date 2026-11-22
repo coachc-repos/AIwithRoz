@@ -125,7 +125,15 @@ def check_rules(xv) -> None:
     assert xv.plan_slide_transitions(one, mode="off")[1]["blocked"] == "off"
     assert xv.plan_slide_transitions(one, mode="full", overrides={"s01": "none"})[1]["blocked"] == "none"
     forced = xv.plan_slide_transitions([_slide(0), _slide(1)], mode="full", overrides={"s01": "warp"})
-    assert forced[1]["style"] == "warp" and forced[1]["reason"] == "override"
+    assert forced[1]["style"] == "warp" and forced[1]["reason"] == "manual"
+    # A hand-picked style ignores the spacing guard and the global off switch.
+    held = [_slide(i, text=f"Step {i + 1}") for i in range(5)]
+    blocked = xv.plan_slide_transitions(held, mode="full")
+    assert blocked[2]["blocked"] == "spacing"
+    forced_gap = xv.plan_slide_transitions(held, mode="off", gaps={"s01>s02": {"fx": "paint", "dur": "long"}})
+    assert forced_gap[2]["style"] == "paint" and forced_gap[2]["origin"] == "manual"
+    assert forced_gap[2]["dur"] > xv.transition_duration("paint", "full")
+    assert forced_gap[1]["blocked"] == "off"
     subtle = xv.plan_slide_transitions(one, mode="subtle")
     full = xv.plan_slide_transitions(one, mode="full")
     assert subtle[1]["style"] == full[1]["style"]
@@ -202,7 +210,8 @@ def check_project_roundtrip(xv) -> None:
     project = xv.open_project(folder)
     comp = project.compile()
     by = {m["id"]: m for m in comp["slides"]}
-    assert by["s02"]["fx"] == "paint" and by["s02"]["fx_reason"] == "override"
+    assert by["s02"]["fx"] == "paint" and by["s02"]["fx_reason"] == "manual"
+    assert "s01>s02" in project.data.get("gap_fx", {})
     assert by["s03"]["fx_reason"] == "media-enter"
     assert "Markets" in comp["html"] and 'data-fx="paint"' in comp["html"]
     ids = xv.media_ids_of(project.data)
@@ -266,9 +275,11 @@ def check_ui(app: str) -> None:
     html = (ROOT / app / "templates" / "index.html").read_text(encoding="utf-8")
     assert 'id="xvTransition"' in html and 'value="full" selected' in html.split('id="xvTransition"', 1)[1].split("</select>", 1)[0]
     assert 'id="xvFxMode"' in html
-    assert "xvTransitionMode" in html and "xvSlideFx" in html
+    assert "xvTransitionMode" in html and "xvGapOpen" in html and "xvMountScrubber" in html
     assert "transition_mode: transitionMode" in html
-    assert "s.transition_mode, s.slide_fx" in html
+    assert "s.transition_mode, s.gap_fx" in html
+    assert "Set start here" in html and "Set end here" in html
+    assert 'class="xv-gap"' in html or "xv-gap" in html
     for style in ("glitch", "paint", "warp", "pixel", "lightleak", "burn", "shatter"):
         assert style in html, style
     js = (ROOT / app / "static" / "explainer" / "runtime.js").read_text(encoding="utf-8")
@@ -452,6 +463,53 @@ def check_renders(xv) -> None:
     print(f"samples in {SAMPLES}", flush=True)
 
 
+def check_bookends(xv) -> None:
+    hook = [
+        {"id": "h1", "kind": "scene", "section": "Hook", "section_key": "hook", "t0": 0.0, "t1": 4.0, "text": "Cold open"},
+        {"id": "h2", "kind": "slide", "section": "Hook", "section_key": "hook", "t0": 4.0, "t1": 7.0, "text": "Still the hook"},
+        {"id": "ch", "kind": "chapter", "section": "One bad day", "section_key": "c1", "t0": 7.0, "t1": 8.5, "text": "Chapter"},
+        {"id": "body", "kind": "slide", "section": "One bad day", "section_key": "c1", "t0": 8.5, "t1": 14.0, "text": "The story"},
+    ]
+    assert xv.intro_anchor_index(hook) == 1  # after the last hook slide
+    assert xv.intro_anchor_index(hook, after="ch") == 2
+    plain = [
+        {"id": "a", "kind": "slide", "section": "Markets", "section_key": "m", "t0": 0.0, "t1": 3.0, "text": "First"},
+        {"id": "b", "kind": "slide", "section": "Markets", "section_key": "m", "t0": 3.0, "t1": 8.0, "text": "Second"},
+    ]
+    assert xv.intro_anchor_index(plain) == 0  # no hook: after slide 1
+    intro = {"source": "channel", "file": "/tmp/intro.mp4", "seconds": 5, "start": 1, "end": 3.5, "audio": "clip", "label": "Intro"}
+    end = {"source": "channel", "file": "/tmp/end.mp4", "seconds": 4, "start": 0, "end": 2, "audio": "clip", "label": "End"}
+    assert abs(xv.bookend_duration(intro) - 2.5) < 0.01
+    compiled = {"html": '<section id="h2" data-t0="4.000" data-t1="7.000"><span data-t="5.000">Stay</span></section>'
+                        '<section id="body" data-t0="8.500" data-t1="14.000"><span data-t="9.000">Go</span></section>',
+                "slides": hook, "end": 14.0, "duration": 14.0, "start": 0.0,
+                "host_windows": [], "host_sections": [], "sections": ["Hook"]}
+    xv.apply_bookends(compiled, intro=intro, end=end, at_end=True)
+    ids = [s["id"] for s in compiled["slides"]]
+    assert ids.index(xv.INTRO_ID) == 2  # after h2
+    assert ids[-1] == xv.END_ID
+    intro_slide = compiled["slides"][2]
+    body = next(s for s in compiled["slides"] if s["id"] == "body")
+    assert abs(intro_slide["t0"] - 7.0) < 0.01 and abs(intro_slide["t1"] - 9.5) < 0.01
+    assert abs(body["t0"] - (8.5 + 2.5)) < 0.01  # narration resumes after the intro
+    assert 'data-t="11.500"' in compiled["html"]  # 9.000 + 2.5
+    clock = compiled["clock"]
+    covered = clock["narr_covered"]
+    assert covered[0][0] == 0.0 and abs(covered[-1][1] - 14.0) < 0.01
+    # No overlap and no missing narration.
+    cursor = 0.0
+    for a, b in covered:
+        assert abs(a - cursor) < 0.02
+        cursor = b
+    assert abs(cursor - 14.0) < 0.02
+    assert abs(clock["total"] - (14.0 + 2.5 + 2.0)) < 0.05
+    # Trim round-trip: the scrubber stores the same numbers the clip cutter uses.
+    start, stop = xv.clamp_trim(1.25, 6.5, 10)
+    text_a, text_b = xv.format_trim(start), xv.format_trim(stop)
+    assert abs(xv.parse_timecode(text_a) - start) < 0.001
+    assert xv.validate_clip_range(xv.parse_timecode(text_a), xv.parse_timecode(text_b), 10) == (start, stop)
+
+
 def check_copies(local, container) -> None:
     slides = [_slide(0), _slide(1, host="full"), _slide(2, text="Step 3", has_stat=True),
               _slide(3, media=True)]
@@ -469,6 +527,7 @@ def main() -> None:
         check_project_roundtrip(xv)
         check_clip_audio_unchanged(xv)
         check_ffmpeg_styles(xv)
+        check_bookends(xv)
     check_copies(local, container)
     for app in APPS:
         check_ui(app)
