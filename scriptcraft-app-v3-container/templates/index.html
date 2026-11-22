@@ -3611,14 +3611,14 @@
                 #explainerModal .xv-gap .tag { font-size:0.85em; letter-spacing:0.06em; text-transform:uppercase; margin-right:6px; }
                 #explainerModal .xv-pop { position:fixed; z-index:10080; background:#0f172a; border:1px solid #334155; border-radius:8px; padding:10px; width:240px; box-shadow:0 12px 30px rgba(0,0,0,0.45); }
                 #explainerModal .xv-scrub { margin-top:8px; }
-                #explainerModal .xv-scrub video { width:100%; max-height:180px; background:#000; border-radius:6px; }
+                #explainerModal .xv-scrub video { display:block; width:100%; height:180px; min-height:140px; background:#000; border-radius:6px; object-fit:contain; }
                 #explainerModal .xv-film { display:flex; height:48px; border-radius:4px; overflow:hidden; background:#020617; margin-top:6px; }
                 #explainerModal .xv-film img { flex:1; height:48px; object-fit:cover; min-width:0; }
-                #explainerModal .xv-track { position:relative; height:36px; margin-top:4px; touch-action:none; }
-                #explainerModal .xv-track .bar { position:absolute; left:0; right:0; top:14px; height:8px; background:#1e293b; border-radius:4px; }
-                #explainerModal .xv-track .sel { position:absolute; top:14px; height:8px; background:#f5b83d; border-radius:4px; }
-                #explainerModal .xv-track .h { position:absolute; top:4px; width:28px; height:28px; margin-left:-14px; border-radius:14px; background:#f8fafc; border:2px solid #f5b83d; cursor:ew-resize; }
-                #explainerModal .xv-track .play { position:absolute; top:0; width:2px; height:36px; background:#e2e8f0; pointer-events:none; }
+                #explainerModal .xv-track { position:relative; height:48px; margin-top:4px; touch-action:none; }
+                #explainerModal .xv-track .bar { position:absolute; left:0; right:0; top:20px; height:8px; background:#1e293b; border-radius:4px; }
+                #explainerModal .xv-track .sel { position:absolute; top:20px; height:8px; background:#f5b83d; border-radius:4px; }
+                #explainerModal .xv-track .h { position:absolute; top:2px; width:44px; height:44px; margin-left:-22px; border-radius:22px; background:#f8fafc; border:2px solid #f5b83d; cursor:ew-resize; touch-action:none; }
+                #explainerModal .xv-track .play { position:absolute; top:0; width:2px; height:48px; background:#e2e8f0; pointer-events:none; }
                 #explainerModal .xv-times { font-size:0.75em; color:#94a3b8; margin-top:4px; }
                 #explainerModal .xv-slide:hover { background:#111b2e; }
                 #explainerModal .xv-slide.cur { border-color:#f59e0b; background:#1a1608; }
@@ -13696,7 +13696,7 @@ Thank you for watching!`;
             let end = host.dataset.end === '' ? (+host.dataset.dur || 0) : +host.dataset.end;
             let dur = +host.dataset.dur || 0;
             let playAt = start;
-            host.innerHTML = '<video playsinline preload="metadata" src="' + _xvEsc(url) + '"></video>'
+            host.innerHTML = '<video playsinline webkit-playsinline preload="auto" src="' + _xvEsc(url) + '"></video>'
                 + '<div class="xv-film" data-film></div>'
                 + '<div class="xv-track" data-track tabindex="0"><div class="bar"></div><div class="sel" data-sel></div><div class="h" data-h="a"></div><div class="h" data-h="b"></div><div class="play" data-play></div></div>'
                 + '<div class="xv-times" data-times></div>'
@@ -13722,13 +13722,19 @@ Thank you for watching!`;
                 ha.style.left = pct(start) + '%';
                 hb.style.left = pct(end) + '%';
                 play.style.left = pct(playAt) + '%';
-                times.textContent = _xvFmtT(start) + ' → ' + _xvFmtT(end) + (dur ? ' · ' + _xvFmtT(dur) : '');
+                times.textContent = _xvFmtT(start) + ' → ' + _xvFmtT(end) + ' · ' + _xvFmtT(Math.max(0, end - start));
                 host.querySelector('[data-exact="a"]').value = start.toFixed(3);
                 host.querySelector('[data-exact="b"]').value = end.toFixed(3);
             };
             const commit = () => { if (opts && opts.onCommit) opts.onCommit(+start.toFixed(3), +end.toFixed(3)); };
-            const seekTo = t => { playAt = Math.max(0, Math.min(dur || t, t)); if (video.readyState) video.currentTime = playAt; paint(); };
-            video.addEventListener('loadedmetadata', () => { if (!dur) dur = video.duration || 0; if (!end) end = dur; paint(); });
+            const seekTo = t => {
+                playAt = Math.max(0, Math.min(dur || t, t));
+                const apply = () => { try { if (Math.abs((video.currentTime || 0) - playAt) > 0.02) video.currentTime = playAt; } catch (err) {} };
+                if (video.readyState >= 1) apply();
+                else video.addEventListener('loadeddata', apply, { once: true });
+                paint();
+            };
+            video.addEventListener('loadedmetadata', () => { if (!dur) dur = video.duration || 0; if (!(end > start)) end = dur; seekTo(playAt); });
             video.addEventListener('timeupdate', () => {
                 playAt = video.currentTime || 0;
                 if (host.dataset.loop === '1' && playAt >= end - 0.02) { video.currentTime = start; }
@@ -13740,27 +13746,41 @@ Thank you for watching!`;
                 return Math.max(0, Math.min(dur || 1, x / Math.max(1, r.width) * (dur || 1)));
             };
             let drag = '';
-            const down = (which, ev) => { drag = which; ev.preventDefault(); track.focus(); };
+            const down = (which, ev) => {
+                drag = which;
+                host.dataset.loop = '';
+                if (!video.paused) video.pause();
+                ev.preventDefault();
+                ev.stopPropagation();
+                if (ev.pointerId != null) { try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch (err) {} }
+                track.focus();
+            };
             ha.addEventListener('pointerdown', ev => down('a', ev));
             hb.addEventListener('pointerdown', ev => down('b', ev));
-            track.addEventListener('pointerdown', ev => { if (ev.target === ha || ev.target === hb) return; seekTo(at(ev)); drag = 'p'; });
-            window.addEventListener('pointermove', ev => {
+            track.addEventListener('pointerdown', ev => { if (ev.target === ha || ev.target === hb) return; down('p', ev); seekTo(at(ev)); });
+            const move = ev => {
                 if (!drag) return;
                 const t = at(ev);
-                if (drag === 'a') start = Math.min(t, end - 0.2);
-                else if (drag === 'b') end = Math.max(t, start + 0.2);
+                if (drag === 'a') { start = Math.min(t, end - 0.2); seekTo(start); }
+                else if (drag === 'b') { end = Math.max(t, start + 0.2); seekTo(end); }
                 else seekTo(t);
-                paint();
-            });
-            window.addEventListener('pointerup', () => { if (drag === 'a' || drag === 'b') commit(); drag = ''; });
-            host.querySelector('[data-act="set-a"]').onclick = () => { start = Math.min(playAt, end - 0.2); paint(); commit(); };
-            host.querySelector('[data-act="set-b"]').onclick = () => { end = Math.max(playAt, start + 0.2); paint(); commit(); };
-            host.querySelector('[data-act="loop"]').onclick = () => { host.dataset.loop = '1'; video.currentTime = start; video.play().catch(() => {}); };
+            };
+            ha.addEventListener('pointermove', move);
+            hb.addEventListener('pointermove', move);
+            track.addEventListener('pointermove', move);
+            const up = () => { if (drag === 'a' || drag === 'b') commit(); drag = ''; };
+            ha.addEventListener('pointerup', up);
+            hb.addEventListener('pointerup', up);
+            track.addEventListener('pointerup', up);
+            track.addEventListener('pointercancel', up);
+            host.querySelector('[data-act="set-a"]').onclick = () => { start = Math.min(playAt, end - 0.2); seekTo(start); commit(); };
+            host.querySelector('[data-act="set-b"]').onclick = () => { end = Math.max(playAt, start + 0.2); seekTo(end); commit(); };
+            host.querySelector('[data-act="loop"]').onclick = () => { host.dataset.loop = '1'; seekTo(start); const pr = video.play(); if (pr && pr.catch) pr.catch(() => {}); };
             host.querySelector('[data-act="exact"]').onclick = () => {
                 start = Math.max(0, parseFloat(host.querySelector('[data-exact="a"]').value) || 0);
                 end = Math.max(start + 0.2, parseFloat(host.querySelector('[data-exact="b"]').value) || start + 0.2);
                 if (dur) end = Math.min(end, dur);
-                paint(); commit();
+                seekTo(start); commit();
             };
             track.addEventListener('keydown', ev => {
                 const step = ev.shiftKey ? 1 : 0.1;
