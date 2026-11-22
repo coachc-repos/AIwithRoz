@@ -10,3 +10,8 @@ brand_hero_cinematic.png, brand_compare_cinematic.png, brand_orbit_cinematic.png
   brands_motion.mp4 plays those three.
 demo_empty_cinematic.png: the preview placeholder, to the right of the text card.
 demo_filled.png: a slide after an uploaded clip is assigned. An empty slot is not drawn in the final render.
+
+Object seam fixes (house, car, building, datacenter, tree, factory, server, phone, chart, powerline):
+object_<name>_before.png and object_<name>_after.png are zoomed crops.
+objects_sheet_cinematic.png is every object.
+objects_fixed.mp4 is a house, a car and a small city while they move.

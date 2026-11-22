@@ -72,7 +72,9 @@ def write_imagery_samples(folder) -> list:
     folder = Path(folder)
     if folder.exists():
         for old in folder.iterdir():
-            if old.is_file() and not old.name.startswith("edge_") and old.name != "demo_filled.png":
+            keep = old.name.startswith(("edge_", "object_")) or old.name in {
+                "demo_filled.png", "objects_sheet_cinematic.png", "objects_fixed.mp4"}
+            if old.is_file() and not keep:
                 old.unlink()
     folder.mkdir(parents=True, exist_ok=True)
     slides = [
