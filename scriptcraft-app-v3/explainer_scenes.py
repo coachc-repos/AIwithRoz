@@ -245,45 +245,44 @@ def _cinematic() -> dict:
             <circle cx="232" cy="36" r="3" fill="#c5d0dc"/>
             <line x1="232" y1="36" x2="206" y2="28" stroke="#c5d0dc" stroke-width="3" stroke-linecap="round"/>""",
         "car": """
-            <ellipse cx="160" cy="96" rx="120" ry="5" fill="#000" opacity="0.4"/>
-            <g class="sc-wheel" data-cx="96" data-cy="78">
-              <circle cx="96" cy="78" r="16" fill="#6a7384"/>
-              <ellipse cx="90" cy="72" rx="6" ry="4" fill="#c5ced8" opacity="0.65"/>
-              <circle cx="96" cy="78" r="11" fill="#d5dde6"/>
-              <rect x="94" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(0 96 78)"/>
-              <rect x="94" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(72 96 78)"/>
-              <rect x="94" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(144 96 78)"/>
-              <rect x="94" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(216 96 78)"/>
-              <rect x="94" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(288 96 78)"/>
-              <circle cx="96" cy="78" r="4" fill="#2a3138"/>
+            <ellipse cx="160" cy="98" rx="100" ry="4" fill="#000" opacity="0.4"/>
+            <g class="sc-wheel" data-cx="86" data-cy="78">
+              <circle cx="86" cy="78" r="16" fill="#2c3340"/>
+              <ellipse cx="80" cy="72" rx="6" ry="4" fill="#8b97a8" opacity="0.55"/>
+              <circle cx="86" cy="78" r="11" fill="#d5dde6"/>
+              <rect x="85" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(0 86 78)"/>
+              <rect x="85" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(72 86 78)"/>
+              <rect x="85" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(144 86 78)"/>
+              <rect x="85" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(216 86 78)"/>
+              <rect x="85" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(288 86 78)"/>
+              <circle cx="86" cy="78" r="4" fill="#2a3138"/>
             </g>
-            <g class="sc-wheel" data-cx="270" data-cy="78">
-              <circle cx="270" cy="78" r="16" fill="#6a7384"/>
-              <ellipse cx="264" cy="72" rx="6" ry="4" fill="#c5ced8" opacity="0.65"/>
-              <circle cx="270" cy="78" r="11" fill="#d5dde6"/>
-              <rect x="268" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(0 270 78)"/>
-              <rect x="268" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(72 270 78)"/>
-              <rect x="268" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(144 270 78)"/>
-              <rect x="268" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(216 270 78)"/>
-              <rect x="268" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(288 270 78)"/>
-              <circle cx="270" cy="78" r="4" fill="#2a3138"/>
+            <g class="sc-wheel" data-cx="230" data-cy="78">
+              <circle cx="230" cy="78" r="16" fill="#2c3340"/>
+              <ellipse cx="224" cy="72" rx="6" ry="4" fill="#8b97a8" opacity="0.55"/>
+              <circle cx="230" cy="78" r="11" fill="#d5dde6"/>
+              <rect x="229" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(0 230 78)"/>
+              <rect x="229" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(72 230 78)"/>
+              <rect x="229" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(144 230 78)"/>
+              <rect x="229" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(216 230 78)"/>
+              <rect x="229" y="69" width="3" height="7" rx="1" fill="#f7f9fb" transform="rotate(288 230 78)"/>
+              <circle cx="230" cy="78" r="4" fill="#2a3138"/>
             </g>
-            <path d="M16 66 C16 60 36 58 78 56 L118 24 C128 16 148 14 204 14 L220 16 L256 54 L306 60 L306 72 L292 74 C288 54 252 54 248 74 L116 74 C112 54 80 54 76 74 L24 74 C18 74 16 70 16 66 Z" fill="url(#scg-body)"/>
-            <path d="M190 24 L216 20 L242 52 L196 52 Z" fill="url(#scg-glass)"/>
-            <path d="M198 26 L214 24 L208 40 L196 40 Z" fill="#fff" opacity="0.4"/>
-            <path d="M170 22 L186 22 L192 52 L170 52 Z" fill="url(#scg-glass)"/>
-            <path d="M122 26 L160 22 L160 52 L118 52 Z" fill="url(#scg-glass)"/>
-            <path d="M128 30 L148 28 L148 38 L128 38 Z" fill="#fff" opacity="0.28"/>
-            <path d="M84 44 L108 30 L112 52 L82 52 Z" fill="url(#scg-glass)"/>
-            <rect x="162" y="20" width="8" height="34" fill="#141a24"/>
-            <rect x="112" y="26" width="8" height="28" fill="#141a24"/>
-            <rect x="140" y="60" width="14" height="3" rx="1" fill="#c5ced8"/>
-            <rect x="188" y="60" width="14" height="3" rx="1" fill="#c5ced8"/>
-            <rect x="228" y="44" width="16" height="8" rx="3" fill="#121820"/>
-            <path d="M294 62 L306 64 L306 74 L292 72 Z" fill="#ffe7a8"/>
-            <path d="M16 62 L28 60 L28 74 L16 74 Z" fill="#e85d5d"/>
-            <rect x="170" y="54" width="2" height="20" fill="#121820"/>
-            <rect x="120" y="54" width="2" height="20" fill="#121820"/>""",
+            <path d="M34 66 C34 58 48 54 66 52 L86 50 C102 32 118 18 140 14 C172 8 200 8 220 12 L236 26 C246 38 254 48 264 52 L280 56 C286 58 290 64 290 68 L290 72 L252 74 C248 56 212 56 208 74 L108 74 C104 56 68 56 64 74 L40 74 C34 74 34 70 34 66 Z" fill="url(#scg-body)"/>
+            <path d="M76 50 L96 44 L102 50 L78 50 Z" fill="url(#scg-glass)"/>
+            <path d="M132 32 L158 28 L162 50 L128 50 Z" fill="url(#scg-glass)"/>
+            <path d="M184 26 L204 24 L206 50 L180 50 Z" fill="url(#scg-glass)"/>
+            <path d="M188 30 L200 28 L200 38 L188 38 Z" fill="#fff" opacity="0.3"/>
+            <path d="M206 38 L220 34 L240 50 L212 50 Z" fill="url(#scg-glass)"/>
+            <path d="M210 40 L220 37 L224 46 L212 46 Z" fill="#fff" opacity="0.4"/>
+            <path d="M70 54 L250 50 L250 53 L70 57 Z" fill="#9aabbe" opacity="0.35"/>
+            <path d="M36 68 L78 68 L78 74 L40 74 Z" fill="#6d7c90"/>
+            <path d="M236 68 L286 66 L288 74 L234 74 Z" fill="#6d7c90"/>
+            <path d="M42 60 L60 58 L60 68 L42 66 Z" fill="#e45a5a"/>
+            <path d="M258 56 L276 58 L276 68 L256 66 Z" fill="#ffe7a8"/>
+            <path d="M222 50 L238 48 L238 56 L220 56 Z" fill="#121820"/>
+            <rect x="136" y="58" width="12" height="3" rx="1" fill="#c5ced8"/>
+            <rect x="186" y="58" width="12" height="3" rx="1" fill="#c5ced8"/>""",
         "tree": """
             <ellipse cx="70" cy="158" rx="34" ry="6" fill="#000" opacity="0.32"/>
             <polygon points="58,96 50,156 86,156 78,96" fill="#5a3a24"/>
