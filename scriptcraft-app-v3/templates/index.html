@@ -3603,6 +3603,23 @@
                 #explainerModal .xv-item { padding:9px 10px; background:#0b1220; border:1px solid #1e293b; border-radius:6px; margin-bottom:8px; font-size:0.8em; color:#cbd5e1; }
                 #explainerModal .xv-item.need { border-color:#b45309; }
                 #explainerModal .xv-slide { display:flex; gap:8px; align-items:flex-start; padding:6px 8px; border-radius:5px; cursor:pointer; font-size:0.78em; color:#cbd5e1; border:1px solid transparent; }
+                #explainerModal .xv-gap { display:flex; justify-content:center; margin:2px 0 6px; }
+                #explainerModal .xv-gap button { border:1px dashed #334155; background:#0b1220; color:#94a3b8; border-radius:999px; padding:3px 10px; font-size:0.72em; cursor:pointer; min-height:32px; }
+                #explainerModal .xv-gap button.manual { border-style:solid; border-color:#f5b83d; color:#f5b83d; }
+                #explainerModal .xv-gap button.auto { border-style:solid; border-color:#4c8dff; color:#cbd5e1; }
+                #explainerModal .xv-gap button.held { color:#64748b; }
+                #explainerModal .xv-gap .tag { font-size:0.85em; letter-spacing:0.06em; text-transform:uppercase; margin-right:6px; }
+                #explainerModal .xv-pop { position:fixed; z-index:10080; background:#0f172a; border:1px solid #334155; border-radius:8px; padding:10px; width:240px; box-shadow:0 12px 30px rgba(0,0,0,0.45); }
+                #explainerModal .xv-scrub { margin-top:8px; }
+                #explainerModal .xv-scrub video { width:100%; max-height:180px; background:#000; border-radius:6px; }
+                #explainerModal .xv-film { display:flex; height:48px; border-radius:4px; overflow:hidden; background:#020617; margin-top:6px; }
+                #explainerModal .xv-film img { flex:1; height:48px; object-fit:cover; min-width:0; }
+                #explainerModal .xv-track { position:relative; height:36px; margin-top:4px; touch-action:none; }
+                #explainerModal .xv-track .bar { position:absolute; left:0; right:0; top:14px; height:8px; background:#1e293b; border-radius:4px; }
+                #explainerModal .xv-track .sel { position:absolute; top:14px; height:8px; background:#f5b83d; border-radius:4px; }
+                #explainerModal .xv-track .h { position:absolute; top:4px; width:28px; height:28px; margin-left:-14px; border-radius:14px; background:#f8fafc; border:2px solid #f5b83d; cursor:ew-resize; }
+                #explainerModal .xv-track .play { position:absolute; top:0; width:2px; height:36px; background:#e2e8f0; pointer-events:none; }
+                #explainerModal .xv-times { font-size:0.75em; color:#94a3b8; margin-top:4px; }
                 #explainerModal .xv-slide:hover { background:#111b2e; }
                 #explainerModal .xv-slide.cur { border-color:#f59e0b; background:#1a1608; }
                 #explainerModal .xv-logo-tile { display:flex; flex-direction:column; gap:5px; padding:8px; background:#0b1220; border:1px solid #1e293b; border-radius:6px; font-size:0.75em; color:#94a3b8; }
@@ -3649,6 +3666,7 @@
                         <select id="xvPipFrame" class="xv-input" style="width:auto; height:34px;" title="Corner windows: sometimes inside a monitor, laptop, phone or TV"><option value="mix" selected>corner frame sometimes</option><option value="off">plain corner only</option><option value="monitor">corner: monitor</option><option value="laptop">corner: laptop</option><option value="phone">corner: phone</option><option value="tv">corner: TV</option></select>
                         <select id="xvBubble" class="xv-input" style="width:auto; height:34px;" title="A guide character with a short line from the narration, lower left"><option value="some" selected>guide notes sometimes</option><option value="off">no guide notes</option><option value="often">guide notes often</option></select>
                         <select id="xvVisual" class="xv-input" style="width:auto; height:34px;" title="Classic draws scene objects flat. Cinematic draws the same cars, buildings and houses with volume and motion. Text slides stay as they are."><option value="classic" selected>scenes: classic</option><option value="cinematic">scenes: cinematic</option></select>
+                        <select id="xvTransition" class="xv-input" style="width:auto; height:34px;" title="Stylized transitions on presenter entrances, clips, numbered steps and section changes. Other slides keep the simple push. Full is the default."><option value="full" selected>transitions: full</option><option value="subtle">transitions: subtle</option><option value="off">transitions: off</option></select>
                     </div>
                     <div id="xvHostNote" style="font-size:0.75em; color:#64748b; margin-bottom:14px;"></div>
                     <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
@@ -3720,12 +3738,19 @@
                         </div>
                         <div id="xvPane-needs" class="xv-pane on"></div>
                         <div id="xvPane-slides" class="xv-pane">
-                            <div style="display:flex; gap:6px; margin-bottom:6px;">
+                            <div style="display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap; align-items:center;">
                                 <button class="xv-btn small" onclick="xvSelectFlagged()">Tick flagged</button>
                                 <button class="xv-btn small" onclick="xvSelectNone()">Clear ticks</button>
+                                <select id="xvFxMode" class="xv-input" style="width:auto; height:28px; padding:0 6px;" title="Full plays the stylized transitions. Subtle is shorter and quieter. Off keeps the simple cut." onchange="xvTransitionMode(this.value)">
+                                    <option value="full">transitions full</option>
+                                    <option value="subtle">transitions subtle</option>
+                                    <option value="off">transitions off</option>
+                                </select>
                                 <span id="xvChecking" style="font-size:0.72em; color:#64748b; align-self:center;"></span>
                             </div>
+                            <div id="xvBookends"></div>
                             <div id="xvSlideList"></div>
+                            <div id="xvGapPop" class="xv-pop" style="display:none;"></div>
                         </div>
                         <div id="xvPane-clips" class="xv-pane"></div>
                         <div id="xvPane-presenter" class="xv-pane"></div>
@@ -12379,8 +12404,9 @@ Thank you for watching!`;
             const pipFrame = document.getElementById('xvPipFrame').value;
             const bubble = document.getElementById('xvBubble').value;
             const visual = document.getElementById('xvVisual').value;
+            const transitionMode = (document.getElementById('xvTransition') || {}).value || 'full';
             const d = await _xvPost('/api/explainer/start', { voiceover: audio, script: script, text: extractHeyGenSection(script) || '', logos: logos,
-                test: test, presenter: presenter, share: share, pip_frame: pipFrame, bubble: bubble, visual_style: visual });
+                test: test, presenter: presenter, share: share, pip_frame: pipFrame, bubble: bubble, visual_style: visual, transition_mode: transitionMode });
             if (!d.success) {
                 btn.disabled = false;
                 _xvStatus('❌ ' + _xvEsc(d.error || 'Could not start.') + (d.needs_key ? ' <a href="#" onclick="closeExplainerModal(); openApiKeysModal(); return false;">🔑 API Keys</a>' : ''), '#f87171');
@@ -12445,7 +12471,7 @@ Thank you for watching!`;
             const note = document.getElementById('xvFrameNote');
             if (s.current) {
                 const yclips = ((s.youtube || {}).clips || []).map(c => [c.id, c.slide, c.audio, c.file, c.start, c.end, c.status]);
-                const key = s.current + '|' + JSON.stringify([s.values, s.logo_choices, s.logos, s.span, s.pip_frame, s.bubble, s.visual_style, yclips, s.host && [s.host.created, s.host.focus, s.host.sections, s.host.pip_frame]]);
+                const key = s.current + '|' + JSON.stringify([s.values, s.logo_choices, s.logos, s.span, s.pip_frame, s.bubble, s.visual_style, s.transition_mode, s.gap_fx, s.bookends, s.clock, yclips, s.host && [s.host.created, s.host.focus, s.host.sections, s.host.pip_frame]]);
                 if (key !== _xv.frameKey) {
                     _xv.frameKey = key;
                     document.getElementById('xvFrame').src = _xvApi('/preview?' + _xvQ() + '&v=' + s.current + '&_=' + Date.now());
@@ -12487,6 +12513,8 @@ Thank you for watching!`;
                   + (hostLow ? ' ℹ️ The presenter clips are 1080p and will be scaled up: Presenter → Rescan picks up 4K upscales.' : '');
             document.getElementById('xvNeedsCount').textContent = left ? '(' + left + ')' : '';
             document.getElementById('xvSlidesCount').textContent = (s.slides || []).length ? '(' + s.slides.length + ')' : '';
+            const fxMode = document.getElementById('xvFxMode');
+            if (fxMode && document.activeElement !== fxMode) fxMode.value = s.transition_mode || 'full';
             const clipN = ((s.youtube || {}).clips || []).length;
             const clipCount = document.getElementById('xvClipCount');
             if (clipCount) clipCount.textContent = clipN ? '(' + clipN + ')' : '';
@@ -12718,8 +12746,17 @@ Thank you for watching!`;
             if (!(b > a)) { el.innerHTML = ''; return; }
             const pct = t => (Math.max(0, Math.min(1, (t - a) / (b - a))) * 100).toFixed(3) + '%';
             const bar = (t0, t1, color) => '<div style="position:absolute; top:0; height:4px; border-radius:2px; left:' + pct(t0) + '; width:calc(' + pct(t1) + ' - ' + pct(t0) + '); background:' + color + ';"></div>';
+            const gaps = (s.slides || []).slice(1).map((m, i) => {
+                const prev = s.slides[i];
+                const manual = (s.gap_fx || {})[prev.id + '>' + m.id];
+                const color = manual ? '#f5b83d' : (m.fx ? '#4c8dff' : (m.fx_blocked === 'spacing' ? '#64748b' : '#334155'));
+                return '<button type="button" title="' + _xvEsc(prev.id + ' → ' + m.id) + '" data-from="' + _xvEsc(prev.id) + '" data-to="' + _xvEsc(m.id) + '" onclick="xvGapOpen(this)" style="position:absolute; top:-7px; width:14px; height:18px; margin-left:-7px; border-radius:7px; border:0; background:' + color + '; cursor:pointer; left:' + pct(m.t0) + ';"></button>';
+            }).join('');
             el.innerHTML = (s.slides || []).filter(m => m.host).map(m => bar(m.t0, m.t1, '#3b82f6')).join('')
-                + ((s.host || {}).sections || []).map(x => bar(x.t0, x.t1, '#f59e0b')).join('');
+                + ((s.host || {}).sections || []).map(x => bar(x.t0, x.t1, '#f59e0b')).join('')
+                + gaps;
+            el.style.pointerEvents = 'auto';
+            el.style.height = '18px';
         }
 
         function xvTab(name) {
@@ -12963,12 +13000,20 @@ Thank you for watching!`;
                         + '<div style="color:#94a3b8; font-size:0.78em; margin-top:4px;">' + _xvEsc(c.note || 'Upload a recording and assign it here.') + '</div>'
                         + '<div style="color:#64748b; font-size:0.75em; margin-top:4px;">Shown in the preview until you fill it. The final render leaves this slide as designed if it is still empty.</div></div>';
                 }
-                return '<div class="xv-item" data-ytclip="' + _xvEsc(c.id) + '"><div style="display:flex; gap:6px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">'
+                const srcVid = (yt.videos || []).find(v => v.id === c.video);
+                const canScrub = srcVid && srcVid.status === 'ready' && srcVid.file;
+                const scrub = canScrub
+                    ? '<div class="xv-scrub" data-clip="' + _xvEsc(c.id) + '" data-url="' + _xvEsc(_xvApi('/file?' + _xvQ() + '&path=' + encodeURIComponent(srcVid.file))) + '" data-film="' + _xvEsc(_xvApi('/filmstrip?' + _xvQ() + '&path=' + encodeURIComponent(srcVid.file))) + '" data-start="' + (c.start || 0) + '" data-end="' + (c.end || '') + '" data-dur="' + (srcVid.seconds || 0) + '"></div>'
+                    : (srcVid && srcVid.status === 'downloading' ? '<div style="color:#fbbf24; font-size:0.78em;">Downloading the full video before it can be scrubbed… ' + _xvEsc(srcVid.message || '') + '</div>' : '');
+                return '<div class="xv-item" data-ytclip="' + _xvEsc(c.id) + '">' + scrub
+                    + '<div style="display:flex; gap:6px; align-items:center; margin:6px 0; flex-wrap:wrap;">'
                     + '<input class="xv-input" data-k="label" value="' + _xvEsc(c.label || '') + '" placeholder="Label" style="flex:1; min-width:80px;"' + dis + '>'
+                    + '<span class="xv-times">' + _xvFmtT(c.start) + ' → ' + _xvFmtT(c.end) + '</span>'
+                    + '<button class="xv-btn small" onclick="xvYtRemove(\'' + _xvEsc(c.id) + '\')"' + dis + ' title="Remove clip">✕</button></div>'
+                    + '<details><summary style="color:#64748b; cursor:pointer;">Exact time</summary><div class="xv-sec" style="margin-top:4px;">'
                     + '<input class="xv-input" data-k="start" value="' + _xvFmtT(c.start) + '" style="width:84px;"' + dis + '>'
                     + '<input class="xv-input" data-k="end" value="' + _xvFmtT(c.end) + '" style="width:84px;"' + dis + '>'
-                    + '<button class="xv-btn small" onclick="xvYtSave(\'' + _xvEsc(c.id) + '\')"' + dis + '>Save</button>'
-                    + '<button class="xv-btn small" onclick="xvYtRemove(\'' + _xvEsc(c.id) + '\')"' + dis + ' title="Remove clip">✕</button></div>'
+                    + '<button class="xv-btn small" onclick="xvYtSave(\'' + _xvEsc(c.id) + '\')"' + dis + '>Save</button></div></details>'
                     + '<div class="xv-sec" style="flex-wrap:wrap;"><select class="xv-input" style="flex:1;"' + dis
                     + ' onchange="xvYtAudio(\'' + _xvEsc(c.id) + '\', this.value)">'
                     + audioOpts.map(o => '<option value="' + o[0] + '"' + ((c.audio || 'mute') === o[0] ? ' selected' : '') + (o[0] !== 'mute' && !c.has_audio ? ' disabled' : '') + '>' + o[1] + '</option>').join('')
@@ -12981,6 +13026,9 @@ Thank you for watching!`;
                 + '</div>';
             el.innerHTML = html;
             _xvClipDraftRestore();
+            el.querySelectorAll('.xv-scrub[data-clip]').forEach(host => {
+                xvMountScrubber(host, { onCommit: (a, b) => _xvYt({ action: 'update', id: host.dataset.clip, start: a.toFixed(3), end: b.toFixed(3), label: '' }) });
+            });
         }
 
         function _xvRenderSlides() {
@@ -12993,19 +13041,69 @@ Thank you for watching!`;
                 + (running ? ' disabled' : '') + ' onclick="event.stopPropagation()" onchange="xvSlideHost(this.dataset.id, this.value)">'
                 + Object.keys(_XV_HOST_NAMES).map(k => '<option value="' + k + '"' + ((m.host || '') === k ? ' selected' : '') + '>' + (k ? '🧑‍💼 ' : '') + _XV_HOST_NAMES[k] + '</option>').join('') + '</select>';
             const clipSel = m => _xvClipSelect(m.id, running);
-            document.getElementById('xvSlideList').innerHTML = list.length ? list.map(m => {
+            const fxNames = { glitch: 'Glitch', paint: 'Ink wipe', warp: 'Warp', pixel: 'Pixel', lightleak: 'Light leak', burn: 'Film burn', shatter: 'Shatter' };
+            const gapChip = (prev, m) => {
+                if (!prev) return '';
+                const saved = ((_xv.state.gap_fx || {})[prev.id + '>' + m.id]) || null;
+                let cls = '', label = '+ transition';
+                if (saved && saved.fx && saved.fx !== 'auto') {
+                    cls = 'manual';
+                    label = '<span class="tag">manual</span>' + (saved.fx === 'none' ? 'None' : (fxNames[saved.fx] || saved.fx));
+                } else if (m.fx_origin === 'manual' && m.fx) {
+                    cls = 'manual';
+                    label = '<span class="tag">manual</span>' + (fxNames[m.fx] || m.fx);
+                } else if (m.fx_blocked === 'spacing') {
+                    cls = 'held';
+                    label = '<span class="tag">held</span>spacing';
+                } else if (m.fx_blocked === 'none') {
+                    cls = 'manual';
+                    label = '<span class="tag">manual</span>None';
+                } else if (m.fx) {
+                    cls = 'auto';
+                    label = '<span class="tag">auto</span>' + (fxNames[m.fx] || m.fx);
+                }
+                return '<div class="xv-gap"><button type="button" class="' + cls + '" data-from="' + _xvEsc(prev.id) + '" data-to="' + _xvEsc(m.id) + '"'
+                    + (running ? ' disabled' : '') + ' onclick="event.stopPropagation(); xvGapOpen(this)">' + label + '</button></div>';
+            };
+            document.getElementById('xvSlideList').innerHTML = list.length ? list.map((m, i) => {
                 const ws = _xvAllWarnings(m);
                 const major = ws.filter(w => !w.minor);
-                return '<div class="xv-slide' + (cur && cur.id === m.id ? ' cur' : '') + '" data-id="' + _xvEsc(m.id) + '" onclick="xvGoSlide(this.dataset.id)">'
+                const move = m.kind === 'intro' ? '<button class="xv-btn small" onclick="event.stopPropagation(); xvBookMove(\'earlier\')">↑</button><button class="xv-btn small" onclick="event.stopPropagation(); xvBookMove(\'later\')">↓</button>' : '';
+                return gapChip(list[i - 1], m) + '<div class="xv-slide' + (cur && cur.id === m.id ? ' cur' : '') + '" data-id="' + _xvEsc(m.id) + '" onclick="xvGoSlide(this.dataset.id)">'
                     + '<input type="checkbox" ' + (_xv.selected.has(m.id) ? 'checked ' : '') + 'onclick="event.stopPropagation(); xvToggleSlide(this.parentNode.dataset.id, this.checked)">'
-                    + '<div style="flex:1; min-width:0;"><div><strong style="color:#e2e8f0;">' + _xvEsc(m.id) + '</strong> · ' + _xvFmt(m.t0) + '–' + _xvFmt(m.t1)
-                    + ' · ' + (icon[m.kind] || '') + ' ' + _xvEsc(m.kind) + (m.section ? ' · <span style="color:#64748b;">' + _xvEsc(m.section) + '</span>' : '')
-                    + (major.length ? ' <span style="color:#fbbf24;">⚠️ ' + major.length + '</span>' : '') + hostSel(m) + clipSel(m) + '</div>'
+                    + '<div style="flex:1; min-width:0;"><div><strong style="color:#e2e8f0;">' + _xvEsc(m.kind === 'intro' ? 'Intro' : m.kind === 'end' ? 'End clip' : m.id) + '</strong> · ' + _xvFmt(m.t0) + '–' + _xvFmt(m.t1)
+                    + ' · ' + (icon[m.kind] || (m.kind === 'intro' ? '🎬' : m.kind === 'end' ? '🏁' : '')) + ' ' + _xvEsc(m.kind) + (m.section ? ' · <span style="color:#64748b;">' + _xvEsc(m.section) + '</span>' : '')
+                    + (major.length ? ' <span style="color:#fbbf24;">⚠️ ' + major.length + '</span>' : '') + hostSel(m) + clipSel(m) + move + '</div>'
                     + '<div style="color:#94a3b8; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">' + _xvEsc(m.idea || '') + '</div>'
                     + ws.map(w => '<div style="color:' + (w.minor ? '#64748b' : '#fbbf24') + '; font-size:0.95em;">• ' + _xvEsc(w.msg) + '</div>').join('')
                     + '</div></div>';
             }).join('') : '<div style="font-size:0.8em; color:#64748b;">No slides yet.</div>';
+            _xvRenderBookends();
             _xvScopeLabel();
+        }
+        function _xvRenderBookends() {
+            const el = document.getElementById('xvBookends');
+            if (!el) return;
+            const s = _xv.state || {};
+            const row = (kind, title) => {
+                const b = ((s.bookends || {})[kind]) || {};
+                return '<div class="xv-item" style="margin-bottom:8px;"><div style="font-weight:700; color:#e2e8f0; margin-bottom:4px;">' + title + '</div>'
+                    + '<div class="xv-sec" style="flex-wrap:wrap;">'
+                    + '<select class="xv-input" style="flex:1;" onchange="xvBookSource(\'' + kind + '\', this.value)">'
+                    + [['channel', 'Channel clip'], ['custom', 'This project'], ['off', 'Off']].map(o => '<option value="' + o[0] + '"' + ((b.source || 'channel') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('')
+                    + '</select>'
+                    + '<select class="xv-input" onchange="xvBookAudio(\'' + kind + '\', this.value)">'
+                    + [['clip', 'Its own audio'], ['mute', 'Mute'], ['mix', 'Mix (quiet)']].map(o => '<option value="' + o[0] + '"' + ((b.audio || 'clip') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('')
+                    + '</select></div>'
+                    + '<div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; align-items:center;">'
+                    + '<label class="xv-btn small">Upload<input type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm,.m4v" style="display:none;" onchange="xvBookUpload(\'' + kind + '\', this, true)"></label>'
+                    + '<label class="xv-btn small">This project<input type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm,.m4v" style="display:none;" onchange="xvBookUpload(\'' + kind + '\', this, false)"></label>'
+                    + '<span style="color:#64748b; font-size:0.75em;">' + (b.ready ? _xvFmt(b.seconds || 0) : 'No file yet') + '</span></div>'
+                    + (b.ready ? '<div id="xvScrub-' + kind + '" class="xv-scrub" data-url="' + _xvEsc(b.url) + '" data-start="' + (b.start || 0) + '" data-end="' + (b.end == null ? '' : b.end) + '" data-dur="' + (b.seconds || 0) + '" data-kind="' + kind + '"></div>' : '')
+                    + '</div>';
+            };
+            el.innerHTML = row('intro', 'Intro video · after the hook') + row('end', 'End clip · after the last slide');
+            ['intro', 'end'].forEach(kind => { const host = document.getElementById('xvScrub-' + kind); if (host) xvMountScrubber(host, { onCommit: (a, b) => xvBookTrim(kind, a, b) }); });
         }
 
         function _xvRenderPlan() {
@@ -13090,12 +13188,13 @@ Thank you for watching!`;
         }
         function xvScrubTo(t) {
             const a = document.getElementById('xvAudio');
-            if (a.src && a.readyState > 0) a.currentTime = Math.min(t, a.duration || t);
+            const narr = _xvHasBookend() ? _xvNarrOf(t) : t;
+            if (a.src && a.readyState > 0) a.currentTime = Math.min(narr, a.duration || narr);
             xvSeek(t);
         }
         function xvGoSlide(id) {
             const m = ((_xv.state && _xv.state.slides) || []).find(x => x.id === id);
-            if (m) xvScrubTo(Math.min(m.t0 + 0.45, (m.t0 + m.t1) / 2));   // just past the 0.4 s transition
+            if (m) xvScrubTo(Math.min(m.t0 + Math.max(0.45, (m.fx_dur || 0) + 0.08), (m.t0 + m.t1) / 2));
         }
         function xvStep(dir) {
             const list = (_xv.state && _xv.state.slides) || [];
@@ -13105,16 +13204,56 @@ Thank you for watching!`;
             if (next) xvScrubTo(Math.min(next.t0 + 0.45, (next.t0 + next.t1) / 2));
         }
         function xvPlayPause() { if (_xv.playing) xvPause(); else xvPlay(); }
+        function _xvHasBookend() {
+            const c = (_xv.state || {}).clock || {};
+            return (c.intro_dur || 0) > 0.02 || (c.end_dur || 0) > 0.02;
+        }
+        function _xvWallEnd() { const c = (_xv.state || {}).clock; return (c && c.total) || _xv.end || _xv.dur || 0; }
+        function _xvNarrOf(wall) {
+            const c = (_xv.state || {}).clock;
+            if (!c || !(c.intro_dur > 0)) return wall;
+            const H = c.hook_end || 0, D = c.intro_dur;
+            if (wall <= H) return wall;
+            if (wall < H + D) return H;
+            return wall - D;
+        }
         function xvPlay() {
             const a = document.getElementById('xvAudio');
             if (!a.src) return;
-            if (_xv.end && _xv.t >= _xv.end - 0.1) _xv.t = _xv.start || 0;
+            const end = _xvHasBookend() ? _xvWallEnd() : _xv.end;
+            if (end && _xv.t >= end - 0.1) _xv.t = _xv.start || 0;
+            if (_xvHasBookend()) {
+                _xv.playing = true;
+                _xv.wallStamp = performance.now();
+                document.getElementById('xvPlayBtn').textContent = '⏸ Pause';
+                requestAnimationFrame(_xvTickWall);
+                return;
+            }
             if (Math.abs((a.currentTime || 0) - _xv.t) > 0.25) a.currentTime = _xv.t;
             a.play().then(() => {
                 _xv.playing = true;
                 document.getElementById('xvPlayBtn').textContent = '⏸ Pause';
                 requestAnimationFrame(_xvTick);
             }).catch(e => _xvStatus('Could not play the audio: ' + _xvEsc(e.message), '#f87171'));
+        }
+        function _xvTickWall(now) {
+            if (!_xv.playing) return;
+            const dt = Math.min(0.1, (now - (_xv.wallStamp || now)) / 1000);
+            _xv.wallStamp = now;
+            _xv.t = Math.min(_xvWallEnd(), (_xv.t || 0) + dt);
+            const c = (_xv.state || {}).clock || {};
+            const a = document.getElementById('xvAudio');
+            const inIntro = c.intro && _xv.t >= c.intro.wall0 && _xv.t < c.intro.wall1;
+            const inEnd = c.end && _xv.t >= c.end.wall0;
+            if (inIntro || inEnd) { if (!a.paused) a.pause(); }
+            else {
+                const narr = Math.max(0, _xvNarrOf(_xv.t));
+                if (Math.abs((a.currentTime || 0) - narr) > 0.35) a.currentTime = narr;
+                if (a.paused) a.play().catch(() => {});
+            }
+            xvSeek(_xv.t);
+            if (_xv.t >= _xvWallEnd() - 0.05) { xvPause(); return; }
+            requestAnimationFrame(_xvTickWall);
         }
         function xvPause() {
             const a = document.getElementById('xvAudio');
@@ -13317,6 +13456,139 @@ Thank you for watching!`;
         async function xvHostFocus(v) { await _xvApply(await _xvPost(_xvApi('/host'), { focus: +v })); }
         async function xvHostShare(v) { await _xvApply(await _xvPost(_xvApi('/host'), { share: v })); }
         async function xvLook(key, v) { const body = {}; body[key] = v; await _xvApply(await _xvPost(_xvApi('/host'), body)); }
+        async function xvTransitionMode(v) { await _xvApply(await _xvPost(_xvApi('/transitions'), { mode: v })); }
+        async function xvSlideFx(id, v) { await _xvApply(await _xvPost(_xvApi('/transitions'), { slide: id, fx: v })); }
+        function xvGapOpen(btn) {
+            const pop = document.getElementById('xvGapPop');
+            if (!pop) return;
+            const frm = btn.dataset.from, to = btn.dataset.to;
+            const saved = ((_xv.state.gap_fx || {})[frm + '>' + to]) || { fx: 'auto', dur: 'normal' };
+            const opts = [['auto', 'Auto'], ['none', 'None'], ['glitch', 'Glitch'], ['paint', 'Ink wipe'], ['warp', 'Warp'], ['pixel', 'Pixel'], ['lightleak', 'Light leak'], ['burn', 'Film burn'], ['shatter', 'Shatter']];
+            const durs = [['short', 'Short'], ['normal', 'Normal'], ['long', 'Long']];
+            pop.innerHTML = '<div style="font-weight:700; color:#e2e8f0; margin-bottom:6px;">' + _xvEsc(frm) + ' → ' + _xvEsc(to) + '</div>'
+                + '<select id="xvGapFx" class="xv-input" style="width:100%; margin-bottom:6px;">' + opts.map(o => '<option value="' + o[0] + '"' + ((saved.fx || 'auto') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>'
+                + '<select id="xvGapDur" class="xv-input" style="width:100%; margin-bottom:8px;">' + durs.map(o => '<option value="' + o[0] + '"' + ((saved.dur || 'normal') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>'
+                + '<div style="display:flex; gap:6px; justify-content:flex-end;"><button class="xv-btn small" onclick="document.getElementById(\'xvGapPop\').style.display=\'none\'">Close</button>'
+                + '<button class="xv-btn small primary" id="xvGapSave">Use this</button></div>';
+            const r = btn.getBoundingClientRect();
+            pop.style.display = 'block';
+            pop.style.left = Math.max(8, Math.min(window.innerWidth - 250, r.left)) + 'px';
+            pop.style.top = Math.min(window.innerHeight - 180, r.bottom + 6) + 'px';
+            document.getElementById('xvGapSave').onclick = async () => {
+                pop.style.display = 'none';
+                await _xvApply(await _xvPost(_xvApi('/transitions'), { from: frm, to: to, fx: document.getElementById('xvGapFx').value, dur: document.getElementById('xvGapDur').value }));
+            };
+        }
+        async function xvBookSource(kind, source) { await _xvApply(await _xvPost(_xvApi('/bookend'), { kind: kind, source: source })); }
+        async function xvBookAudio(kind, audio) { await _xvApply(await _xvPost(_xvApi('/bookend'), { kind: kind, audio: audio })); }
+        async function xvBookTrim(kind, start, end) { await _xvApply(await _xvPost(_xvApi('/bookend'), { kind: kind, start: start, end: end })); }
+        async function xvBookMove(dir) { await _xvApply(await _xvPost(_xvApi('/bookend'), { kind: 'intro', move: dir })); }
+        async function xvBookUpload(kind, input, channel) {
+            const file = input.files && input.files[0];
+            input.value = '';
+            if (!file) return;
+            const fd = new FormData();
+            fd.append('file', file);
+            fd.append('kind', kind);
+            const url = channel ? '/api/explainer/channel/' + kind : _xvApi('/bookend-file');
+            if (!channel) fd.append('title', _xv.title);
+            let d;
+            try { d = await (await fetch(url, { method: 'POST', body: fd })).json(); }
+            catch (e) { d = { success: false, error: e.message }; }
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Upload failed.'), '#f87171'); return; }
+            if (!channel) await _xvApply(d);
+            else { await _xvApply(await _xvPost(_xvApi('/bookend'), { kind: kind, source: 'channel' })); }
+        }
+        function xvMountScrubber(host, opts) {
+            if (!host || host.dataset.mounted) return;
+            host.dataset.mounted = '1';
+            const url = host.dataset.url || '';
+            let start = +host.dataset.start || 0;
+            let end = host.dataset.end === '' ? (+host.dataset.dur || 0) : +host.dataset.end;
+            let dur = +host.dataset.dur || 0;
+            let playAt = start;
+            host.innerHTML = '<video playsinline preload="metadata" src="' + _xvEsc(url) + '"></video>'
+                + '<div class="xv-film" data-film></div>'
+                + '<div class="xv-track" data-track tabindex="0"><div class="bar"></div><div class="sel" data-sel></div><div class="h" data-h="a"></div><div class="h" data-h="b"></div><div class="play" data-play></div></div>'
+                + '<div class="xv-times" data-times></div>'
+                + '<div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">'
+                + '<button type="button" class="xv-btn small" data-act="set-a">Set start here</button>'
+                + '<button type="button" class="xv-btn small" data-act="set-b">Set end here</button>'
+                + '<button type="button" class="xv-btn small" data-act="loop">Play selection</button></div>'
+                + '<details style="margin-top:6px;"><summary style="color:#64748b; cursor:pointer;">Exact time</summary>'
+                + '<div class="xv-sec" style="margin-top:4px;"><input class="xv-input" data-exact="a" style="width:88px;"><input class="xv-input" data-exact="b" style="width:88px;">'
+                + '<button type="button" class="xv-btn small" data-act="exact">Apply</button></div></details>';
+            const video = host.querySelector('video');
+            const track = host.querySelector('[data-track]');
+            const sel = host.querySelector('[data-sel]');
+            const ha = host.querySelector('[data-h="a"]');
+            const hb = host.querySelector('[data-h="b"]');
+            const play = host.querySelector('[data-play]');
+            const times = host.querySelector('[data-times]');
+            const paint = () => {
+                const span = Math.max(0.2, dur || end || 1);
+                const pct = t => Math.max(0, Math.min(100, t / span * 100));
+                sel.style.left = pct(start) + '%';
+                sel.style.width = Math.max(0, pct(end) - pct(start)) + '%';
+                ha.style.left = pct(start) + '%';
+                hb.style.left = pct(end) + '%';
+                play.style.left = pct(playAt) + '%';
+                times.textContent = _xvFmtT(start) + ' → ' + _xvFmtT(end) + (dur ? ' · ' + _xvFmtT(dur) : '');
+                host.querySelector('[data-exact="a"]').value = start.toFixed(3);
+                host.querySelector('[data-exact="b"]').value = end.toFixed(3);
+            };
+            const commit = () => { if (opts && opts.onCommit) opts.onCommit(+start.toFixed(3), +end.toFixed(3)); };
+            const seekTo = t => { playAt = Math.max(0, Math.min(dur || t, t)); if (video.readyState) video.currentTime = playAt; paint(); };
+            video.addEventListener('loadedmetadata', () => { if (!dur) dur = video.duration || 0; if (!end) end = dur; paint(); });
+            video.addEventListener('timeupdate', () => {
+                playAt = video.currentTime || 0;
+                if (host.dataset.loop === '1' && playAt >= end - 0.02) { video.currentTime = start; }
+                paint();
+            });
+            const at = ev => {
+                const r = track.getBoundingClientRect();
+                const x = (ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left;
+                return Math.max(0, Math.min(dur || 1, x / Math.max(1, r.width) * (dur || 1)));
+            };
+            let drag = '';
+            const down = (which, ev) => { drag = which; ev.preventDefault(); track.focus(); };
+            ha.addEventListener('pointerdown', ev => down('a', ev));
+            hb.addEventListener('pointerdown', ev => down('b', ev));
+            track.addEventListener('pointerdown', ev => { if (ev.target === ha || ev.target === hb) return; seekTo(at(ev)); drag = 'p'; });
+            window.addEventListener('pointermove', ev => {
+                if (!drag) return;
+                const t = at(ev);
+                if (drag === 'a') start = Math.min(t, end - 0.2);
+                else if (drag === 'b') end = Math.max(t, start + 0.2);
+                else seekTo(t);
+                paint();
+            });
+            window.addEventListener('pointerup', () => { if (drag === 'a' || drag === 'b') commit(); drag = ''; });
+            host.querySelector('[data-act="set-a"]').onclick = () => { start = Math.min(playAt, end - 0.2); paint(); commit(); };
+            host.querySelector('[data-act="set-b"]').onclick = () => { end = Math.max(playAt, start + 0.2); paint(); commit(); };
+            host.querySelector('[data-act="loop"]').onclick = () => { host.dataset.loop = '1'; video.currentTime = start; video.play().catch(() => {}); };
+            host.querySelector('[data-act="exact"]').onclick = () => {
+                start = Math.max(0, parseFloat(host.querySelector('[data-exact="a"]').value) || 0);
+                end = Math.max(start + 0.2, parseFloat(host.querySelector('[data-exact="b"]').value) || start + 0.2);
+                if (dur) end = Math.min(end, dur);
+                paint(); commit();
+            };
+            track.addEventListener('keydown', ev => {
+                const step = ev.shiftKey ? 1 : 0.1;
+                if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') {
+                    seekTo(playAt + (ev.key === 'ArrowLeft' ? -step : step));
+                    ev.preventDefault();
+                }
+            });
+            paint();
+            const film = host.querySelector('[data-film]');
+            const src = host.dataset.film || (host.dataset.kind ? ('/api/explainer/channel/' + host.dataset.kind + '/filmstrip') : '');
+            if (src) fetch(src).then(r => r.json()).then(d => {
+                if (!d.frames) return;
+                film.innerHTML = d.frames.map(u => '<img alt="" src="' + _xvEsc(u) + '">').join('');
+                if (d.seconds && !dur) { dur = d.seconds; if (!end) end = dur; paint(); }
+            }).catch(() => {});
+        }
         async function xvSlideHost(id, layout) {
             const d = await _xvPost(_xvApi('/layout'), { slide: id, host: layout });
             await _xvApply(d);

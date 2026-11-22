@@ -10426,6 +10426,23 @@ def _xv_project(title: str, pid: str):
     return p if p.data.get("title") == title else None
 
 
+def _xv_public_bookend(p, kind: str) -> dict:
+    spec = _xv.resolve_bookend(p.data, kind)
+    saved = ((p.data.get("bookends") or {}).get(kind) or {})
+    ready = bool(spec.get("file") and Path(spec["file"]).is_file())
+    url = ""
+    if ready and spec.get("source") == "channel":
+        url = f"/api/explainer/channel/{kind}/file"
+    elif ready and spec.get("source") == "custom":
+        rel = spec.get("file") or ""
+        url = (f"/api/explainer/{p.id}/file?title={urllib.parse.quote(p.data.get('title') or '')}"
+               f"&path={urllib.parse.quote(rel)}")
+    return {"source": spec.get("source") or "channel", "ready": ready, "start": spec.get("start") or 0,
+            "end": spec.get("end"), "seconds": spec.get("seconds") or 0, "audio": spec.get("audio") or "clip",
+            "label": spec.get("label") or ("Intro" if kind == "intro" else "End clip"),
+            "after": saved.get("after") or "", "url": url}
+
+
 def _xv_title() -> str:
     data = request.get_json(silent=True) or {}
     return (request.args.get("title") or request.form.get("title") or data.get("title") or "").strip()
@@ -10448,6 +10465,14 @@ def _xv_state(p) -> dict:
         "pip_frame": _xv.pip_frame_key(None, ((d.get("host") or {}).get("pip_frame") or d.get("pip_frame"))),
         "bubble": _xv.bubble_mode_key(None, d.get("bubble")),
         "visual_style": _xv.visual_style_key(None, d.get("visual_style")),
+        "transition_mode": _xv.transition_mode_key(None, d.get("transition_mode")),
+        "gap_fx": _xv.normalize_gaps(d.get("gap_fx")),
+        "slide_fx": {k: _xv.slide_fx_key(v) for k, v in (d.get("slide_fx") or {}).items()
+                     if _xv.slide_fx_key(v) != "auto"},
+        "bookends": {
+            "intro": _xv_public_bookend(p, "intro"),
+            "end": _xv_public_bookend(p, "end"),
+        },
         "youtube": _xv.yt_public(p),
     }
     host = p.host()
@@ -10470,6 +10495,7 @@ def _xv_state(p) -> dict:
         comp = p.compile()
         out["slides"] = comp["slides"]
         out["duration"] = comp["duration"]
+        out["clock"] = comp.get("clock") or {}
         out["outstanding"] = p.outstanding(comp)
         out["ph"] = comp["ph"]
         out["used_logos"] = comp["logos"]
@@ -10511,6 +10537,8 @@ def explainer_options():
                     "host_shares": _xv.HOST_SHARES, "pip_frames": list(_xv.PIP_FRAME_MODES),
                     "bubble_modes": list(_xv.BUBBLE_MODES),
                     "visual_styles": list(_xv.VISUAL_STYLES),
+                    "transition_modes": list(_xv.TRANSITION_MODES),
+                    "transition_styles": list(_xv.TRANSITION_STYLES),
                     "chrome": bool(_xv.find_chrome()), "claude": bool((os.getenv("ANTHROPIC_API_KEY") or "").strip()),
                     "elevenlabs": bool(_eleven_key()), "model": _xv.MODEL_LABEL,
                     "render_workers": _xv.RENDER_WORKERS})
@@ -10596,6 +10624,7 @@ def explainer_start():
     pip_frame = _xv.pip_frame_key(data.get("pip_frame"))
     bubble = _xv.bubble_mode_key(data.get("bubble"))
     visual_style = _xv.visual_style_key(data.get("visual_style"))
+    transition_mode = _xv.transition_mode_key(data.get("transition_mode"))
     pid = _xv.new_project_id()
     folder = _get_run_output_dir(title) / "explainer" / pid
     folder.mkdir(parents=True, exist_ok=True)
@@ -10604,7 +10633,7 @@ def explainer_start():
     project.write("spoken.txt", spoken)
     project.data.update(title=title, created=time.time(), voiceover=voiceover, text_source=source,
                         model=_xv.MODEL, status="running", pip_frame=pip_frame, bubble=bubble,
-                        visual_style=visual_style)
+                        visual_style=visual_style, transition_mode=transition_mode)
     project.save()
     counts = _xv.production_counts(script)
     logger.info(f"🎞️ Explainer video for {title[:60]!r}: {voiceover}, {len(spoken.split()):,} spoken words "
@@ -10618,7 +10647,8 @@ def explainer_start():
                               pauses=_audio_pauses, logos=logos, images_dir=_xv_images_dir(title),
                               cancel=cancel, status=status, log=_xv_log, test=test, presenter=presenter,
                               root=_get_run_output_dir(title, create=False), share=share,
-                              pip_frame=pip_frame, bubble=bubble, visual_style=visual_style)
+                              pip_frame=pip_frame, bubble=bubble, visual_style=visual_style,
+                              transition_mode=transition_mode)
 
     _xv.start_job(project, "create", job, _xv_log)
     return jsonify({"success": True, "project": pid, "state": _xv_state(project)})
@@ -10661,10 +10691,17 @@ def explainer_preview(pid):
     origin = request.host_url.rstrip("/")
     if not origin.startswith(("http://", "https://")):
         origin = ""
+    books = {}
+    for _bk in ("intro", "end"):
+        pub = _xv_public_bookend(p, _bk)
+        if pub.get("url"):
+            books[_bk] = pub["url"]
+            books[_bk + "_audio"] = pub.get("audio") or "clip"
     page = _xv.page_html(compiled, mode="preview", title=p.data.get("title") or "Explainer", host=host,
                          pip_frame=frame, bubble=bubble, clips=_xv.preview_clip_payloads(p, compiled, _clip_url),
                          media_origin=origin, visual={"style": visual_style},
-                         demos=_xv.demo_payloads(compiled, _xv.load_youtube(p.data)["clips"], "preview"))
+                         demos=_xv.demo_payloads(compiled, _xv.load_youtube(p.data)["clips"], "preview"),
+                         bookends=books)
     resp = Response(page, mimetype="text/html")
     resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -11215,6 +11252,237 @@ def explainer_sections(pid):
         out["warning"] = ("No presenter footage for part of " + ", ".join(
             f"{_xv.fmt_secs(x['t0'])}–{_xv.fmt_secs(x['t1'])}" for x in bare) + ": add the clip that covers it.")
     return jsonify({"success": True, **out})
+
+
+@app.route("/api/explainer/<pid>/transitions", methods=["POST"])
+def explainer_transitions(pid):
+    """Global strength (off / subtle / full) and a per-slide auto, none, or style."""
+    data = request.get_json(silent=True) or {}
+    p = _xv_project((data.get("title") or "").strip(), pid)
+    if p is None:
+        return jsonify({"success": False, "error": "Project not found."}), 404
+    if _xv.job_running(p.id):
+        return jsonify({"success": False, "error": "Wait for the running job to finish."}), 409
+    if "mode" in data and data.get("mode") not in _xv.TRANSITION_MODES:
+        return jsonify({"success": False, "error": "Transitions are off, subtle, or full."}), 400
+    if "fx" in data and str(data.get("fx") or "").strip().lower() not in _xv.SLIDE_FX_CHOICES:
+        return jsonify({"success": False, "error": "Unknown transition."}), 400
+    if "dur" in data and str(data.get("dur") or "").strip().lower() not in _xv.GAP_DURS:
+        return jsonify({"success": False, "error": "Duration is short, normal, or long."}), 400
+    with p.lock:
+        if "mode" in data:
+            p.data["transition_mode"] = data["mode"]
+        frm, to = str(data.get("from") or ""), str(data.get("to") or "")
+        if frm and to:
+            gaps = _xv.normalize_gaps(p.data.get("gap_fx"))
+            # A legacy per-slide choice is moved onto the boundary into that slide.
+            if p.data.get("slide_fx"):
+                try:
+                    slides = (p.compile().get("slides") or [])
+                except Exception:
+                    slides = []
+                for key, val in _xv.migrate_slide_fx(slides, p.data.get("slide_fx")).items():
+                    gaps.setdefault(key, val)
+                p.data.pop("slide_fx", None)
+            key = _xv.boundary_key(frm, to)
+            fx = str(data.get("fx") or "auto").strip().lower()
+            if fx == "auto":
+                gaps.pop(key, None)
+            else:
+                gaps[key] = {"fx": fx, "dur": _xv.gap_dur_key(data.get("dur"))}
+            p.data["gap_fx"] = gaps
+    p.save()
+    logger.info(f"✨ Explainer {pid}: transitions {p.data.get('transition_mode') or 'full'}"
+                + (f", {data.get('from')} → {data.get('to')} {data.get('fx')}" if data.get("from") else ""))
+    return jsonify({"success": True, **_xv_state(p)})
+
+
+def _xv_save_bookend_upload(kind: str, src: Path, *, start=0, end=None, audio="clip", label="", root=None):
+    return _xv.save_channel_bookend(kind, src, start=start, end=end, audio=audio, label=label, root=root)
+
+
+@app.route("/api/explainer/channel/<kind>/file", methods=["GET"])
+def explainer_channel_file(kind):
+    if kind not in ("intro", "end"):
+        return jsonify({"success": False, "error": "Unknown clip."}), 404
+    spec = _xv.load_channel_bookend(kind)
+    path = Path(spec.get("file") or "")
+    if not path.is_file():
+        return jsonify({"success": False, "error": "No channel clip yet."}), 404
+    return send_file(path, conditional=True)
+
+
+@app.route("/api/explainer/channel/<kind>", methods=["POST"])
+def explainer_channel_upload(kind):
+    """Save the reusable intro or end clip for every project."""
+    if kind not in ("intro", "end"):
+        return jsonify({"success": False, "error": "Unknown clip."}), 404
+    import shutil
+    import tempfile
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        return jsonify({"success": False, "error": "Choose a video file."}), 400
+    suffix = Path(upload.filename).suffix.lower()
+    if suffix not in _xv.UPLOAD_EXTS and suffix != ".mp4":
+        return jsonify({"success": False, "error": "Upload an mp4, mov, webm or m4v."}), 400
+    tmp = Path(tempfile.mkdtemp(prefix="xv-book-")) / f"up{suffix}"
+    upload.save(tmp)
+    try:
+        _xv.save_channel_bookend(kind, tmp, start=request.form.get("start") or 0,
+                                 end=request.form.get("end") or None,
+                                 audio=request.form.get("audio") or "clip",
+                                 label=request.form.get("label") or "")
+    except _xv.YoutubeError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    finally:
+        shutil.rmtree(tmp.parent, ignore_errors=True)
+    return jsonify({"success": True, "kind": kind})
+
+
+@app.route("/api/explainer/<pid>/bookend", methods=["POST"])
+def explainer_bookend(pid):
+    """Per-project intro or end clip: channel, a file of its own, or off."""
+    data = request.get_json(silent=True) or {}
+    p = _xv_project((data.get("title") or "").strip(), pid)
+    if p is None:
+        return jsonify({"success": False, "error": "Project not found."}), 404
+    kind = "end" if data.get("kind") == "end" else "intro"
+    saved = dict(((p.data.get("bookends") or {}).get(kind) or {}))
+    if "source" in data:
+        if data.get("source") not in ("channel", "custom", "off"):
+            return jsonify({"success": False, "error": "Use channel, this project, or off."}), 400
+        saved["source"] = data["source"]
+    if "audio" in data:
+        if data.get("audio") not in _xv.BOOKEND_AUDIO:
+            return jsonify({"success": False, "error": "Audio is clip, mute, or mix."}), 400
+        saved["audio"] = data["audio"]
+    if "start" in data or "end" in data:
+        spec = _xv.resolve_bookend(p.data, kind)
+        dur = float(spec.get("seconds") or 0)
+        try:
+            a, b = _xv.clamp_trim(data.get("start", saved.get("start") or 0),
+                                  data.get("end", saved.get("end")), dur or 0.2)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "Those times are not numbers."}), 400
+        saved["start"], saved["end"] = a, b
+    if kind == "intro" and "after" in data:
+        saved["after"] = str(data.get("after") or "")[:40]
+    if data.get("move") in ("earlier", "later") and kind == "intro":
+        try:
+            slides = [s for s in (p.compile().get("slides") or []) if s.get("id") != _xv.INTRO_ID]
+        except Exception:
+            slides = []
+        ids = [s.get("id") for s in slides if s.get("id") != _xv.END_ID]
+        current = saved.get("after") or ""
+        if not current and ids:
+            current = ids[_xv.intro_anchor_index(slides, None)]
+        if current in ids:
+            i = ids.index(current)
+            nxt = i - 1 if data["move"] == "earlier" else i + 1
+            if 0 <= nxt < len(ids):
+                saved["after"] = ids[nxt]
+    books = dict(p.data.get("bookends") or {})
+    books[kind] = saved
+    p.data["bookends"] = books
+    p.save()
+    return jsonify({"success": True, **_xv_state(p)})
+
+
+@app.route("/api/explainer/<pid>/bookend-file", methods=["POST"])
+def explainer_bookend_file(pid):
+    """A per-project intro or end clip, instead of the channel one."""
+    p = _xv_project(_xv_title(), pid)
+    if p is None:
+        return jsonify({"success": False, "error": "Project not found."}), 404
+    kind = "end" if request.form.get("kind") == "end" else "intro"
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        return jsonify({"success": False, "error": "Choose a video file."}), 400
+    suffix = Path(upload.filename).suffix.lower()
+    if suffix not in _xv.UPLOAD_EXTS and suffix != ".mp4":
+        return jsonify({"success": False, "error": "Upload an mp4, mov, webm or m4v."}), 400
+    folder = p.dir / "working"
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / f"{kind}{suffix if suffix == '.mp4' else '.mp4'}"
+    tmp = folder / f"{kind}.upload{suffix}"
+    upload.save(tmp)
+    try:
+        info = _xv.probe_video(tmp) or {}
+        if suffix != ".mp4":
+            _xv._run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(tmp),
+                      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(dest)])
+            tmp.unlink(missing_ok=True)
+        else:
+            tmp.replace(dest)
+        seconds = float((info or {}).get("seconds") or _xv.media_seconds(dest))
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    books = dict(p.data.get("bookends") or {})
+    books[kind] = {"source": "custom", "file": f"working/{dest.name}", "seconds": seconds,
+                   "start": 0, "end": seconds, "audio": "clip",
+                   "label": "Intro" if kind == "intro" else "End clip"}
+    p.data["bookends"] = books
+    p.save()
+    return jsonify({"success": True, **_xv_state(p)})
+
+
+def _xv_filmstrip(src: Path, folder: Path) -> list:
+    folder.mkdir(parents=True, exist_ok=True)
+    frames = sorted(folder.glob("f*.jpg"))
+    if frames:
+        return frames
+    dur = _xv.media_seconds(src) or 1
+    count = 8
+    every = max(0.2, dur / count)
+    _xv._run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src),
+              "-vf", f"fps=1/{every:.3f},scale=160:90", "-frames:v", str(count), str(folder / "f%02d.jpg")])
+    return sorted(folder.glob("f*.jpg"))
+
+
+@app.route("/api/explainer/<pid>/filmstrip", methods=["GET"])
+def explainer_filmstrip(pid):
+    """JPEG thumbs across a project video, for the trimmer."""
+    p = _xv_project(_xv_title(), pid)
+    rel = request.args.get("path") or ""
+    if p is None or not rel or rel.split("/")[0] not in _XV_FILE_DIRS:
+        return jsonify({"success": False, "error": "File not found."}), 404
+    path = (p.dir / rel).resolve()
+    if not path.is_file():
+        return jsonify({"success": False, "error": "File not found."}), 404
+    folder = p.dir / "working" / "filmstrip" / _xv.slug(rel)[:40]
+    frames = _xv_filmstrip(path, folder)
+    title = urllib.parse.quote(p.data.get("title") or "")
+    urls = [f"/api/explainer/{pid}/file?title={title}&path={urllib.parse.quote(str(f.relative_to(p.dir)))}"
+            for f in frames]
+    return jsonify({"success": True, "seconds": _xv.media_seconds(path), "frames": urls})
+
+
+@app.route("/api/explainer/channel/<kind>/filmstrip", methods=["GET"])
+def explainer_channel_filmstrip(kind):
+    if kind not in ("intro", "end"):
+        return jsonify({"success": False, "error": "Unknown clip."}), 404
+    spec = _xv.load_channel_bookend(kind)
+    path = Path(spec.get("file") or "")
+    if not path.is_file():
+        return jsonify({"success": False, "error": "No channel clip yet."}), 404
+    folder = path.parent / "filmstrip" / kind
+    frames = _xv_filmstrip(path, folder)
+    urls = [f"/api/explainer/channel/{kind}/thumb?i={i}" for i in range(len(frames))]
+    return jsonify({"success": True, "seconds": _xv.media_seconds(path), "frames": urls})
+
+
+@app.route("/api/explainer/channel/<kind>/thumb", methods=["GET"])
+def explainer_channel_thumb(kind):
+    if kind not in ("intro", "end"):
+        return jsonify({"success": False, "error": "Unknown clip."}), 404
+    frames = sorted((_xv.channel_root() / "filmstrip" / kind).glob("f*.jpg"))
+    try:
+        i = int(request.args.get("i") or 0)
+    except ValueError:
+        i = 0
+    if i < 0 or i >= len(frames):
+        return jsonify({"success": False, "error": "No thumbnail."}), 404
+    return send_file(frames[i], conditional=True)
 
 
 @app.route("/api/explainer/<pid>/layout", methods=["POST"])
