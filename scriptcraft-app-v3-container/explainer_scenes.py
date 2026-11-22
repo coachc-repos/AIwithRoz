@@ -27,11 +27,11 @@ SCENE_BOX = {
     "house": (220, 170),
     "building": (190, 240),
     "datacenter": (340, 180),
-    "car": (240, 120),
+    "car": (320, 102),
     "tree": (140, 170),
     "factory": (220, 170),
     "server": (80, 160),
-    "phone": (90, 170),
+    "phone": (82, 168),
     "chart": (200, 130),
     "powerline": (220, 110),
 }
@@ -92,12 +92,10 @@ def _classic() -> dict:
             <rect x="130" y="64" width="16" height="12" fill="#f5b83d"/>
             <rect x="48" y="118" width="36" height="28" fill="#2a4038"/>
             <rect x="96" y="118" width="36" height="28" fill="#2a4038"/>""",
-        "car": """<circle cx="74" cy="92" r="16" fill="#4a5568"/>
-            <circle cx="170" cy="92" r="16" fill="#4a5568"/>
-            <circle cx="74" cy="92" r="7" fill="#d5dbe3"/>
-            <circle cx="170" cy="92" r="7" fill="#d5dbe3"/>
-            <rect x="24" y="50" width="192" height="40" rx="10" fill="#2a3446"/>
-            <polygon points="74,52 100,26 164,26 184,52" fill="#3a465c"/>""",
+        "car": """<circle cx="96" cy="78" r="16" fill="#4a5568"/><circle cx="96" cy="78" r="6" fill="#d5dbe3"/>
+            <circle cx="270" cy="78" r="16" fill="#4a5568"/><circle cx="270" cy="78" r="6" fill="#d5dbe3"/>
+            <path d="M16 70 L78 58 L118 24 L210 22 L248 56 L308 62 L308 74 L292 74 C288 64 252 64 248 74 L116 74 C112 64 80 64 76 74 L22 74 Z" fill="#2a3446"/>
+            <path d="M200 30 L236 54 L168 54 L176 30 Z" fill="#3a465c"/>""",
         "tree": """<rect x="52" y="78" width="18" height="64" fill="#6b4630"/>
             <circle cx="60" cy="64" r="40" fill="#2f6a3c"/>""",
         "factory": """<rect x="20" y="74" width="156" height="72" fill="#3a342e"/>
@@ -111,8 +109,9 @@ def _classic() -> dict:
             <rect x="26" y="28" width="28" height="8" fill="#3cc878"/>
             <rect x="26" y="44" width="28" height="8" fill="#f5b83d"/>
             <rect x="26" y="60" width="28" height="8" fill="#4c8dff"/>""",
-        "phone": """<rect x="20" y="10" width="50" height="146" rx="10" fill="#1c2432"/>
-            <rect x="28" y="26" width="34" height="104" fill="#121820"/>""",
+        "phone": """<rect x="4" y="4" width="74" height="160" rx="16" fill="#1c2432"/>
+            <rect x="10" y="20" width="62" height="132" rx="4" fill="#121820"/>
+            <rect x="28" y="24" width="26" height="8" rx="4" fill="#0a0e14"/>""",
         "chart": """<polygon points="156,28 174,40 174,108 156,100" fill="#121820"/>
             <rect x="16" y="20" width="148" height="90" rx="6" fill="#1c2432"/>
             <polyline points="32,86 58,70 80,76 108,48 140,58" fill="none" stroke="#f5b83d" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>""",
@@ -246,28 +245,45 @@ def _cinematic() -> dict:
             <circle cx="232" cy="36" r="3" fill="#c5d0dc"/>
             <line x1="232" y1="36" x2="206" y2="28" stroke="#c5d0dc" stroke-width="3" stroke-linecap="round"/>""",
         "car": """
-            <ellipse cx="120" cy="114" rx="92" ry="6" fill="#000" opacity="0.4"/>
-            <g class="sc-wheel" data-cx="72" data-cy="100">
-              <circle cx="72" cy="100" r="15" fill="#5c6778"/>
-              <ellipse cx="66" cy="94" rx="6" ry="4" fill="#9aa6b8" opacity="0.7"/>
-              <circle cx="72" cy="100" r="8" fill="#e6edf4"/>
-              <rect x="70" y="88" width="4" height="24" rx="1" fill="#f7f9fb"/>
-              <circle cx="72" cy="100" r="3" fill="#2c343c"/>
+            <ellipse cx="160" cy="96" rx="120" ry="5" fill="#000" opacity="0.4"/>
+            <g class="sc-wheel" data-cx="96" data-cy="78">
+              <circle cx="96" cy="78" r="16" fill="#6a7384"/>
+              <ellipse cx="90" cy="72" rx="6" ry="4" fill="#c5ced8" opacity="0.65"/>
+              <circle cx="96" cy="78" r="11" fill="#d5dde6"/>
+              <rect x="94" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(0 96 78)"/>
+              <rect x="94" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(72 96 78)"/>
+              <rect x="94" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(144 96 78)"/>
+              <rect x="94" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(216 96 78)"/>
+              <rect x="94" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(288 96 78)"/>
+              <circle cx="96" cy="78" r="4" fill="#2a3138"/>
             </g>
-            <g class="sc-wheel" data-cx="166" data-cy="100">
-              <circle cx="166" cy="100" r="15" fill="#5c6778"/>
-              <ellipse cx="160" cy="94" rx="6" ry="4" fill="#9aa6b8" opacity="0.7"/>
-              <circle cx="166" cy="100" r="8" fill="#e6edf4"/>
-              <rect x="164" y="88" width="4" height="24" rx="1" fill="#f7f9fb"/>
-              <circle cx="166" cy="100" r="3" fill="#2c343c"/>
+            <g class="sc-wheel" data-cx="270" data-cy="78">
+              <circle cx="270" cy="78" r="16" fill="#6a7384"/>
+              <ellipse cx="264" cy="72" rx="6" ry="4" fill="#c5ced8" opacity="0.65"/>
+              <circle cx="270" cy="78" r="11" fill="#d5dde6"/>
+              <rect x="268" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(0 270 78)"/>
+              <rect x="268" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(72 270 78)"/>
+              <rect x="268" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(144 270 78)"/>
+              <rect x="268" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(216 270 78)"/>
+              <rect x="268" y="64" width="4" height="10" rx="1" fill="#f7f9fb" transform="rotate(288 270 78)"/>
+              <circle cx="270" cy="78" r="4" fill="#2a3138"/>
             </g>
-            <path d="M26 78 C26 68 50 64 74 66 L96 46 C106 38 120 38 154 40 L184 62 L212 66 L212 84 C212 92 204 92 196 92 L184 92 A 22 18 0 0 0 148 92 L90 92 A 22 18 0 0 0 54 92 L36 92 C28 92 26 86 26 80 Z" fill="url(#scg-body)"/>
-            <path d="M102 52 L130 48 L122 74 L88 76 Z" fill="url(#scg-glass)"/>
-            <path d="M106 54 L118 52 L114 64 L100 66 Z" fill="#fff" opacity="0.45"/>
-            <path d="M138 52 L170 60 L162 76 L130 74 Z" fill="url(#scg-glass)"/>
-            <path d="M144 56 L160 60 L156 68 L140 66 Z" fill="#fff" opacity="0.35"/>
-            <rect x="194" y="74" width="14" height="10" rx="2" fill="#ffe7a8"/>
-            <rect x="32" y="76" width="12" height="8" rx="2" fill="#e85d5d"/>""",
+            <path d="M16 66 C16 60 36 58 78 56 L118 24 C128 16 148 14 204 14 L220 16 L256 54 L306 60 L306 72 L292 74 C288 54 252 54 248 74 L116 74 C112 54 80 54 76 74 L24 74 C18 74 16 70 16 66 Z" fill="url(#scg-body)"/>
+            <path d="M190 24 L216 20 L242 52 L196 52 Z" fill="url(#scg-glass)"/>
+            <path d="M198 26 L214 24 L208 40 L196 40 Z" fill="#fff" opacity="0.4"/>
+            <path d="M170 22 L186 22 L192 52 L170 52 Z" fill="url(#scg-glass)"/>
+            <path d="M122 26 L160 22 L160 52 L118 52 Z" fill="url(#scg-glass)"/>
+            <path d="M128 30 L148 28 L148 38 L128 38 Z" fill="#fff" opacity="0.28"/>
+            <path d="M84 44 L108 30 L112 52 L82 52 Z" fill="url(#scg-glass)"/>
+            <rect x="162" y="20" width="8" height="34" fill="#141a24"/>
+            <rect x="112" y="26" width="8" height="28" fill="#141a24"/>
+            <rect x="140" y="60" width="14" height="3" rx="1" fill="#c5ced8"/>
+            <rect x="188" y="60" width="14" height="3" rx="1" fill="#c5ced8"/>
+            <rect x="228" y="44" width="16" height="8" rx="3" fill="#121820"/>
+            <path d="M294 62 L306 64 L306 74 L292 72 Z" fill="#ffe7a8"/>
+            <path d="M16 62 L28 60 L28 74 L16 74 Z" fill="#e85d5d"/>
+            <rect x="170" y="54" width="2" height="20" fill="#121820"/>
+            <rect x="120" y="54" width="2" height="20" fill="#121820"/>""",
         "tree": """
             <ellipse cx="70" cy="158" rx="34" ry="6" fill="#000" opacity="0.32"/>
             <polygon points="58,96 50,156 86,156 78,96" fill="#5a3a24"/>
@@ -310,12 +326,11 @@ def _cinematic() -> dict:
             <rect x="28" y="82" width="28" height="18" rx="2" fill="#10161e"/>
             <rect class="sc-glow" x="32" y="88" width="8" height="6" rx="1" fill="#3cc878"/>""",
         "phone": """
-            <rect x="16" y="8" width="58" height="150" rx="12" fill="#0e1218"/>
-            <rect x="20" y="8" width="50" height="150" rx="10" fill="#1c2432"/>
-            <rect x="26" y="24" width="38" height="108" rx="3" fill="#10161e"/>
-            <polyline points="34,100 46,80 54,90 62,64" fill="none" stroke="#f5b83d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
-            <rect x="30" y="28" width="14" height="22" fill="#fff" opacity="0.08"/>
-            <circle cx="45" cy="144" r="3" fill="#2a3446"/>""",
+            <rect x="2" y="4" width="78" height="160" rx="22" fill="#0e1218"/>
+            <rect x="5" y="7" width="72" height="154" rx="20" fill="#1c2432"/>
+            <rect x="9" y="18" width="64" height="134" rx="10" fill="#10161e"/>
+            <rect x="28" y="22" width="26" height="8" rx="4" fill="#0a0e14"/>
+            <polyline points="18,110 32,90 44,100 56,76 68,86" fill="none" stroke="#f5b83d" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>""",
         "chart": """
             <ellipse cx="100" cy="118" rx="64" ry="6" fill="#000" opacity="0.32"/>
             <polygon points="148,30 170,44 170,108 148,100" fill="#10141c"/>
@@ -453,12 +468,17 @@ def connector(x1: float, y1: float, x2: float, y2: float, delay: float = 0.6) ->
     )
 
 
-def place(name: str, x: float, y: float, w: float, h: float, depth: float = 1) -> str:
-    """One object in a scene, same markup in either style."""
+def place(name: str, x: float, y: float, w: float, h: float, depth: float = 1,
+         drive: bool = False) -> str:
+    """One object in a scene, same markup in either style.
+
+    drive=True is for a car that should roll to the right while its wheels turn.
+    """
     if name not in SCENE_OBJECTS:
         raise KeyError(name)
     bw, bh = SCENE_BOX[name]
+    flag = ' data-drive="1"' if drive else ""
     return (
-        f'<svg class="sc" data-sc="{name}" data-depth="{depth:g}" x="{x:g}" y="{y:g}" '
+        f'<svg class="sc" data-sc="{name}" data-depth="{depth:g}"{flag} x="{x:g}" y="{y:g}" '
         f'width="{w:g}" height="{h:g}" viewBox="0 0 {bw} {bh}"><use href="#sc-{name}"/></svg>'
     )

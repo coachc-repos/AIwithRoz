@@ -578,8 +578,12 @@
             var bw = (svg.width && svg.width.baseVal && svg.width.baseVal.value) || 200;
             var vw = (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width) || bw;
             var ku = vw / (bw || 1);
-            g.setAttribute('transform', 'translate(' + (dx * ku).toFixed(2) + ' ' + (dy * ku).toFixed(2) + ')');
-            var spin = (t * (hook ? 240 : 150)) % 360;
+            var drive = 0;
+            if (svg.dataset.drive === '1') drive = Math.max(0, t - slideT0(svg)) * 48;
+            g.setAttribute('transform', 'translate(' + (dx * ku + drive).toFixed(2) + ' ' + (dy * ku).toFixed(2) + ')');
+            // SVG angles grow clockwise. The nose is to the right, so forward is clockwise.
+            var rate = svg.dataset.drive === '1' ? 320 : (hook ? 240 : 150);
+            var spin = (t * rate) % 360;
             var wheels = g.querySelectorAll('.sc-wheel');
             for (var w = 0; w < wheels.length; w++) {
                 var cx = wheels[w].dataset.cx, cy = wheels[w].dataset.cy;
