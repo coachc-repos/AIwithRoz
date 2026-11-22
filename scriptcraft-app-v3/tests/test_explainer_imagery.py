@@ -101,7 +101,10 @@ def test_bots_pills_and_smooth_edges():
     assert "Inbox Triage" in card and "#sc-bot-drop" in card and "sc-pill" in card
     assert "geometricPrecision" in sc.sprite("cinematic")
     assert "crispEdges" not in sc.sprite("cinematic")
-    assert "sc-eye" in sc.sprite("cinematic")
+    lib = sc.sprite("cinematic")
+    assert 'class="sc-eye" cx="68" cy="80" rx="7" ry="12" fill="#ffffff"' in lib
+    assert 'class="sc-eye" cx="92" cy="80" rx="7" ry="12" fill="#ffffff"' in lib
+    assert "sc-flow" in sc.connector(10, 20, 30, 40)
     line = sc.connector(0, 0, 100, 40, 0.5)
     assert "stroke-dasharray=\"2 8\"" in line and "stroke-linecap=\"round\"" in line
 
@@ -155,6 +158,7 @@ def test_runtime_does_not_restyle_text_and_does_move_scene_parts():
     assert "WAVE_ROWS" in js and "WAVE_SPEED" in js
     assert "ctx.fillStyle = '#090c12'" in js
     assert "isPopTarget" not in js and "xv-glint" not in js and "depthOfField" not in js
-    assert "sc-wheel" in js and "sc-glow" in js and "sc-smoke" in js and "sc-eye" in js
+    assert "sc-wheel" in js and "sc-glow" in js and "sc-smoke" in js and "botMotion" in js
+    assert "brandMotion" in js and "sc-flow" in js and "left: 1040px" in css
     assert "geometricPrecision" in css and "crispEdges" not in css and "crispEdges" not in js
     assert "look-cinematic" not in css and "xv-glint" not in css

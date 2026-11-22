@@ -1,8 +1,12 @@
 Real headless-Chrome frames. No mocked pictures.
 hook, datacenter and street: the same scene in classic (flat) and cinematic (volume).
-edge_before.png / edge_after.png: zoomed crop of the street car before and after smoothing at 1080p.
+edge_before.png / edge_after.png: zoomed crop of the street car before and after smoothing.
 edge_4k.png: the same crop from a scale-2 capture, which is how the 4K render draws it.
-bots_*.png and tracker_*.png: topic characters on the wave background.
-objects_compare.mp4: the bots and the tracker, cinematic, while they come in.
-demo_empty_cinematic.png: the preview placeholder. The final render does not draw an empty slot.
-demo_filled.png: the same kind of slide after an uploaded clip is assigned. Narration stays; the clip is muted.
+bots_*.png: the grid, eyes centered and solid. bots_idle.mp4 is several seconds of them moving.
+tracker_*.png: the hub, with dots that travel toward it in the cinematic mp4.
+brand_hero_cinematic.png, brand_compare_cinematic.png, brand_orbit_cinematic.png:
+  Nvidia, then ChatGPT beside Nvidia, then five logos on a ring. Logos are fetched
+  from Simple Icons (CC0) at render time and are not stored in the repository.
+  brands_motion.mp4 plays those three.
+demo_empty_cinematic.png: the preview placeholder, to the right of the text card.
+demo_filled.png: a slide after an uploaded clip is assigned. An empty slot is not drawn in the final render.

@@ -12775,6 +12775,16 @@ Thank you for watching!`;
                     + (st ? '<button class="xv-btn small" title="Mark as not confirmed" data-key="' + _xvEsc(key) + '" onclick="xvSetValue(this.dataset.key, \'\')">↺</button>' : '')
                     + '</div></div>';
             });
+            const brands = s.brands || [];
+            if (brands.length) {
+                h += '<div style="font-size:0.78em; color:#94a3b8; margin:12px 0 6px 0; font-weight:600;">Brands in this script</div>'
+                    + '<div style="color:#64748b; font-size:0.75em; margin-bottom:8px;">A logo is fetched from the CC0 Simple Icons set and cached in this project. Upload a PNG, SVG, WebP or JPEG to use your own file instead. That upload is kept.</div>';
+                brands.forEach(b => {
+                    h += '<div class="xv-item" style="display:flex; gap:8px; align-items:center;"><span style="width:14px; height:14px; border-radius:99px; background:' + _xvEsc(b.color || '#888') + ';"></span>'
+                        + '<span style="flex:1; color:#e2e8f0; font-weight:650;">' + _xvEsc(b.name) + (b.has_file ? '' : ' <span style="color:#fbbf24; font-weight:normal;">monogram until a file arrives</span>') + '</span>'
+                        + '<label class="xv-btn small">Upload logo<input type="file" accept=".png,.svg,.webp,.jpg,.jpeg" style="display:none;" data-key="' + _xvEsc(b.key) + '" data-name="' + _xvEsc(b.name) + '" onchange="xvLogoUpload(this)"></label></div>';
+                });
+            }
             const used = s.used_logos || {}, logos = s.logos || {};
             const withFiles = Object.keys(used).filter(k => used[k].has_file && logos[k]);
             if (withFiles.length) {

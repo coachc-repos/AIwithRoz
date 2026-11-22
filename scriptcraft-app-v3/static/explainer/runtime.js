@@ -480,15 +480,79 @@
     function mountScene(svg) {
         if (svg.__live) return svg.__live;
         var use = svg.querySelector('use');
-        if (!use) { svg.__live = null; return null; }
-        var id = (use.getAttribute('href') || use.getAttribute('xlink:href') || '').replace('#', '');
-        var sym = id && document.getElementById(id);
-        if (!sym) { svg.__live = null; return null; }
         var g = document.createElementNS(SVGNS, 'g');
-        Array.prototype.forEach.call(sym.childNodes, function (n) { g.appendChild(n.cloneNode(true)); });
-        svg.replaceChild(g, use);
+        if (use) {
+            var id = (use.getAttribute('href') || use.getAttribute('xlink:href') || '').replace('#', '');
+            var sym = id && document.getElementById(id);
+            if (!sym) { svg.__live = null; return null; }
+            Array.prototype.forEach.call(sym.childNodes, function (n) { g.appendChild(n.cloneNode(true)); });
+            svg.replaceChild(g, use);
+        } else if (svg.childNodes.length) {
+            while (svg.firstChild) g.appendChild(svg.firstChild);
+            svg.appendChild(g);
+        } else {
+            svg.__live = null;
+            return null;
+        }
         svg.__live = g;
         return g;
+    }
+    function slideT0(node) {
+        var sec = node.closest ? node.closest('section') : null;
+        return sec ? (+sec.dataset.t0 || 0) : 0;
+    }
+    function botMotion(svg, g, t, i) {
+        var phase = i * 0.9;
+        var wave = Math.sin(t * 1.25 + phase);
+        var bob = wave * 7;
+        var sway = Math.sin(t * 0.65 + phase) * 2.2;
+        var sy = 1 + wave * 0.035;
+        var sx = 1 - wave * 0.028;
+        var hop = 0;
+        if (svg.dataset.hop && svg.dataset.hop.charAt(0) === '+') {
+            var at = slideT0(svg) + parseFloat(svg.dataset.hop.slice(1));
+            var dt = t - at;
+            if (dt > 0 && dt < 0.42) hop = -Math.sin(dt / 0.42 * Math.PI) * 18;
+        }
+        g.setAttribute('transform',
+            'translate(80 ' + (80 + bob + hop).toFixed(2) + ') rotate(' + sway.toFixed(2) +
+            ') scale(' + sx.toFixed(3) + ' ' + sy.toFixed(3) + ') translate(-80 -80)');
+        var period = 3.6;
+        var closed = ((t + phase) % period) > period - 0.12;
+        var eyes = g.querySelectorAll('.sc-eye');
+        for (var e = 0; e < eyes.length; e++) {
+            eyes[e].setAttribute('ry', closed ? '1.4' : '12');
+            eyes[e].setAttribute('opacity', '1');
+        }
+        var look = g.querySelector('.sc-eyes');
+        if (look) {
+            var glance = Math.sin(t * 0.5 + phase);
+            var gx = 0, gy = 0;
+            if (svg.dataset.look === 'hub') {
+                if (glance > 0.35) gy = -5;
+            } else if (glance > 0.78) gx = 5;
+            else if (glance < -0.78) gx = -5;
+            look.setAttribute('transform', 'translate(' + gx + ' ' + gy + ')');
+        }
+    }
+    function brandMotion(svg, g, t, i) {
+        var phase = i * 1.1;
+        var bob = Math.sin(t * 0.85 + phase) * 8;
+        var rot = Math.sin(t * 0.38 + phase) * 3.5;
+        var age = t - slideT0(svg);
+        var tilt = age >= 0 && age < 0.75 ? (1 - age / 0.75) * 16 : 0;
+        svg.style.transform = 'perspective(900px) rotateX(' + tilt.toFixed(2) + 'deg)';
+        g.setAttribute('transform',
+            'translate(260 ' + (260 + bob).toFixed(2) + ') rotate(' + rot.toFixed(2) + ') translate(-260 -260)');
+        var glow = g.querySelector('.sc-glow');
+        if (glow) glow.setAttribute('opacity', (0.16 + 0.08 * (0.5 + 0.5 * Math.sin(t * 1.1 + phase))).toFixed(3));
+        var glint = g.querySelector('.sc-glint');
+        if (glint) {
+            var u = (t * 0.18 + phase) % 1;
+            var on = u > 0.12 && u < 0.72;
+            glint.setAttribute('opacity', on ? '0.7' : '0');
+            glint.setAttribute('transform', 'translate(' + ((-40 + u * 560).toFixed(1)) + ' 0)');
+        }
     }
     function sceneMotion(t) {
         if (STYLE !== 'cinematic') return;
@@ -497,6 +561,14 @@
             var svg = nodes[i];
             var g = mountScene(svg);
             if (!g) continue;
+            if (svg.dataset.sc === 'bot' || svg.classList.contains('sc-bot')) {
+                botMotion(svg, g, t, i);
+                continue;
+            }
+            if (svg.dataset.sc === 'brand' || svg.classList.contains('sc-brand')) {
+                brandMotion(svg, g, t, i);
+                continue;
+            }
             var hook = sceneHook(svg);
             var depth = +svg.dataset.depth || 1;
             var amp = (hook ? 22 : 12) * depth;
@@ -518,15 +590,25 @@
                 var flick = Math.sin(t * (hook ? 4.2 : 2.4) + k * 1.7);
                 glows[k].setAttribute('opacity', flick > 0.82 ? '0.45' : '1');
             }
-            var eyes = g.querySelectorAll('.sc-eye');
-            for (var e = 0; e < eyes.length; e++) {
-                eyes[e].setAttribute('opacity', Math.sin(t * (hook ? 2.2 : 1.4) + e) > 0.92 ? '0.15' : '1');
-            }
             var smoke = g.querySelectorAll('.sc-smoke');
             for (var s = 0; s < smoke.length; s++) {
                 var rise = ((t * (hook ? 28 : 16) + s * 14) % 34);
                 smoke[s].setAttribute('transform', 'translate(0 ' + (-rise).toFixed(2) + ')');
                 smoke[s].setAttribute('opacity', (0.15 + 0.4 * (1 - rise / 34)).toFixed(3));
+            }
+        }
+        var flows = document.querySelectorAll('.sc-flow');
+        for (var f = 0; f < flows.length; f++) {
+            flows[f].setAttribute('stroke-dashoffset', (-t * 36).toFixed(2));
+        }
+        var rings = document.querySelectorAll('.sc-orbit');
+        for (var r = 0; r < rings.length; r++) {
+            var orbs = rings[r].querySelectorAll('.sc-orb');
+            var n = orbs.length || 1;
+            for (var o = 0; o < orbs.length; o++) {
+                var ang = t * 0.35 + o * Math.PI * 2 / n;
+                orbs[o].style.left = (960 + Math.cos(ang) * 420 - 90).toFixed(1) + 'px';
+                orbs[o].style.top = (580 + Math.sin(ang) * 190 - 90).toFixed(1) + 'px';
             }
         }
     }

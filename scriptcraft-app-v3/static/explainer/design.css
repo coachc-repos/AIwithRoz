@@ -106,7 +106,7 @@ svg.sc { overflow: visible; }
 .sc-pill { display: inline-block; margin-top: 18px; padding: 10px 22px; border-radius: 999px; background: #121824; border: 2px solid #2a3446; color: #f2f4f8; font-size: 26px; font-weight: 650; }
 .sc-message { display: inline-block; padding: 16px 28px; border-radius: 999px; background: #121824; border: 2px solid #2a3446; color: #f2f4f8; font-size: 32px; font-weight: 650; }
 .sc-hub { display: inline-block; padding: 12px 26px; border-radius: 999px; background: #0b0f16; color: #f2f4f8; font-size: 28px; font-weight: 750; border: 2px solid #f5b83d; }
-.sc-demo { position: absolute; left: 860px; top: 200px; width: 960px; height: 540px; border: 3px dashed #f5b83d; border-radius: 28px; background: rgba(12, 21, 38, 0.82); color: #f2f4f8; display: none; z-index: 40; box-sizing: border-box; padding: 36px 40px; }
+.sc-demo { position: absolute; left: 1040px; top: 240px; width: 760px; height: 428px; border: 3px dashed #f5b83d; border-radius: 28px; background: rgba(12, 21, 38, 0.82); color: #f2f4f8; display: none; z-index: 40; box-sizing: border-box; padding: 36px 40px; }
 .sc-demo .k { font-size: 22px; letter-spacing: 0.14em; text-transform: uppercase; color: #f5b83d; font-weight: 750; }
 .sc-demo .t { font-size: 48px; font-weight: 750; margin: 18px 0 12px; }
 .sc-demo .n { font-size: 28px; color: #8a94a6; line-height: 1.35; }

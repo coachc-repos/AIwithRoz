@@ -72,7 +72,7 @@ def write_imagery_samples(folder) -> list:
     folder = Path(folder)
     if folder.exists():
         for old in folder.iterdir():
-            if old.is_file():
+            if old.is_file() and not old.name.startswith("edge_") and old.name != "demo_filled.png":
                 old.unlink()
     folder.mkdir(parents=True, exist_ok=True)
     slides = [
@@ -84,9 +84,12 @@ def write_imagery_samples(folder) -> list:
         {"id": "tracker", "kind": "scene", "t0": 21.4, "t1": 26.4, "spoken": "One rule for every bot"},
         {"id": "demo", "kind": "slide", "t0": 26.4, "t1": 31.0,
          "spoken": "Let me show you how the bot sends the invoice.", "demo": "The invoice bot sending one invoice"},
+        {"id": "hero", "kind": "scene", "t0": 31.0, "t1": 36.0, "spoken": "Nvidia builds the chips."},
+        {"id": "compare", "kind": "scene", "t0": 36.0, "t1": 41.0, "spoken": "ChatGPT and Nvidia"},
+        {"id": "orbit", "kind": "scene", "t0": 41.0, "t1": 46.0, "spoken": "ChatGPT, Claude, Nvidia, Tesla and YouTube"},
     ]
     html = _sample_html()
-    compiled = {"html": html, "slides": slides, "duration": 31.0, "start": 0.0, "end": 31.0,
+    compiled = {"html": html, "slides": slides, "duration": 46.0, "start": 0.0, "end": 46.0,
                 "sections": ["Hook"], "host_windows": [], "host_sections": []}
     work = folder / "_pages"
     work.mkdir(parents=True, exist_ok=True)
@@ -106,7 +109,8 @@ def write_imagery_samples(folder) -> list:
         shutil.rmtree(work, ignore_errors=True)
         return [note]
     shots = [("hook", 2.4), ("datacenter", 8.8), ("street", 13.6),
-             ("bots", 19.2), ("tracker", 24.2), ("demo_empty", 28.2)]
+             ("bots", 19.2), ("tracker", 24.2), ("demo_empty", 28.2),
+             ("brand_hero", 33.4), ("brand_compare", 38.4), ("brand_orbit", 43.6)]
     written = []
 
     async def grab():
@@ -114,16 +118,14 @@ def write_imagery_samples(folder) -> list:
             for style, path in pages.items():
                 await ch.open(path, 1.0, transparent=False)
                 for name, t in shots:
-                    if name == "demo_empty" and style != "cinematic":
+                    if name in ("demo_empty", "brand_hero", "brand_compare", "brand_orbit") and style != "cinematic":
                         continue
                     dest = folder / f"{name}_{style}.png"
                     dest.write_bytes(await ch.frame(t))
                     written.append(dest)
 
     asyncio.run(grab())
-    movie = _sample_movie(folder, pages, chrome)
-    if movie:
-        written.append(movie)
+    written.extend(_sample_movie(folder, pages, chrome) or [])
     shutil.rmtree(work, ignore_errors=True)
     note = folder / "SOURCES.txt"
     note.write_text(
@@ -131,10 +133,14 @@ def write_imagery_samples(folder) -> list:
         "hook, datacenter and street: the same scene in classic (flat) and cinematic (volume).\n"
         "edge_before.png / edge_after.png: zoomed crop of the street car before and after smoothing.\n"
         "edge_4k.png: the same crop from a scale-2 capture, which is how the 4K render draws it.\n"
-        "bots_*.png and tracker_*.png: topic characters on the wave background.\n"
-        "objects_compare.mp4: the bots and the tracker, cinematic, while they come in.\n"
-        "demo_empty_cinematic.png: the preview placeholder. The final render does not draw it.\n"
-        "demo_filled.png: a slide whose placeholder was replaced by an uploaded clip.\n",
+        "bots_*.png: the grid, eyes centered and solid. bots_idle.mp4 is several seconds of them moving.\n"
+        "tracker_*.png: the hub, with dots that travel toward it in the cinematic mp4.\n"
+        "brand_hero_cinematic.png, brand_compare_cinematic.png, brand_orbit_cinematic.png:\n"
+        "  Nvidia, then ChatGPT beside Nvidia, then five logos on a ring. Logos are fetched\n"
+        "  from Simple Icons (CC0) at render time and are not stored in the repository.\n"
+        "  brands_motion.mp4 plays those three.\n"
+        "demo_empty_cinematic.png: the preview placeholder, to the right of the text card.\n"
+        "demo_filled.png: a slide after an uploaded clip is assigned. An empty slot is not drawn in the final render.\n",
         encoding="utf-8")
     written.append(note)
     return written
@@ -198,12 +204,39 @@ def _sample_html() -> str:
         '<section class="slide kind-slide" id="demo" data-kind="slide" data-t0="26.400" data-t1="31.000" '
         'data-sidx="0" data-slabel="DEMO" data-hud="on" data-transition="cut" data-tracker="" '
         'data-demo="The invoice bot sending one invoice">'
-        '<div class="pad col gap-m"><div class="kicker">DEMO</div>'
-        '<h1 class="h2">Let me show you.</h1>'
-        '<div class="card" style="max-width:760px"><div class="h3">The invoice bot</div>'
+        '<div style="position:absolute; left:140px; top:170px; width:720px">'
+        '<div class="kicker">DEMO</div>'
+        '<h1 class="h2" style="white-space:nowrap">Let me show you.</h1>'
+        '<div class="card" style="max-width:560px; margin-top:28px"><div class="h3">The invoice bot</div>'
         '<div class="lead">Narration keeps going.</div></div></div></section>'
     )
-    return hook + chapter + grid + street + bots + tracker + demo
+    return hook + chapter + grid + street + bots + tracker + demo + _brand_sections()
+
+
+def _mark(key: str):
+    import explainer_brands as eb
+    row = next(r for r in eb.BRANDS if r[0] == key)
+    tinted = eb.tint_icon(eb.fetch_icon(row[2]), row[3]) or eb.monogram_svg(row[1], row[3])
+    return {"name": row[1], "color": row[3], "svg": tinted}
+
+
+def _brand_sections() -> str:
+    import explainer_brands as eb
+    nvidia, chatgpt = _mark("nvidia"), _mark("chatgpt")
+    ring = [_mark(k) for k in ("chatgpt", "claude", "nvidia", "tesla", "youtube")]
+    def section(sid, t0, t1, label, title, inner):
+        return (
+            f'<section class="slide kind-scene" id="{sid}" data-kind="scene" data-t0="{t0:.3f}" '
+            f'data-t1="{t1:.3f}" data-sidx="0" data-slabel="{label}" data-hud="off" '
+            f'data-transition="cut" data-tracker=""><div class="scene sc-open">'
+            f'<h1 class="h1" data-anim="words" data-t="+0.1" style="position:absolute; left:120px; top:60px; margin:0">{title}</h1>'
+            f'{inner}</div></section>'
+        )
+    return (
+        section("hero", 31, 36, "HERO", "Nvidia", eb.hero(nvidia["name"], nvidia["color"], nvidia["svg"], delay=0.25))
+        + section("compare", 36, 41, "COMPARE", "ChatGPT and Nvidia", eb.comparison(chatgpt, nvidia))
+        + section("orbit", 41, 46, "ORBIT", "One ecosystem", eb.orbit(ring))
+    )
 
 
 def _bots_section() -> str:
@@ -229,15 +262,15 @@ def _bots_section() -> str:
 def _tracker_section() -> str:
     from explainer_scenes import BOT_COLORS, bot, check_badge, connector
     lines = "".join([
-        connector(960, 500, 340, 700, 0.7),
-        connector(960, 500, 960, 720, 0.85),
-        connector(960, 500, 1580, 700, 1.0),
+        connector(340, 700, 960, 500, 0.7),
+        connector(960, 720, 960, 500, 0.85),
+        connector(1580, 700, 960, 500, 1.0),
     ])
     figs = "".join([
         bot("blob", BOT_COLORS[2], 890, 300, 120, 1),
-        bot("circle", BOT_COLORS[0], 250, 720, 150, 1),
-        bot("squircle", BOT_COLORS[1], 880, 740, 150, 1),
-        bot("squircle", BOT_COLORS[5], 1500, 720, 150, 1),
+        bot("circle", BOT_COLORS[0], 250, 720, 150, 1, hop=1.3, look="hub"),
+        bot("squircle", BOT_COLORS[1], 880, 740, 150, 1, hop=1.5, look="hub"),
+        bot("squircle", BOT_COLORS[5], 1500, 720, 150, 1, hop=1.7, look="hub"),
     ])
     badges = "".join([
         check_badge(400, 730, 1.3),
@@ -269,36 +302,41 @@ def _sample_movie(folder, pages, chrome):
         shutil.rmtree(frames)
     frames.mkdir()
     # (style, start, end) so the clip shows the entrance, then the settle.
-    spans = (("cinematic", 17.0, 19.4), ("cinematic", 22.0, 24.6))
+    clips = (
+        ("bots_idle.mp4", (("cinematic", 16.8, 20.6),)),
+        ("brands_motion.mp4", (("cinematic", 31.2, 33.6), ("cinematic", 36.2, 38.4), ("cinematic", 41.3, 44.2))),
+    )
     fps = 10
+
+    made = []
 
     async def grab():
         async with ev._Chrome(*chrome) as ch:
-            i = 0
             open_style = None
-            for style, t0, t1 in spans:
-                if style != open_style:
-                    await ch.open(pages[style], 1.0, transparent=False)
-                    open_style = style
-                n = max(2, int(round((t1 - t0) * fps)))
-                for k in range(n):
-                    t = t0 + (t1 - t0) * (k / max(1, n - 1))
-                    (frames / f"f{i:04d}.png").write_bytes(await ch.frame(t))
-                    i += 1
+            for name, spans in clips:
+                i = 0
+                for style, t0, t1 in spans:
+                    if style != open_style:
+                        await ch.open(pages[style], 1.0, transparent=False)
+                        open_style = style
+                    n = max(2, int(round((t1 - t0) * fps)))
+                    for k in range(n):
+                        t = t0 + (t1 - t0) * (k / max(1, n - 1))
+                        (frames / f"f{i:04d}.png").write_bytes(await ch.frame(t))
+                        i += 1
+                dest = folder / name
+                cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-framerate", str(fps),
+                       "-i", str(frames / "f%04d.png"), "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                       "-crf", "20", "-movflags", "+faststart", str(dest)]
+                subprocess.run(cmd, check=True, timeout=180)
+                made.append(dest)
+                for old in frames.glob("f*.png"):
+                    old.unlink()
 
     try:
         asyncio.run(grab())
     except Exception:
         shutil.rmtree(frames, ignore_errors=True)
-        return None
-    dest = folder / "objects_compare.mp4"
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-framerate", str(fps),
-           "-i", str(frames / "f%04d.png"), "-c:v", "libx264", "-pix_fmt", "yuv420p",
-           "-crf", "20", "-movflags", "+faststart", str(dest)]
-    try:
-        subprocess.run(cmd, check=True, timeout=180)
-    except Exception:
-        shutil.rmtree(frames, ignore_errors=True)
-        return None
+        return made
     shutil.rmtree(frames, ignore_errors=True)
-    return dest
+    return made

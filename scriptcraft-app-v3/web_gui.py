@@ -10479,6 +10479,12 @@ def _xv_state(p) -> dict:
         out["host_windows"] = comp.get("host_windows") or []
         if _xv.sync_demo_placeholders(p, comp.get("slides") or []):
             out["youtube"] = _xv.yt_public(p)
+        try:
+            import explainer_brands as _xb
+            _xb.ensure_brand_logos(p, [s.get("spoken") or "" for s in comp.get("slides") or []])
+        except Exception:
+            pass
+        out["brands"] = list((p.data.get("brands") or []))
     return out
 
 

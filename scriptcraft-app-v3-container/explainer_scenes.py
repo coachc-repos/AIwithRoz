@@ -337,19 +337,20 @@ def _bot_symbols(cinematic: bool) -> list:
         "blob": '<path d="M80 28 C118 26 140 52 136 86 C132 122 108 138 78 134 C40 128 22 100 30 70 C38 40 52 30 80 28 Z" fill="currentColor"/>',
         "drop": '<path d="M80 24 C108 24 128 52 124 84 C120 118 100 142 80 142 C60 142 40 118 36 84 C32 52 52 24 80 24 Z" fill="currentColor"/>',
     }
+    # Both eyes are the same solid white, centered as a pair. A blink changes
+    # their height together; it never fades one of them.
     eyes = (
-        '<ellipse class="sc-eye" cx="86" cy="74" rx="6" ry="11" fill="#fff"/>'
-        '<ellipse class="sc-eye" cx="106" cy="74" rx="6" ry="11" fill="#fff"/>'
+        '<g class="sc-eyes">'
+        '<ellipse class="sc-eye" cx="68" cy="80" rx="7" ry="12" fill="#ffffff"/>'
+        '<ellipse class="sc-eye" cx="92" cy="80" rx="7" ry="12" fill="#ffffff"/>'
+        '</g>'
     )
-    shade = (
-        '<ellipse cx="62" cy="64" rx="22" ry="16" fill="#fff" opacity="0.22"/>'
-        '<ellipse cx="98" cy="108" rx="28" ry="16" fill="#000" opacity="0.12"/>'
-        '<ellipse cx="80" cy="148" rx="46" ry="8" fill="#000" opacity="0.28"/>'
-    ) if cinematic else ""
+    shadow = '<ellipse cx="80" cy="150" rx="46" ry="8" fill="#000" opacity="0.28"/>' if cinematic else ""
+    highlight = '<ellipse cx="50" cy="48" rx="14" ry="9" fill="#fff" opacity="0.28"/>' if cinematic else ""
     out = []
     for shape, body in bodies.items():
         out.append(
-            f'<symbol id="sc-bot-{shape}" viewBox="0 0 160 160">{shade}{body}{eyes}</symbol>'
+            f'<symbol id="sc-bot-{shape}" viewBox="0 0 160 160">{shadow}{body}{highlight}{eyes}</symbol>'
         )
     out.append(
         '<symbol id="sc-check" viewBox="0 0 48 48">'
@@ -361,12 +362,22 @@ def _bot_symbols(cinematic: bool) -> list:
     return out
 
 
-def bot(shape: str, fill: str, x: float, y: float, size: float = 140, depth: float = 1) -> str:
-    """One character. `fill` is a CSS color. The label sits in HTML, not in the symbol."""
+def bot(shape: str, fill: str, x: float, y: float, size: float = 140, depth: float = 1,
+        hop: float = None, look: str = "") -> str:
+    """One character. `fill` is a CSS color. The label sits in HTML, not in the symbol.
+
+    hop is seconds after the slide starts when the character jumps (a check
+    badge landing). look="hub" aims the eyes toward the center of a diagram.
+    """
     if shape not in BOT_SHAPES:
         shape = "circle"
+    extra = ""
+    if hop is not None:
+        extra += f' data-hop="+{hop:.2f}"'
+    if look:
+        extra += f' data-look="{look}"'
     return (
-        f'<svg class="sc sc-bot" data-sc="bot" data-shape="{shape}" data-depth="{depth:g}" '
+        f'<svg class="sc sc-bot" data-sc="bot" data-shape="{shape}" data-depth="{depth:g}"{extra} '
         f'x="{x:g}" y="{y:g}" width="{size:g}" height="{size:g}" viewBox="0 0 160 160" '
         f'shape-rendering="geometricPrecision" style="color:{fill}">'
         f'<use href="#sc-bot-{shape}"/></svg>'
@@ -394,13 +405,14 @@ def check_badge(x: float, y: float, delay: float) -> str:
 
 
 def connector(x1: float, y1: float, x2: float, y2: float, delay: float = 0.6) -> str:
-    """A dotted line that fades on. Coordinates are in the scene svg.
+    """A dotted line from a character (x1, y1) toward the hub (x2, y2).
 
-    It stays dotted. The draw animation would replace the dots with a solid stroke.
+    The dots stay dotted and, in cinematic, travel toward the hub.
     """
     return (
-        f'<line x1="{x1:g}" y1="{y1:g}" x2="{x2:g}" y2="{y2:g}" stroke="#8a94a6" stroke-width="3" '
-        f'stroke-dasharray="2 8" stroke-linecap="round" data-anim="fade" data-t="+{delay:.2f}"/>'
+        f'<line class="sc-flow" x1="{x1:g}" y1="{y1:g}" x2="{x2:g}" y2="{y2:g}" stroke="#8a94a6" '
+        f'stroke-width="3" stroke-dasharray="2 8" stroke-linecap="round" data-anim="fade" '
+        f'data-t="+{delay:.2f}"/>'
     )
 
 
