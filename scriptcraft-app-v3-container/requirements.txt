@@ -29,3 +29,9 @@ pypdf>=4.0.0
 
 # YouTube clip import for the explainer. The image already installs ffmpeg.
 yt-dlp>=2025.1.15
+
+# Article OCR is optional and not installed in the image. Set
+# AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT and AZURE_DOCUMENT_INTELLIGENCE_KEY
+# (never commit the key), or add tesseract-ocr plus pytesseract, or
+# rapidocr-onnxruntime. URL capture uses headless Chrome when the image has
+# it. A failed or paywalled capture asks for an uploaded screenshot.

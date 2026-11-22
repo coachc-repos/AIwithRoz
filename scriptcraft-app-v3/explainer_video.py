@@ -59,6 +59,11 @@ objects with volume, materials and motion (wheels, window glow, smoke,
 parallax), stronger on the hook. A saved "rich" means cinematic.
 See explainer_scenes.py.
 
+Article screenshots and spoken-emphasis strokes are overlays
+(explainer_articles.py). They use the slide times the compiler already
+resolved. They do not restyle text cards, the wave field, bots, logos, or
+scene objects.
+
 The module has no Flask dependency; web_gui.py wires the routes and passes in
 the Anthropic client, the ElevenLabs key and its pause detector.
 """
@@ -1520,7 +1525,7 @@ def slide_shows_presenter(slide: dict) -> bool:
 
 
 def slide_has_media(slide: dict, media_ids: Optional[set] = None) -> bool:
-    """A YouTube clip, an uploaded screen recording, or a demo-video slot."""
+    """A YouTube clip, an uploaded screen recording, an article screenshot, or a demo-video slot."""
     if media_ids and (slide.get("id") or "") in media_ids:
         return True
     if slide.get("media") or slide.get("clip") or slide.get("demo"):
@@ -1795,11 +1800,17 @@ def apply_transition_plan(compiled: dict, *, mode: str = "full", overrides: Opti
 
 
 def media_ids_of(data: Optional[dict]) -> set:
-    """Slides that have a clip or a demo-video placeholder."""
+    """Slides that have a clip, an article screenshot, or a demo-video placeholder."""
     ids = set()
     for clip in load_youtube(data).get("clips") or []:
         if clip.get("slide") and clip.get("status") in ("ready", "placeholder"):
             ids.add(clip["slide"])
+    raw = (data or {}).get("articles") if isinstance(data, dict) else None
+    if isinstance(raw, dict):
+        raw = raw.get("items")
+    for art in raw or []:
+        if isinstance(art, dict) and art.get("slide"):
+            ids.add(art["slide"])
     return ids
 
 
@@ -3635,7 +3646,8 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
               host: Optional[dict] = None, pip_frame: Optional[str] = None,
               bubble: Optional[str] = None, clips: Optional[list] = None,
               media_origin: str = "", visual: Optional[dict] = None,
-              demos: Optional[list] = None, bookends: Optional[dict] = None) -> str:
+              demos: Optional[list] = None, articles: Optional[list] = None,
+              emphasis: Optional[dict] = None, bookends: Optional[dict] = None) -> str:
     """A self-contained page: design CSS, the compiled slides, the runtime.
     The runtime exposes __seek(t), __check() and __ready for the renderer;
     in preview mode it answers postMessage seeks from the dialog. With a
@@ -3646,7 +3658,9 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
     play in preview as each slide's picture; the renderer lays the same
     files on with ffmpeg, holding the last frame when the clip is shorter.
     `visual` picks classic or cinematic. Both keep the wave background.
-    Cinematic adds the object entrance. The slide HTML is not changed."""
+    Cinematic adds the object entrance. The slide HTML is not changed.
+    `articles` and `emphasis` are overlays: a screenshot over the waves, and
+    marker strokes under words that are already on the slide."""
     css = (ASSET_DIR / "design.css").read_text(encoding="utf-8")
     js = (ASSET_DIR / "runtime.js").read_text(encoding="utf-8")
     fxjs = (ASSET_DIR / "transitions.js").read_text(encoding="utf-8")
@@ -3663,6 +3677,7 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
                       "sections": compiled.get("sections") or [],
                       "asides": _aside_payloads(compiled.get("slides") or [], bubble),
                       "clips": clip_cfg, "visual": visual_cfg,
+                      "articles": articles or [], "emphasis": emphasis or {"marks": []},
                       "demos": demos or [],
                       "bookends": _page_bookends(compiled, bookends, mode),
                       "fx": [{"id": s.get("id"), "t": s.get("t0"), "dur": s.get("fx_dur"),
@@ -4444,13 +4459,17 @@ class Project:
         host = self.host()
         media_key = sorted((c.get("id"), c.get("slide"), c.get("status"))
                            for c in load_youtube(self.data).get("clips") or [])
+        arts = self.data.get("articles") or []
+        if isinstance(arts, dict):
+            arts = arts.get("items") or []
+        article_key = sorted((a.get("id"), a.get("slide")) for a in arts if isinstance(a, dict))
         books = self.data.get("bookends") or {}
         key = json.dumps([n, self.data.get("values"), self.data.get("logo_choices"),
                           self.data.get("logos"), self.data.get("timing"), self.data.get("span"),
                           bool(host), (host or {}).get("sections"),
                           transition_mode_key(None, self.data.get("transition_mode")),
                           self.data.get("slide_fx") or {}, self.data.get("gap_fx") or {},
-                          books, media_key], sort_keys=True, default=str)
+                          books, media_key, article_key], sort_keys=True, default=str)
         with self.lock:
             if self._compiled and self._compiled[0] == key:
                 return self._compiled[1]
@@ -5654,9 +5673,12 @@ def write_page(project: Project, compiled: dict, mode: str, name: str) -> Path:
     host = project.host()
     frame, bubble = look_of(project.data, host)
     style = visual_style_key(None, project.data.get("visual_style"))
+    import explainer_articles as _articles
+    article_layer, emphasis_layer = _articles.page_layers(project, compiled)
     page.write_text(page_html(compiled, mode=mode, title=project.data.get("title") or "Explainer",
                               host=host, pip_frame=frame, bubble=bubble,
                               visual={"style": style},
+                              articles=article_layer, emphasis=emphasis_layer,
                               demos=demo_payloads(compiled, load_youtube(project.data)["clips"], mode)),
                     encoding="utf-8")
     return page

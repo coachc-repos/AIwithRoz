@@ -48,3 +48,12 @@ cloud dialog needs that token (sign in at `/login`).
 
 Roll back with
 `az containerapp update -n scriptcraft-app -g scriptcraft-rg --image <previous image>`.
+
+Article screenshots and emphasis underlines are part of the explainer the
+sync copies (`explainer_articles.py`, `explainer_video.py`, the explainer
+page and its runtime). OCR is optional: set
+`AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` and
+`AZURE_DOCUMENT_INTELLIGENCE_KEY` on the Container App, or install
+Tesseract or RapidOCR in the image. Do not put those keys in the repo. If
+a URL capture fails or the page is paywalled, upload a screenshot. The
+v3 README has the full steps.

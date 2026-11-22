@@ -87,6 +87,9 @@ def check_rules(xv) -> None:
     assert "media-enter" in xv.detect_transition_reasons(demo[1], demo[0])
     assigned = [_slide(0), _slide(1)]
     assert "media-enter" in xv.detect_transition_reasons(assigned[1], assigned[0], media_ids={"s01"})
+    article_ids = xv.media_ids_of({"articles": [{"id": "a1", "slide": "s01"}]})
+    assert article_ids == {"s01"}
+    assert "media-enter" in xv.detect_transition_reasons(assigned[1], assigned[0], media_ids=article_ids)
     assert xv.demo_note("Let me show you how this works")
     spoken = [_slide(0), _slide(1, spoken="Let me show you how the bot sends it")]
     assert "media-enter" in xv.detect_transition_reasons(spoken[1], spoken[0])

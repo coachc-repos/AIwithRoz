@@ -10385,7 +10385,7 @@ def heygen_audio_video_file(job_id):
 import explainer_video as _xv
 
 _XV_STATUSES = {"confirmed", "edited", "filled", "dropped"}
-_XV_FILE_DIRS = ("renders", "final", "stills", "logos", "host", "working")
+_XV_FILE_DIRS = ("renders", "final", "stills", "logos", "host", "working", "articles")
 
 
 def _xv_log(msg: str, level: str = "info") -> None:
@@ -10475,6 +10475,7 @@ def _xv_state(p) -> dict:
         },
         "youtube": _xv.yt_public(p),
     }
+    import explainer_articles as _xa
     host = p.host()
     if host:
         out["host"] = {
@@ -10511,6 +10512,13 @@ def _xv_state(p) -> dict:
         except Exception:
             pass
         out["brands"] = list((p.data.get("brands") or []))
+        out["articles"] = _xa.public_articles(p, comp.get("slides") or [])
+        out["emphasis"] = _xa.public_emphasis(p, comp.get("slides") or [], comp.get("html") or "",
+                                              comp.get("clock") or {})
+    else:
+        out["articles"] = _xa.public_articles(p, [])
+        out["emphasis"] = _xa.public_emphasis(p, [], "")
+    out["ocr"] = _xa.ocr_status()
     return out
 
 
@@ -10691,6 +10699,8 @@ def explainer_preview(pid):
     origin = request.host_url.rstrip("/")
     if not origin.startswith(("http://", "https://")):
         origin = ""
+    import explainer_articles as _xa
+    article_layer, emphasis_layer = _xa.page_layers(p, compiled)
     books = {}
     for _bk in ("intro", "end"):
         pub = _xv_public_bookend(p, _bk)
@@ -10700,6 +10710,7 @@ def explainer_preview(pid):
     page = _xv.page_html(compiled, mode="preview", title=p.data.get("title") or "Explainer", host=host,
                          pip_frame=frame, bubble=bubble, clips=_xv.preview_clip_payloads(p, compiled, _clip_url),
                          media_origin=origin, visual={"style": visual_style},
+                         articles=article_layer, emphasis=emphasis_layer,
                          demos=_xv.demo_payloads(compiled, _xv.load_youtube(p.data)["clips"], "preview"),
                          bookends=books)
     resp = Response(page, mimetype="text/html")
@@ -10838,6 +10849,75 @@ def explainer_clip_upload(pid):
     except Exception as e:
         raw.unlink(missing_ok=True)
         return jsonify({"success": False, "error": "Could not read that video. " + str(e)[:180]}), 400
+    return jsonify({"success": True, **_xv_state(p)})
+
+
+@app.route("/api/explainer/<pid>/article", methods=["POST"])
+def explainer_article(pid):
+    """Save an article screenshot, capture a URL, or choose which lines and slide."""
+    import explainer_articles as _xa
+    upload = request.files.get("file")
+    if upload is not None:
+        p = _xv_project(_xv_title(), pid)
+        if p is None:
+            return jsonify({"success": False, "error": "Project not found."}), 404
+        source = (request.form.get("source") or "upload").strip()
+        try:
+            _xa.add_upload(p, upload.read(), upload.filename or "article.png", source)
+        except _xa.ArticleError as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+        return jsonify({"success": True, **_xv_state(p)})
+    data = request.get_json(silent=True) or {}
+    p = _xv_project((data.get("title") or "").strip(), pid)
+    if p is None:
+        return jsonify({"success": False, "error": "Project not found."}), 404
+    action = (data.get("action") or "").strip()
+    slides = []
+    if p.data.get("current"):
+        slides = p.compile().get("slides") or []
+    try:
+        if action == "capture":
+            _xa.add_captured(p, (data.get("url") or "").strip())
+        elif action == "lines":
+            _xa.set_chosen(p, (data.get("id") or "").strip(), data.get("chosen") or [])
+        elif action == "assign":
+            _xa.assign_article(p, (data.get("id") or "").strip(), data.get("slide") or "", slides)
+        elif action == "remove":
+            _xa.remove_article(p, (data.get("id") or "").strip())
+        elif action == "ocr":
+            _xa.reocr(p, (data.get("id") or "").strip())
+        else:
+            return jsonify({"success": False, "error": "Unknown article action."}), 400
+    except _xa.ArticleError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    return jsonify({"success": True, **_xv_state(p)})
+
+
+@app.route("/api/explainer/<pid>/emphasis", methods=["POST"])
+def explainer_emphasis(pid):
+    """Global and per-slide underline switches, and the list the user edits."""
+    import explainer_articles as _xa
+    data = request.get_json(silent=True) or {}
+    p = _xv_project((data.get("title") or "").strip(), pid)
+    if p is None:
+        return jsonify({"success": False, "error": "Project not found."}), 404
+    action = (data.get("action") or "").strip()
+    known = None
+    if p.data.get("current"):
+        known = {m["id"] for m in p.compile().get("slides") or []}
+    try:
+        if action == "global":
+            _xa.set_emphasis_global(p, bool(data.get("enabled")))
+        elif action == "slide":
+            _xa.set_emphasis_slide(p, data.get("slide") or "", bool(data.get("enabled")))
+        elif action == "remove":
+            _xa.remove_emphasis(p, data.get("slide") or "", data.get("phrase") or "")
+        elif action == "add":
+            _xa.add_emphasis(p, data.get("slide") or "", data.get("phrase") or "", known)
+        else:
+            return jsonify({"success": False, "error": "Unknown emphasis action."}), 400
+    except _xa.ArticleError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
     return jsonify({"success": True, **_xv_state(p)})
 
 

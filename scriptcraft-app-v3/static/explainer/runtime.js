@@ -720,7 +720,9 @@
             if (t >= s.t0 && t < s.t1 + tail) vis.push(s);
             else if (s.t0 > t + 1) break;
         }
-        active.forEach(function (s) { if (vis.indexOf(s) < 0) s.el.classList.remove('on'); });
+        active.forEach(function (s) {
+            if (vis.indexOf(s) < 0) { s.el.classList.remove('on'); s.el.classList.remove('has-article'); }
+        });
         var hudW = 0, labelS = null, labelW = -1;
         vis.forEach(function (s) {
             prep(s);
@@ -804,7 +806,191 @@
             }
         }
         bar.style.width = (t / DUR * 1920).toFixed(2) + 'px';
+        placeArticle(t);
+        placeEmphasis(t);
         return t;
+    }
+
+    // Article screenshot over the waves, then marker strokes under chosen lines.
+    // Emphasis strokes use the same pen on words that are already on the slide.
+    var ARTICLES = CFG.articles || [];
+    var EMPHASIS = (CFG.emphasis || {}).marks || [];
+    var INK = (CFG.emphasis && CFG.emphasis.accent) || '#f5b83d';
+    var artRoot = document.createElement('div');
+    artRoot.id = 'article-layer';
+    stage.appendChild(artRoot);
+    var artSheet = document.createElement('div');
+    artSheet.className = 'sheet';
+    var artImg = document.createElement('img');
+    artImg.alt = '';
+    var artSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    artSvg.setAttribute('class', 'ink');
+    artSheet.appendChild(artImg);
+    artSheet.appendChild(artSvg);
+    artRoot.appendChild(artSheet);
+    var empSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    empSvg.id = 'emphasis-ink';
+    empSvg.setAttribute('viewBox', '0 0 1920 1080');
+    stage.appendChild(empSvg);
+    var artId = '';
+
+    function easeOut(p) { return 1 - Math.pow(1 - clamp(p, 0, 1), 3); }
+    function articleAt(t) {
+        for (var i = 0; i < ARTICLES.length; i++) {
+            var a = ARTICLES[i];
+            if (t >= +a.t0 && t < +a.t1) return a;
+        }
+        return null;
+    }
+    function containBox(iw, ih, bw, bh) {
+        if (!(iw > 0) || !(ih > 0)) return { x: 0, y: 0, w: bw, h: bh };
+        var s = Math.min(bw / iw, bh / ih);
+        var w = iw * s, h = ih * s;
+        return { x: (bw - w) / 2, y: (bh - h) / 2, w: w, h: h };
+    }
+    function markerPath(x, y, w, h, seed, drop) {
+        // drop is how far below the line box the stroke sits. The article
+        // passes a larger drop so the thick stroke clears descenders.
+        var base = y + h + (drop == null ? Math.max(4, h * 0.16) : drop);
+        var amp = Math.max(1.3, Math.min(7, h * 0.1));
+        var d = '', n = 8;
+        for (var i = 0; i <= n; i++) {
+            var f = i / n;
+            var yy = base + Math.sin(f * 5.4 + seed * 6.283) * amp + (i % 2 ? 0.7 : -0.45);
+            var xx = x + w * f;
+            if (i > 0 && i < n) xx += Math.sin(seed * 11 + i) * 1.2;
+            d += (i ? 'L' : 'M') + xx.toFixed(1) + ' ' + yy.toFixed(1);
+        }
+        return d;
+    }
+    function strokePen(path, p, color, width) {
+        var len = 0;
+        try { len = path.getTotalLength(); } catch (e) { len = 0; }
+        if (!(len > 0)) len = 100;
+        var e = easeOut(p);
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', color);
+        path.setAttribute('stroke-width', String(width));
+        path.setAttribute('stroke-linecap', 'round');
+        path.setAttribute('stroke-linejoin', 'round');
+        path.setAttribute('stroke-dasharray', len.toFixed(2));
+        path.setAttribute('stroke-dashoffset', (len * (1 - e)).toFixed(2));
+    }
+    function placeArticle(t) {
+        var a = articleAt(t);
+        for (var i = 0; i < slides.length; i++) {
+            slides[i].el.classList.toggle('has-article', !!(a && slides[i].el.id === a.slide && slides[i].el.classList.contains('on')));
+        }
+        if (!a) { artRoot.style.display = 'none'; artId = ''; return; }
+        artRoot.style.display = 'block';
+        var bw = 1320, bh = 900, left = (1920 - bw) / 2, top = 90;
+        artSheet.style.left = left + 'px';
+        artSheet.style.top = top + 'px';
+        artSheet.style.width = bw + 'px';
+        artSheet.style.height = bh + 'px';
+        if (artId !== a.id) {
+            artId = a.id;
+            artImg.src = a.src || '';
+        }
+        var u = easeOut((t - (+a.t0)) / 0.85);
+        var x = (1 - u) * 280;
+        var y = (1 - u) * 36;
+        var ry = -16 + u * 12;
+        var rz = -2.6 * (1 - u) - 0.35 * u;
+        var sc = 0.9 + u * 0.1;
+        var lines = a.lines || [];
+        var active = null;
+        for (var k = 0; k < lines.length; k++) if (t >= +lines[k].t) active = lines[k];
+        var fit = containBox(+a.w, +a.h, bw, bh);
+        if (active && u > 0.98) {
+            var zx = fit.x + ((+active.x) + (+active.w) / 2) * fit.w;
+            var zy = fit.y + ((+active.y) + (+active.h) / 2) * fit.h;
+            artSheet.style.transformOrigin = zx.toFixed(1) + 'px ' + zy.toFixed(1) + 'px';
+            sc *= 1 + 0.045 * easeOut((t - (+active.t)) / 0.55);
+        } else {
+            artSheet.style.transformOrigin = '50% 55%';
+        }
+        artSheet.style.opacity = Math.min(1, u * 1.35).toFixed(3);
+        artSheet.style.transform = 'perspective(1500px) translate3d(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px,0) rotateY(' + ry.toFixed(2) + 'deg) rotateZ(' + rz.toFixed(2) + 'deg) scale(' + sc.toFixed(4) + ')';
+        var shadow = 14 + (1 - u) * 18;
+        artSheet.style.filter = 'drop-shadow(' + (8 + shadow * 0.3).toFixed(1) + 'px ' + shadow.toFixed(1) + 'px 22px rgba(0,0,0,' + (0.28 + 0.16 * u).toFixed(3) + '))';
+        var color = a.accent || INK;
+        var svg = '';
+        if (active) {
+            var hx = fit.x + (+active.x) * fit.w - 12;
+            var hy = fit.y + (+active.y) * fit.h - 10;
+            var hw = (+active.w) * fit.w + 24;
+            var hh = (+active.h) * fit.h + 28;
+            svg += '<defs><mask id="artHole" maskUnits="userSpaceOnUse" x="0" y="0" width="' + bw + '" height="' + bh + '">' +
+                '<rect x="0" y="0" width="' + bw + '" height="' + bh + '" fill="#ffffff"/>' +
+                '<rect x="' + hx.toFixed(1) + '" y="' + hy.toFixed(1) + '" width="' + Math.max(8, hw).toFixed(1) + '" height="' + Math.max(8, hh).toFixed(1) + '" rx="10" fill="#000000"/></mask></defs>';
+            svg += '<rect x="0" y="0" width="' + bw + '" height="' + bh + '" fill="rgba(8,10,16,0.18)" mask="url(#artHole)"/>';
+        }
+        for (var n = 0; n < lines.length; n++) {
+            var ln = lines[n];
+            if (t < +ln.t) continue;
+            var lx = fit.x + (+ln.x) * fit.w;
+            var ly = fit.y + (+ln.y) * fit.h;
+            var lw = (+ln.w) * fit.w;
+            var lh = Math.max(8, (+ln.h) * fit.h);
+            var seed = hash(String(ln.id || n));
+            var swLine = Math.max(7, Math.min(16, lh * 0.22));
+            var drop = swLine * 0.55 + Math.max(7, lh * 0.2);
+            svg += '<path data-pen="1" d="' + markerPath(lx, ly, lw, lh, seed, drop) + '" data-p="' + clamp((t - (+ln.t)) / 0.42, 0, 1).toFixed(4) + '" data-sw="' + swLine.toFixed(1) + '"/>';
+        }
+        artSvg.setAttribute('viewBox', '0 0 ' + bw + ' ' + bh);
+        artSvg.innerHTML = svg;
+        var pens = artSvg.querySelectorAll('[data-pen]');
+        for (var p = 0; p < pens.length; p++) strokePen(pens[p], +pens[p].getAttribute('data-p'), color, +pens[p].getAttribute('data-sw'));
+    }
+    function phraseRects(section, phrase) {
+        var want = String(phrase || '').toLowerCase().replace(/[^a-z0-9']+/g, '');
+        if (!want) return [];
+        var walker = document.createTreeWalker(section, NodeFilter.SHOW_TEXT, null);
+        var parts = [], node;
+        while ((node = walker.nextNode())) {
+            var raw = node.nodeValue || '';
+            for (var i = 0; i < raw.length; i++) {
+                var ch = raw.charAt(i).toLowerCase();
+                if (!/[a-z0-9']/.test(ch)) continue;
+                parts.push({ node: node, offset: i, ch: ch });
+            }
+        }
+        var at = parts.map(function (p) { return p.ch; }).join('').indexOf(want);
+        if (at < 0) return [];
+        var start = parts[at], end = parts[at + want.length - 1];
+        var range = document.createRange();
+        try {
+            range.setStart(start.node, start.offset);
+            range.setEnd(end.node, end.offset + 1);
+        } catch (err) { return []; }
+        return range.getClientRects();
+    }
+    function placeEmphasis(t) {
+        var svg = '';
+        var sr = stage.getBoundingClientRect();
+        var k = stageScale();
+        for (var i = 0; i < EMPHASIS.length; i++) {
+            var m = EMPHASIS[i];
+            if (t < +m.t || t >= +m.t1) continue;
+            var section = document.getElementById(m.slide);
+            if (!section || !section.classList.contains('on') || section.classList.contains('has-article')) continue;
+            var rects = phraseRects(section, m.phrase);
+            var prog = clamp((t - (+m.t)) / 0.4, 0, 1);
+            for (var r = 0; r < rects.length; r++) {
+                var box = rects[r];
+                if (box.width < 2 || box.height < 2) continue;
+                var x = (box.left - sr.left) / k;
+                var y = (box.top - sr.top) / k;
+                var w = box.width / k;
+                var h = box.height / k;
+                var sw = Math.max(7, Math.min(18, h * 0.16));
+                svg += '<path data-pen="1" d="' + markerPath(x, y, w, h, hash(m.phrase + r)) + '" data-p="' + prog.toFixed(4) + '" data-sw="' + sw.toFixed(1) + '"/>';
+            }
+        }
+        empSvg.innerHTML = svg;
+        var pens = empSvg.querySelectorAll('[data-pen]');
+        for (var p = 0; p < pens.length; p++) strokePen(pens[p], +pens[p].getAttribute('data-p'), INK, +pens[p].getAttribute('data-sw'));
     }
 
     function stageScale() { return MODE === 'preview' ? (stage.__k || 1) : 1; }
@@ -933,9 +1119,16 @@
     window.__seek = seek;
     window.__check = check;
     window.__ready = (document.fonts ? document.fonts.ready : Promise.resolve()).then(function () {
-        return Promise.all(Array.prototype.map.call(document.images, function (img) {
+        var pending = Array.prototype.map.call(document.images, function (img) {
             return img.decode ? img.decode().catch(function () {}) : null;
-        }));
+        });
+        ARTICLES.forEach(function (a) {
+            if (!a.src) return;
+            var img = new Image();
+            img.src = a.src;
+            pending.push(img.decode ? img.decode().catch(function () {}) : null);
+        });
+        return Promise.all(pending);
     }).then(function () { slides.forEach(prep); seek(0); return true; });
 
     if (MODE === 'preview') {

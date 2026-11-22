@@ -86,3 +86,16 @@ pypdf
 
 # YouTube clip import for the explainer. ffmpeg (separate install) merges and cuts.
 yt-dlp>=2025.1.15
+
+# Article screenshots for the explainer (optional OCR). The first engine that is
+# configured is used. No key belongs in this file.
+# 1. Azure Document Intelligence, when both are set in the environment:
+#      AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT
+#      AZURE_DOCUMENT_INTELLIGENCE_KEY
+#    (AZURE_FORM_RECOGNIZER_ENDPOINT and AZURE_FORM_RECOGNIZER_KEY also work.)
+# 2. Tesseract. Install the binary (brew install tesseract, or apt install tesseract-ocr)
+#    and: pytesseract>=0.3.10
+# 3. RapidOCR, no system binary: rapidocr-onnxruntime>=1.4.4
+# A page capture uses Playwright if it is installed (`pip install playwright` then
+# `playwright install chromium`). Otherwise headless Chrome is used. If capture
+# fails or the page is paywalled, upload a PNG, JPEG or WebP instead.

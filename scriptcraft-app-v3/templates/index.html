@@ -3731,6 +3731,7 @@
                             <button class="xv-tab on" data-pane="needs" onclick="xvTab('needs')">Needs you <span id="xvNeedsCount"></span></button>
                             <button class="xv-tab" data-pane="slides" onclick="xvTab('slides')">Slides <span id="xvSlidesCount"></span></button>
                             <button class="xv-tab" data-pane="clips" onclick="xvTab('clips')">Clips <span id="xvClipCount"></span></button>
+                            <button class="xv-tab" data-pane="articles" onclick="xvTab('articles')">Articles <span id="xvArticleCount"></span></button>
                             <button class="xv-tab" data-pane="presenter" onclick="xvTab('presenter')">Presenter <span id="xvHostCount"></span></button>
                             <button class="xv-tab" data-pane="plan" onclick="xvTab('plan')">Plan</button>
                             <button class="xv-tab" data-pane="versions" onclick="xvTab('versions')">Versions</button>
@@ -3748,11 +3749,13 @@
                                 </select>
                                 <span id="xvChecking" style="font-size:0.72em; color:#64748b; align-self:center;"></span>
                             </div>
+                            <div id="xvEmphasis"></div>
                             <div id="xvBookends"></div>
                             <div id="xvSlideList"></div>
                             <div id="xvGapPop" class="xv-pop" style="display:none;"></div>
                         </div>
                         <div id="xvPane-clips" class="xv-pane"></div>
+                        <div id="xvPane-articles" class="xv-pane" onpaste="xvArticlePaste(event)"></div>
                         <div id="xvPane-presenter" class="xv-pane"></div>
                         <div id="xvPane-plan" class="xv-pane"></div>
                         <div id="xvPane-versions" class="xv-pane"></div>
@@ -12471,7 +12474,8 @@ Thank you for watching!`;
             const note = document.getElementById('xvFrameNote');
             if (s.current) {
                 const yclips = ((s.youtube || {}).clips || []).map(c => [c.id, c.slide, c.audio, c.file, c.start, c.end, c.status]);
-                const key = s.current + '|' + JSON.stringify([s.values, s.logo_choices, s.logos, s.span, s.pip_frame, s.bubble, s.visual_style, s.transition_mode, s.gap_fx, s.bookends, s.clock, yclips, s.host && [s.host.created, s.host.focus, s.host.sections, s.host.pip_frame]]);
+                const articlesKey = (s.articles || []).map(a => [a.id, a.slide, a.chosen, a.file, a.ocr]);
+                const key = s.current + '|' + JSON.stringify([s.values, s.logo_choices, s.logos, s.span, s.pip_frame, s.bubble, s.visual_style, s.transition_mode, s.gap_fx, s.bookends, s.clock, yclips, articlesKey, s.emphasis, s.host && [s.host.created, s.host.focus, s.host.sections, s.host.pip_frame]]);
                 if (key !== _xv.frameKey) {
                     _xv.frameKey = key;
                     document.getElementById('xvFrame').src = _xvApi('/preview?' + _xvQ() + '&v=' + s.current + '&_=' + Date.now());
@@ -12489,6 +12493,7 @@ Thank you for watching!`;
             _xvRenderNeeds();
             _xvRenderSlides();
             _xvRenderClips();
+            _xvRenderArticles();
             _xvRenderPresenter();
             _xvRenderSpan();
             _xvRenderPlan();
@@ -12518,6 +12523,9 @@ Thank you for watching!`;
             const clipN = ((s.youtube || {}).clips || []).length;
             const clipCount = document.getElementById('xvClipCount');
             if (clipCount) clipCount.textContent = clipN ? '(' + clipN + ')' : '';
+            const artN = (s.articles || []).length;
+            const artCount = document.getElementById('xvArticleCount');
+            if (artCount) artCount.textContent = artN ? '(' + artN + ')' : '';
             document.getElementById('xvReviseBtn').disabled = running || !s.current;
             xvScopeChanged();
         }
@@ -13031,6 +13039,183 @@ Thank you for watching!`;
             });
         }
 
+        function _xvArticleSelect(slideId, running) {
+            const arts = (_xv.state && _xv.state.articles) || [];
+            if (!arts.length) return '';
+            const cur = arts.find(a => a.slide === slideId);
+            const opts = '<option value="">No article</option>' + arts.map(a =>
+                '<option value="' + _xvEsc(a.id) + '"' + (cur && cur.id === a.id ? ' selected' : '') + '>'
+                + _xvEsc(a.name || a.id) + '</option>').join('');
+            return '<select class="xv-input" title="Article screenshot for this slide" style="width:auto; max-width:150px; padding:1px 4px; height:auto; font-size:0.95em; margin-left:4px;" data-id="' + _xvEsc(slideId) + '"'
+                + (running ? ' disabled' : '') + ' onclick="event.stopPropagation()" onchange="xvArticleAssign(this.value, this.dataset.id)">' + opts + '</select>';
+        }
+        function _xvEmphasisOn(slideId) {
+            const em = (_xv.state && _xv.state.emphasis) || {};
+            const flags = em.slides || {};
+            if (Object.prototype.hasOwnProperty.call(flags, slideId)) return !!flags[slideId];
+            return em.enabled !== false;
+        }
+        async function _xvEmphasis(body) {
+            const d = await _xvPost(_xvApi('/emphasis'), body);
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Could not update emphasis.'), '#f87171'); return d; }
+            _xv.state = Object.assign(_xv.state || {}, d);
+            _xvRenderState(_xv.state);
+            return d;
+        }
+        function xvEmphasisGlobal(on) { _xvEmphasis({ action: 'global', enabled: !!on }); }
+        function xvEmphasisSlide(slide, on) { _xvEmphasis({ action: 'slide', slide: slide, enabled: !!on }); }
+        function xvEmphasisRemove(slide, phrase) { _xvEmphasis({ action: 'remove', slide: slide, phrase: phrase }); }
+        function xvEmphasisAdd() {
+            const phrase = (document.getElementById('xvEmPhrase') || {}).value || '';
+            const slide = (document.getElementById('xvEmSlide') || {}).value || '';
+            _xvEmphasis({ action: 'add', slide: slide, phrase: phrase });
+        }
+        function _xvRenderEmphasis() {
+            const el = document.getElementById('xvEmphasis');
+            if (!el) return;
+            const s = _xv.state || {};
+            const em = s.emphasis || { enabled: true, slides: {}, marks: [] };
+            const focus = document.activeElement;
+            if (focus && el.contains(focus) && (focus.tagName === 'INPUT' || focus.tagName === 'SELECT')) return;
+            const running = !!(s.job && s.job.status === 'running');
+            const dis = running ? ' disabled' : '';
+            const slides = s.slides || [];
+            let h = '<div class="xv-item"><label style="color:#e2e8f0; font-weight:650;"><input type="checkbox"' + (em.enabled !== false ? ' checked' : '') + dis + ' onchange="xvEmphasisGlobal(this.checked)"> Emphasis underlines</label>'
+                + '<div style="color:#64748b; font-size:0.78em; margin-top:4px;">A marker stroke draws under a word that is already on the slide, at the moment it is spoken. Detection uses **bold**, *italics*, a few CAPS words, SSML &lt;emphasis&gt;, and words that stand out in the narration. Turn it off here or on one slide. If the phrase is not on the slide, nothing is drawn.</div>';
+            const marks = em.marks || [];
+            if (!marks.length) h += '<div style="color:#64748b; font-size:0.78em; margin-top:6px;">Nothing detected on these slides yet.</div>';
+            marks.forEach(m => {
+                const bits = [m.slide, m.source || m.kind];
+                if (!m.on_slide) bits.push('not on the slide');
+                if (m.t === null || m.t === undefined) bits.push('no spoken time');
+                if (m.enabled === false) bits.push('slide off');
+                h += '<div style="display:flex; gap:6px; align-items:center; margin-top:6px;"><span style="flex:1; min-width:0; color:#e2e8f0;">' + _xvEsc(m.phrase)
+                    + ' <span style="color:#64748b;">' + _xvEsc(bits.join(' · ')) + '</span></span>'
+                    + '<button class="xv-btn small" type="button"' + dis + ' data-slide="' + _xvEsc(m.slide) + '" data-phrase="' + _xvEsc(m.phrase) + '" onclick="xvEmphasisRemove(this.dataset.slide, this.dataset.phrase)">Remove</button></div>';
+            });
+            const opts = slides.map(m => '<option value="' + _xvEsc(m.id) + '">' + _xvEsc(m.id) + '</option>').join('');
+            h += '<div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;"><input id="xvEmPhrase" class="xv-input" placeholder="Add a word or phrase" style="flex:1; min-width:120px;"' + dis + '>'
+                + '<select id="xvEmSlide" class="xv-input" style="width:auto;"' + dis + '>' + opts + '</select>'
+                + '<button class="xv-btn small" type="button" onclick="xvEmphasisAdd()"' + dis + '>Add</button></div></div>';
+            el.innerHTML = h;
+        }
+        async function _xvArticle(body) {
+            const d = await _xvPost(_xvApi('/article'), body);
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Could not update the article.'), '#f87171'); return d; }
+            _xv.state = Object.assign(_xv.state || {}, d);
+            _xv.articleKey = '';
+            _xvRenderState(_xv.state);
+            return d;
+        }
+        async function _xvArticleUpload(file, source) {
+            if (!file) return;
+            const fd = new FormData();
+            fd.append('title', _xv.title);
+            fd.append('source', source || 'upload');
+            fd.append('file', file, file.name || 'clipboard.png');
+            let d;
+            try { d = await (await fetch(_xvApi('/article'), { method: 'POST', body: fd })).json(); }
+            catch (e) { d = { success: false, error: e.message }; }
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Upload failed.'), '#f87171'); return; }
+            _xv.state = Object.assign(_xv.state || {}, d);
+            _xv.articleKey = '';
+            _xvRenderState(_xv.state);
+            _xvStatus(source === 'clipboard' ? 'Pasted. Click lines to keep them, then assign a slide.' : 'Saved. Click lines to keep them, then assign a slide.', '#34d399');
+        }
+        function xvArticleUpload(ev) {
+            if (ev) ev.preventDefault();
+            const input = document.getElementById('xvArtFile');
+            _xvArticleUpload(input && input.files && input.files[0], 'upload');
+        }
+        function xvArticlePaste(ev) {
+            const cd = ev.clipboardData;
+            if (!cd) return;
+            const items = cd.items || [];
+            for (let i = 0; i < items.length; i++) {
+                if (items[i].type && items[i].type.indexOf('image/') === 0) {
+                    ev.preventDefault();
+                    _xvArticleUpload(items[i].getAsFile(), 'clipboard');
+                    return;
+                }
+            }
+            const text = (cd.getData('text') || '').trim();
+            if (/^https?:\/\//i.test(text)) {
+                const box = document.getElementById('xvArtUrl');
+                if (box) { box.value = text; ev.preventDefault(); }
+            }
+        }
+        function xvArticleCapture() {
+            _xvArticle({ action: 'capture', url: (document.getElementById('xvArtUrl') || {}).value || '' });
+        }
+        function xvArticleAssign(id, slide) {
+            if (id) { _xvArticle({ action: 'assign', id: id, slide: slide || '' }); return; }
+            const cur = ((_xv.state && _xv.state.articles) || []).find(a => a.slide === slide);
+            if (cur) _xvArticle({ action: 'assign', id: cur.id, slide: '' });
+        }
+        function xvArticleAssignFrom(id) {
+            const sel = document.getElementById('xvArtSlide-' + id);
+            _xvArticle({ action: 'assign', id: id, slide: sel ? sel.value : '' });
+        }
+        function xvArticleRemove(id) { _xvArticle({ action: 'remove', id: id }); }
+        function xvArticleOcr(id) { _xvArticle({ action: 'ocr', id: id }); }
+        function xvArticleLine(id, lineId) {
+            const art = ((_xv.state && _xv.state.articles) || []).find(a => a.id === id);
+            if (!art) return;
+            const chosen = (art.chosen || []).slice();
+            const at = chosen.indexOf(lineId);
+            if (at >= 0) chosen.splice(at, 1); else chosen.push(lineId);
+            _xvArticle({ action: 'lines', id: id, chosen: chosen });
+        }
+        function _xvRenderArticles() {
+            const el = document.getElementById('xvPane-articles');
+            if (!el) return;
+            const s = _xv.state || {};
+            const running = !!(s.job && s.job.status === 'running');
+            const focus = document.activeElement;
+            if (focus && focus.closest && focus.closest('#xvPane-articles') && (focus.tagName === 'INPUT' || focus.tagName === 'SELECT' || focus.tagName === 'TEXTAREA')) return;
+            const arts = s.articles || [];
+            const key = JSON.stringify([s.id, running, arts.map(a => [a.id, a.slide, a.chosen, a.ocr_error, a.lines.length]), (s.slides || []).map(m => m.id)]);
+            if (key === _xv.articleKey) return;
+            _xv.articleKey = key;
+            const dis = running ? ' disabled' : '';
+            const ocr = s.ocr || {};
+            const engine = ocr.azure ? 'Azure Document Intelligence' : (ocr.tesseract ? 'Tesseract' : (ocr.rapidocr ? 'RapidOCR' : 'none installed'));
+            let html = '<div class="xv-item"><span class="xv-label">Article screenshot</span>'
+                + '<div style="color:#64748b; font-size:0.78em; margin:2px 0 8px;">Upload a PNG, JPEG or WebP, paste an image from the clipboard while this tab is open, or paste an article URL and capture it. The image is saved in this project, like a logo. OCR (' + _xvEsc(engine) + ') reads the lines. Click a line to keep or drop it. Suggested lines match this slide’s narration.</div>'
+                + '<form onsubmit="xvArticleUpload(event)" style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">'
+                + '<input id="xvArtFile" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" class="xv-input" style="flex:1; min-width:160px;"' + dis + '>'
+                + '<button class="xv-btn small primary" type="submit"' + dis + '>Upload</button></form>'
+                + '<div style="display:flex; gap:6px; margin-top:8px;"><input id="xvArtUrl" class="xv-input" placeholder="https://… article URL" onkeydown="if (event.key===\'Enter\') xvArticleCapture()">'
+                + '<button class="xv-btn small" type="button" onclick="xvArticleCapture()"' + dis + '>Capture</button></div>'
+                + '<div style="color:#64748b; font-size:0.75em; margin-top:6px;">If capture fails or the page is paywalled, upload a screenshot. The picture is never redrawn; underlines sit on top of it.</div></div>';
+            const slides = s.slides || [];
+            const slideOpts = '<option value="">Not on a slide</option>' + slides.map(m => '<option value="' + _xvEsc(m.id) + '">' + _xvEsc(m.id) + '</option>').join('');
+            arts.forEach(a => {
+                const src = _xvApi('/file?' + _xvQ() + '&path=' + encodeURIComponent(a.file));
+                const chosen = new Set(a.chosen || []);
+                const suggested = new Set(a.suggested || []);
+                html += '<div class="xv-item"><div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;"><span style="flex:1; min-width:0; color:#e2e8f0; font-weight:650; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + _xvEsc(a.name || a.id) + '</span>'
+                    + '<button class="xv-btn small" type="button" onclick="xvArticleOcr(\'' + _xvEsc(a.id) + '\')"' + dis + '>Re-read text</button>'
+                    + '<button class="xv-btn small" type="button" onclick="xvArticleRemove(\'' + _xvEsc(a.id) + '\')"' + dis + '>✕</button></div>'
+                    + '<div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;"><span style="color:#64748b;">Slide</span>'
+                    + '<select id="xvArtSlide-' + _xvEsc(a.id) + '" class="xv-input" style="flex:1;"' + dis + ' onchange="xvArticleAssignFrom(\'' + _xvEsc(a.id) + '\')">'
+                    + slideOpts.replace('value="' + _xvEsc(a.slide) + '"', 'value="' + _xvEsc(a.slide) + '" selected') + '</select></div>'
+                    + (a.ocr_error ? '<div style="color:#fbbf24; margin-bottom:6px;">' + _xvEsc(a.ocr_error) + '</div>' : '')
+                    + '<div style="position:relative; display:inline-block; width:100%;">'
+                    + '<img src="' + src + '" alt="" style="width:100%; height:auto; display:block; border-radius:4px; background:#f4f1ea;">'
+                    + (a.lines || []).map(ln => {
+                        const on = chosen.has(ln.id);
+                        const sug = suggested.has(ln.id);
+                        return '<button type="button" title="' + _xvEsc(ln.text) + '" onclick="xvArticleLine(\'' + _xvEsc(a.id) + '\', \'' + _xvEsc(ln.id) + '\')"'
+                            + ' style="position:absolute; left:' + (ln.x * 100) + '%; top:' + (ln.y * 100) + '%; width:' + (ln.w * 100) + '%; height:' + (ln.h * 100) + '%; padding:0; cursor:pointer; background:'
+                            + (on ? 'rgba(245,184,61,0.28)' : 'transparent') + '; border:' + (on ? '2px solid #f5b83d' : '1px solid rgba(148,163,184,0.85)') + ';"></button>';
+                    }).join('')
+                    + '</div><div style="color:#64748b; font-size:0.75em; margin-top:4px;">' + (a.lines || []).length + ' lines'
+                    + (a.ocr ? ' · ' + _xvEsc(a.ocr) : '') + (suggested.size ? ' · ' + suggested.size + ' match the narration' : '') + '</div></div>';
+            });
+            el.innerHTML = html;
+        }
+
         function _xvRenderSlides() {
             const list = (_xv.state && _xv.state.slides) || [];
             const icon = { scene: '🌃', chapter: '📖', asset: '📋', slide: '🟦' };
@@ -13041,6 +13226,9 @@ Thank you for watching!`;
                 + (running ? ' disabled' : '') + ' onclick="event.stopPropagation()" onchange="xvSlideHost(this.dataset.id, this.value)">'
                 + Object.keys(_XV_HOST_NAMES).map(k => '<option value="' + k + '"' + ((m.host || '') === k ? ' selected' : '') + '>' + (k ? '🧑‍💼 ' : '') + _XV_HOST_NAMES[k] + '</option>').join('') + '</select>';
             const clipSel = m => _xvClipSelect(m.id, running);
+            const artSel = m => (m.kind === 'intro' || m.kind === 'end') ? '' : _xvArticleSelect(m.id, running);
+            const emBox = m => (m.kind === 'intro' || m.kind === 'end') ? '' : '<label style="margin-left:6px; color:#94a3b8;" title="Underline emphasized words on this slide" onclick="event.stopPropagation()"><input type="checkbox" data-id="' + _xvEsc(m.id) + '" '
+                + (_xvEmphasisOn(m.id) ? 'checked ' : '') + (running ? 'disabled ' : '') + 'onchange="xvEmphasisSlide(this.dataset.id, this.checked)"> underline</label>';
             const fxNames = { glitch: 'Glitch', paint: 'Ink wipe', warp: 'Warp', pixel: 'Pixel', lightleak: 'Light leak', burn: 'Film burn', shatter: 'Shatter' };
             const gapChip = (prev, m) => {
                 if (!prev) return '';
@@ -13065,6 +13253,7 @@ Thank you for watching!`;
                 return '<div class="xv-gap"><button type="button" class="' + cls + '" data-from="' + _xvEsc(prev.id) + '" data-to="' + _xvEsc(m.id) + '"'
                     + (running ? ' disabled' : '') + ' onclick="event.stopPropagation(); xvGapOpen(this)">' + label + '</button></div>';
             };
+            _xvRenderEmphasis();
             document.getElementById('xvSlideList').innerHTML = list.length ? list.map((m, i) => {
                 const ws = _xvAllWarnings(m);
                 const major = ws.filter(w => !w.minor);
@@ -13073,7 +13262,7 @@ Thank you for watching!`;
                     + '<input type="checkbox" ' + (_xv.selected.has(m.id) ? 'checked ' : '') + 'onclick="event.stopPropagation(); xvToggleSlide(this.parentNode.dataset.id, this.checked)">'
                     + '<div style="flex:1; min-width:0;"><div><strong style="color:#e2e8f0;">' + _xvEsc(m.kind === 'intro' ? 'Intro' : m.kind === 'end' ? 'End clip' : m.id) + '</strong> · ' + _xvFmt(m.t0) + '–' + _xvFmt(m.t1)
                     + ' · ' + (icon[m.kind] || (m.kind === 'intro' ? '🎬' : m.kind === 'end' ? '🏁' : '')) + ' ' + _xvEsc(m.kind) + (m.section ? ' · <span style="color:#64748b;">' + _xvEsc(m.section) + '</span>' : '')
-                    + (major.length ? ' <span style="color:#fbbf24;">⚠️ ' + major.length + '</span>' : '') + hostSel(m) + clipSel(m) + move + '</div>'
+                    + (major.length ? ' <span style="color:#fbbf24;">⚠️ ' + major.length + '</span>' : '') + hostSel(m) + clipSel(m) + artSel(m) + emBox(m) + move + '</div>'
                     + '<div style="color:#94a3b8; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">' + _xvEsc(m.idea || '') + '</div>'
                     + ws.map(w => '<div style="color:' + (w.minor ? '#64748b' : '#fbbf24') + '; font-size:0.95em;">• ' + _xvEsc(w.msg) + '</div>').join('')
                     + '</div></div>';

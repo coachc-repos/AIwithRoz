@@ -1,0 +1,5 @@
+Original sample text, written for this test. It is not a screenshot of a published article.
+article_slide.mp4: the page tilts in over the waves and three lines are underlined in turn.
+article_frame.png: a frame while the second line is drawing.
+emphasis_underline.mp4: a text slide; the stroke appears when "honed" is spoken.
+emphasis_frame.png: the stroke under that word.
