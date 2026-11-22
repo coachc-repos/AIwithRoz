@@ -108,16 +108,25 @@
     };
     function hash(s) { var h = 2166136261; for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return ((h >>> 0) % 1000) / 1000; }
 
-    // ---- particle background: ~20 rows riding slow waves, packed toward the
+    // ---- particle background: rows of dots riding waves, packed toward the
     // bottom and fading out by mid-screen. Flat colors, no gradients.
+    // WAVE_ROWS and WAVE_SPEED come from the page (explainer_imagery.py).
+    // The old field was 20 rows at speed 1. Every style uses this field.
+    var _waves = (CFG.visual || {}).waves || {};
+    var WAVE_ROWS = Math.max(8, Math.round(+_waves.rows || 34));
+    var WAVE_SPEED = (+_waves.speed > 0) ? +_waves.speed : 1.4;
+    var STYLE = ((CFG.visual || {}).style === 'cinematic' || (CFG.visual || {}).style === 'rich') ? 'cinematic' : 'classic';
+    var HOOK_UNTIL = (CFG.visual || {}).hookUntil;
     var ROWS = [];
     (function () {
-        for (var r = 0; r < 20; r++) {
-            var f = r / 19;
+        for (var r = 0; r < WAVE_ROWS; r++) {
+            var f = r / Math.max(1, WAVE_ROWS - 1);
             ROWS.push({
                 y: 1068 - Math.pow(f, 1.55) * 500,
-                amp: 6 + 10 * f, len: 220 + 160 * hash('l' + r), spd: 0.25 + 0.35 * hash('s' + r),
-                drift: (hash('d' + r) - 0.5) * 14, gap: 15 + Math.round(f * 9), rad: 1.9 - 0.7 * f,
+                amp: 6 + 10 * f, len: 220 + 160 * hash('l' + r),
+                spd: (0.25 + 0.35 * hash('s' + r)) * WAVE_SPEED,
+                drift: (hash('d' + r) - 0.5) * 14 * WAVE_SPEED,
+                gap: 15 + Math.round(f * 9), rad: 1.9 - 0.7 * f,
                 alpha: 0.55 * Math.pow(1 - f, 1.35) + 0.04, phase: hash('p' + r) * 6.283,
                 color: r % 5 === 2 ? '245,184,61' : '118,138,186'
             });
@@ -458,6 +467,174 @@
         c.e.style.transform = 'translate(' + (960 - x * z).toFixed(2) + 'px,' + (540 - y * z).toFixed(2) + 'px) scale(' + z.toFixed(4) + ')';
     }
 
+    // Scene objects. Text, cards and numbers are not touched. Cinematic swaps
+    // in the detailed symbol (already in the page) and moves its parts.
+    // Classic leaves the flat symbol still. A hook scene, before the first
+    // chapter card, moves a little more.
+    var SVGNS = 'http://www.w3.org/2000/svg';
+    function sceneHook(node) {
+        var sec = node.closest ? node.closest('section') : null;
+        if (!sec || HOOK_UNTIL === null || HOOK_UNTIL === undefined || HOOK_UNTIL === '') return false;
+        return (+sec.dataset.t0 || 0) < +HOOK_UNTIL - 0.02;
+    }
+    function mountScene(svg) {
+        if (svg.__live) return svg.__live;
+        var use = svg.querySelector('use');
+        var g = document.createElementNS(SVGNS, 'g');
+        if (use) {
+            var id = (use.getAttribute('href') || use.getAttribute('xlink:href') || '').replace('#', '');
+            var sym = id && document.getElementById(id);
+            if (!sym) { svg.__live = null; return null; }
+            Array.prototype.forEach.call(sym.childNodes, function (n) { g.appendChild(n.cloneNode(true)); });
+            svg.replaceChild(g, use);
+        } else if (svg.childNodes.length) {
+            while (svg.firstChild) g.appendChild(svg.firstChild);
+            svg.appendChild(g);
+        } else {
+            svg.__live = null;
+            return null;
+        }
+        svg.__live = g;
+        return g;
+    }
+    function slideT0(node) {
+        var sec = node.closest ? node.closest('section') : null;
+        return sec ? (+sec.dataset.t0 || 0) : 0;
+    }
+    function botMotion(svg, g, t, i) {
+        var phase = i * 0.9;
+        var wave = Math.sin(t * 1.25 + phase);
+        var bob = wave * 7;
+        var sway = Math.sin(t * 0.65 + phase) * 2.2;
+        var sy = 1 + wave * 0.035;
+        var sx = 1 - wave * 0.028;
+        var hop = 0;
+        if (svg.dataset.hop && svg.dataset.hop.charAt(0) === '+') {
+            var at = slideT0(svg) + parseFloat(svg.dataset.hop.slice(1));
+            var dt = t - at;
+            if (dt > 0 && dt < 0.42) hop = -Math.sin(dt / 0.42 * Math.PI) * 18;
+        }
+        g.setAttribute('transform',
+            'translate(80 ' + (80 + bob + hop).toFixed(2) + ') rotate(' + sway.toFixed(2) +
+            ') scale(' + sx.toFixed(3) + ' ' + sy.toFixed(3) + ') translate(-80 -80)');
+        var period = 3.6;
+        var closed = ((t + phase) % period) > period - 0.12;
+        var eyes = g.querySelectorAll('.sc-eye');
+        for (var e = 0; e < eyes.length; e++) {
+            eyes[e].setAttribute('ry', closed ? '1.4' : '12');
+            eyes[e].setAttribute('opacity', '1');
+        }
+        var look = g.querySelector('.sc-eyes');
+        if (look) {
+            var glance = Math.sin(t * 0.5 + phase);
+            var gx = 0, gy = 0;
+            if (svg.dataset.look === 'hub') {
+                if (glance > 0.35) gy = -5;
+            } else if (glance > 0.78) gx = 5;
+            else if (glance < -0.78) gx = -5;
+            look.setAttribute('transform', 'translate(' + gx + ' ' + gy + ')');
+        }
+    }
+    function brandMotion(svg, g, t, i) {
+        var phase = i * 1.1;
+        var bob = Math.sin(t * 0.85 + phase) * 8;
+        var rot = Math.sin(t * 0.38 + phase) * 3.5;
+        var age = t - slideT0(svg);
+        var tilt = age >= 0 && age < 0.75 ? (1 - age / 0.75) * 16 : 0;
+        svg.style.transform = 'perspective(900px) rotateX(' + tilt.toFixed(2) + 'deg)';
+        g.setAttribute('transform',
+            'translate(260 ' + (260 + bob).toFixed(2) + ') rotate(' + rot.toFixed(2) + ') translate(-260 -260)');
+        var glow = g.querySelector('.sc-glow');
+        if (glow) glow.setAttribute('opacity', (0.16 + 0.08 * (0.5 + 0.5 * Math.sin(t * 1.1 + phase))).toFixed(3));
+        var glint = g.querySelector('.sc-glint');
+        if (glint) {
+            var u = (t * 0.18 + phase) % 1;
+            var on = u > 0.12 && u < 0.72;
+            glint.setAttribute('opacity', on ? '0.7' : '0');
+            glint.setAttribute('transform', 'translate(' + ((-40 + u * 560).toFixed(1)) + ' 0)');
+        }
+    }
+    function sceneMotion(t) {
+        if (STYLE !== 'cinematic') return;
+        var nodes = document.querySelectorAll('svg.sc');
+        for (var i = 0; i < nodes.length; i++) {
+            var svg = nodes[i];
+            var g = mountScene(svg);
+            if (!g) continue;
+            if (svg.dataset.sc === 'bot' || svg.classList.contains('sc-bot')) {
+                botMotion(svg, g, t, i);
+                continue;
+            }
+            if (svg.dataset.sc === 'brand' || svg.classList.contains('sc-brand')) {
+                brandMotion(svg, g, t, i);
+                continue;
+            }
+            var hook = sceneHook(svg);
+            var depth = +svg.dataset.depth || 1;
+            var amp = (hook ? 22 : 12) * depth;
+            var dx = Math.sin(t * 0.33 + i) * amp;
+            var dy = Math.cos(t * 0.21 + i) * amp * 0.18;
+            // Move inside the SVG, in its own units, so the edges stay anti-aliased.
+            var bw = (svg.width && svg.width.baseVal && svg.width.baseVal.value) || 200;
+            var vw = (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width) || bw;
+            var ku = vw / (bw || 1);
+            var drive = 0;
+            if (svg.dataset.drive === '1') drive = Math.max(0, t - slideT0(svg)) * 48;
+            g.setAttribute('transform', 'translate(' + (dx * ku + drive).toFixed(2) + ' ' + (dy * ku).toFixed(2) + ')');
+            // SVG angles grow clockwise. The nose is to the right, so forward is clockwise.
+            var rate = svg.dataset.drive === '1' ? 320 : (hook ? 240 : 150);
+            var spin = (t * rate) % 360;
+            var wheels = g.querySelectorAll('.sc-wheel');
+            for (var w = 0; w < wheels.length; w++) {
+                var cx = wheels[w].dataset.cx, cy = wheels[w].dataset.cy;
+                wheels[w].setAttribute('transform', 'rotate(' + spin.toFixed(2) + ' ' + cx + ' ' + cy + ')');
+            }
+            var glows = g.querySelectorAll('.sc-glow');
+            for (var k = 0; k < glows.length; k++) {
+                var flick = Math.sin(t * (hook ? 4.2 : 2.4) + k * 1.7);
+                glows[k].setAttribute('opacity', flick > 0.82 ? '0.45' : '1');
+            }
+            var smoke = g.querySelectorAll('.sc-smoke');
+            for (var s = 0; s < smoke.length; s++) {
+                var rise = ((t * (hook ? 10 : 6) + s * 5) % 12);
+                smoke[s].setAttribute('transform', 'translate(0 ' + (-rise).toFixed(2) + ')');
+                smoke[s].setAttribute('opacity', (0.2 + 0.45 * (1 - rise / 12)).toFixed(3));
+            }
+        }
+        var flows = document.querySelectorAll('.sc-flow');
+        for (var f = 0; f < flows.length; f++) {
+            flows[f].setAttribute('stroke-dashoffset', (-t * 36).toFixed(2));
+        }
+        var rings = document.querySelectorAll('.sc-orbit');
+        for (var r = 0; r < rings.length; r++) {
+            var orbs = rings[r].querySelectorAll('.sc-orb');
+            var n = orbs.length || 1;
+            for (var o = 0; o < orbs.length; o++) {
+                var ang = t * 0.35 + o * Math.PI * 2 / n;
+                orbs[o].style.left = (960 + Math.cos(ang) * 420 - 90).toFixed(1) + 'px';
+                orbs[o].style.top = (580 + Math.sin(ang) * 190 - 90).toFixed(1) + 'px';
+            }
+        }
+    }
+
+    var DEMOS = CFG.demos || [];
+    DEMOS.forEach(function (d) {
+        var el = document.createElement('div');
+        el.className = 'sc-demo';
+        el.innerHTML = '<div class="k">Demo video</div><div class="t"></div><div class="n"></div>';
+        el.querySelector('.t').textContent = d.label || 'Demo video';
+        el.querySelector('.n').textContent = d.note || 'Upload a screen recording in Clips. Narration keeps playing.';
+        stage.appendChild(el);
+        d.el = el;
+    });
+    function placeDemos(t) {
+        for (var i = 0; i < DEMOS.length; i++) {
+            var d = DEMOS[i];
+            var on = t >= +d.t0 && t < +d.t1;
+            d.el.style.display = on ? 'block' : 'none';
+        }
+    }
+
     function transitionOf(s) { var n = slides[s.i + 1]; return n ? n.trans : 'cut'; }
 
     var active = [];
@@ -519,6 +696,8 @@
                 }
             }
         }
+        sceneMotion(t);
+        placeDemos(t);
         drawBg(t, holes, frame);
         placeHost(holes, frame);
         placeFrame(frame, frame ? (holes.pip || 0) : 0);

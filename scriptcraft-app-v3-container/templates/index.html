@@ -3648,6 +3648,7 @@
                         <select id="xvHostShare" class="xv-input" style="width:auto; height:34px;" title="How much of the runtime Claude puts the presenter on screen"><option value="mine">only where I put it</option><option value="brief" selected>on screen briefly (~10%)</option><option value="little">on screen a little (~15%)</option><option value="some">on screen some (~30%)</option><option value="lots">on screen a lot (~50%)</option></select>
                         <select id="xvPipFrame" class="xv-input" style="width:auto; height:34px;" title="Corner windows: sometimes inside a monitor, laptop, phone or TV"><option value="mix" selected>corner frame sometimes</option><option value="off">plain corner only</option><option value="monitor">corner: monitor</option><option value="laptop">corner: laptop</option><option value="phone">corner: phone</option><option value="tv">corner: TV</option></select>
                         <select id="xvBubble" class="xv-input" style="width:auto; height:34px;" title="A guide character with a short line from the narration, lower left"><option value="some" selected>guide notes sometimes</option><option value="off">no guide notes</option><option value="often">guide notes often</option></select>
+                        <select id="xvVisual" class="xv-input" style="width:auto; height:34px;" title="Classic draws scene objects flat. Cinematic draws the same cars, buildings and houses with volume and motion. Text slides stay as they are."><option value="classic" selected>scenes: classic</option><option value="cinematic">scenes: cinematic</option></select>
                     </div>
                     <div id="xvHostNote" style="font-size:0.75em; color:#64748b; margin-bottom:14px;"></div>
                     <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
@@ -12377,8 +12378,9 @@ Thank you for watching!`;
             const share = document.getElementById('xvHostShare').value;
             const pipFrame = document.getElementById('xvPipFrame').value;
             const bubble = document.getElementById('xvBubble').value;
+            const visual = document.getElementById('xvVisual').value;
             const d = await _xvPost('/api/explainer/start', { voiceover: audio, script: script, text: extractHeyGenSection(script) || '', logos: logos,
-                test: test, presenter: presenter, share: share, pip_frame: pipFrame, bubble: bubble });
+                test: test, presenter: presenter, share: share, pip_frame: pipFrame, bubble: bubble, visual_style: visual });
             if (!d.success) {
                 btn.disabled = false;
                 _xvStatus('❌ ' + _xvEsc(d.error || 'Could not start.') + (d.needs_key ? ' <a href="#" onclick="closeExplainerModal(); openApiKeysModal(); return false;">🔑 API Keys</a>' : ''), '#f87171');
@@ -12443,7 +12445,7 @@ Thank you for watching!`;
             const note = document.getElementById('xvFrameNote');
             if (s.current) {
                 const yclips = ((s.youtube || {}).clips || []).map(c => [c.id, c.slide, c.audio, c.file, c.start, c.end, c.status]);
-                const key = s.current + '|' + JSON.stringify([s.values, s.logo_choices, s.logos, s.span, s.pip_frame, s.bubble, yclips, s.host && [s.host.created, s.host.focus, s.host.sections, s.host.pip_frame]]);
+                const key = s.current + '|' + JSON.stringify([s.values, s.logo_choices, s.logos, s.span, s.pip_frame, s.bubble, s.visual_style, yclips, s.host && [s.host.created, s.host.focus, s.host.sections, s.host.pip_frame]]);
                 if (key !== _xv.frameKey) {
                     _xv.frameKey = key;
                     document.getElementById('xvFrame').src = _xvApi('/preview?' + _xvQ() + '&v=' + s.current + '&_=' + Date.now());
@@ -12525,7 +12527,7 @@ Thank you for watching!`;
             const hosted = ((s.slides || []).filter(m => m.host)).length;
             document.getElementById('xvHostCount').textContent = h ? '(' + ((h.sections || []).length + hosted) + ')' : '';
             _xvRenderMarks();
-            const key = JSON.stringify([s.id, h, running, hosted, s.pip_frame, s.bubble, _xv.hg && [_xv.hg.open, _xv.hg.items.length, _xv.hg.loading, _xv.hg.error, Array.from(_xv.hg.ticked)]]);
+            const key = JSON.stringify([s.id, h, running, hosted, s.pip_frame, s.bubble, s.visual_style, _xv.hg && [_xv.hg.open, _xv.hg.items.length, _xv.hg.loading, _xv.hg.error, Array.from(_xv.hg.ticked)]]);
             if (!force && key === _xv.presKey) return;
             _xv.presKey = key;
             const list = _xvMatchingPresenters(s.audio_seconds);
@@ -12533,12 +12535,16 @@ Thank you for watching!`;
             const dis = running ? ' disabled' : '';
             const frameOpts = [['mix', 'Sometimes (monitor, laptop, phone, TV)'], ['off', 'Plain corner only'], ['monitor', 'Always a monitor'], ['laptop', 'Always a laptop'], ['phone', 'Always a phone'], ['tv', 'Always a TV']];
             const bubbleOpts = [['some', 'Sometimes (about 1 in 3)'], ['off', 'Off'], ['often', 'On suitable slides']];
+            const styleOpts = [['classic', 'Classic scenes (flat)'], ['cinematic', 'Cinematic scenes']];
             let html = '<div class="xv-item"><span class="xv-label">Corner window</span>'
                 + '<div style="color:#64748b; font-size:0.78em; margin:2px 0 6px;">About half of the corner windows sit inside a device, in turn: a monitor, a laptop, a phone, a TV. The rest stay a plain corner. Pick one device to use it every time, or turn the frame off.</div>'
                 + '<select class="xv-input" onchange="xvLook(\'pip_frame\', this.value)"' + dis + '>' + frameOpts.map(function (o) { return '<option value="' + o[0] + '"' + ((s.pip_frame || 'mix') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>'
                 + '<span class="xv-label" style="margin-top:8px;">Guide character</span>'
                 + '<div style="color:#64748b; font-size:0.78em; margin:2px 0 6px;">A small character with a short line from that slide\'s narration, lower left, for a few seconds. It stays off full-frame and side-panel shots, chapter cards and the asset slide. Sometimes is about one in three slides that have room, including the first.</div>'
-                + '<select class="xv-input" onchange="xvLook(\'bubble\', this.value)"' + dis + '>' + bubbleOpts.map(function (o) { return '<option value="' + o[0] + '"' + ((s.bubble || 'some') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>';
+                + '<select class="xv-input" onchange="xvLook(\'bubble\', this.value)"' + dis + '>' + bubbleOpts.map(function (o) { return '<option value="' + o[0] + '"' + ((s.bubble || 'some') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>'
+                + '<span class="xv-label" style="margin-top:8px;">Pictures</span>'
+                + '<div style="color:#64748b; font-size:0.78em; margin:2px 0 6px;">Text slides stay as they are. This only changes illustrated scenes: classic is the flat house, building and car; cinematic gives those objects volume, light and motion. The hook scene, before the first chapter, moves a little more.</div>'
+                + '<select class="xv-input" onchange="xvLook(\'visual_style\', this.value)"' + dis + '>' + styleOpts.map(function (o) { return '<option value="' + o[0] + '"' + ((s.visual_style || 'classic') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>';
             if (!h) {
                 html += '<div class="xv-item">No presenter footage yet. Add HeyGen clips made from this narration (' + _xvFmt(s.audio_seconds) + ': the ElevenLabs MP3 you built on); each is placed on the narration by its audio.'
                     + '<div style="display:flex; gap:6px; margin-top:8px;"><button class="xv-btn small primary" onclick="xvHgOpen()"' + dis + '>⬇️ Pick clips from HeyGen</button>'
@@ -12769,6 +12775,16 @@ Thank you for watching!`;
                     + (st ? '<button class="xv-btn small" title="Mark as not confirmed" data-key="' + _xvEsc(key) + '" onclick="xvSetValue(this.dataset.key, \'\')">↺</button>' : '')
                     + '</div></div>';
             });
+            const brands = s.brands || [];
+            if (brands.length) {
+                h += '<div style="font-size:0.78em; color:#94a3b8; margin:12px 0 6px 0; font-weight:600;">Brands in this script</div>'
+                    + '<div style="color:#64748b; font-size:0.75em; margin-bottom:8px;">A logo is fetched from the CC0 Simple Icons set and cached in this project. Upload a PNG, SVG, WebP or JPEG to use your own file instead. That upload is kept.</div>';
+                brands.forEach(b => {
+                    h += '<div class="xv-item" style="display:flex; gap:8px; align-items:center;"><span style="width:14px; height:14px; border-radius:99px; background:' + _xvEsc(b.color || '#888') + ';"></span>'
+                        + '<span style="flex:1; color:#e2e8f0; font-weight:650;">' + _xvEsc(b.name) + (b.has_file ? '' : ' <span style="color:#fbbf24; font-weight:normal;">monogram until a file arrives</span>') + '</span>'
+                        + '<label class="xv-btn small">Upload logo<input type="file" accept=".png,.svg,.webp,.jpg,.jpeg" style="display:none;" data-key="' + _xvEsc(b.key) + '" data-name="' + _xvEsc(b.name) + '" onchange="xvLogoUpload(this)"></label></div>';
+                });
+            }
             const used = s.used_logos || {}, logos = s.logos || {};
             const withFiles = Object.keys(used).filter(k => used[k].has_file && logos[k]);
             if (withFiles.length) {
@@ -12840,6 +12856,25 @@ Thank you for watching!`;
             if (downloading && !_xv.poll) _xv.poll = setInterval(xvRefresh, 2000);
             return d;
         }
+        async function xvClipUpload(ev) {
+            if (ev) ev.preventDefault();
+            const input = document.getElementById('xvUpFile');
+            if (!input || !input.files || !input.files[0]) { _xvStatus('Choose a video file first.', '#f87171'); return; }
+            const fd = new FormData();
+            fd.append('title', _xv.title);
+            fd.append('file', input.files[0]);
+            fd.append('start', (document.getElementById('xvUpStart') || {}).value || '0');
+            fd.append('end', (document.getElementById('xvUpEnd') || {}).value || '');
+            fd.append('label', (document.getElementById('xvUpLabel') || {}).value || '');
+            let d;
+            try { d = await (await fetch(_xvApi('/clip-upload'), { method: 'POST', body: fd })).json(); }
+            catch (e) { d = { success: false, error: e.message }; }
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Upload failed.'), '#f87171'); return; }
+            _xv.state = Object.assign(_xv.state || {}, d);
+            _xv.clipKey = '';
+            _xvRenderState(_xv.state);
+            _xvStatus('Uploaded. Assign it to a slide.', '#34d399');
+        }
         async function xvYtDownload() { await _xvYt({ action: 'download', url: (document.getElementById('xvYtUrl') || {}).value || '' }); }
         async function xvYtAdd() {
             const video = (document.getElementById('xvYtVideo') || {}).value || '';
@@ -12885,7 +12920,15 @@ Thank you for watching!`;
             const dis = running ? ' disabled' : '';
             const ready = (yt.videos || []).filter(v => v.status === 'ready');
             const audioOpts = [['mute', 'Mute (keep narration)'], ['clip', 'Clip audio only'], ['mix', 'Mix (ducked under narration)']];
-            let html = '<div class="xv-item"><span class="xv-label">YouTube video</span>'
+            let html = '<div class="xv-item"><span class="xv-label">Your screen recording</span>'
+                + '<div style="color:#64748b; font-size:0.78em; margin:2px 0 8px;">Upload an mp4, mov or webm. In and Out are optional (blank Out means the whole file). It is muted under the narration unless you change that. Assign it to a slide that says Demo video, or to any slide.</div>'
+                + '<form id="xvUpForm" onsubmit="xvClipUpload(event)" style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">'
+                + '<input id="xvUpFile" type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm,.m4v" class="xv-input" style="flex:1; min-width:160px;"' + dis + '>'
+                + '<input id="xvUpStart" class="xv-input" placeholder="In 0:00" style="width:84px;"' + dis + '>'
+                + '<input id="xvUpEnd" class="xv-input" placeholder="Out" style="width:84px;"' + dis + '>'
+                + '<input id="xvUpLabel" class="xv-input" placeholder="Label" style="width:120px;"' + dis + '>'
+                + '<button class="xv-btn small primary" type="submit"' + dis + '>Upload</button></form></div>'
+                + '<div class="xv-item"><span class="xv-label">YouTube video</span>'
                 + '<div style="color:#64748b; font-size:0.78em; margin:2px 0 8px;">Paste a public YouTube link. It is saved as an mp4 (up to 1080p) in this project’s working/media folder. Private and age-restricted videos are refused. ffmpeg has to be installed.</div>'
                 + '<div style="display:flex; gap:6px;"><input id="xvYtUrl" class="xv-input" placeholder="https://www.youtube.com/watch?v=…" onkeydown="if (event.key===\'Enter\') xvYtDownload()">'
                 + '<button class="xv-btn small primary" onclick="xvYtDownload()"' + dis + '>Download</button></div></div>';
@@ -12915,6 +12958,11 @@ Thank you for watching!`;
             html += (yt.clips || []).map(c => {
                 const on = slides.find(m => m.id === c.slide);
                 const where = c.slide ? (on ? 'On ' + c.slide : 'Was on ' + c.slide + ' (not in this version)') : 'Not on a slide';
+                if (c.status === 'placeholder') {
+                    return '<div class="xv-item"><div style="color:#fbbf24; font-weight:650;">Demo video · ' + _xvEsc(where) + '</div>'
+                        + '<div style="color:#94a3b8; font-size:0.78em; margin-top:4px;">' + _xvEsc(c.note || 'Upload a recording and assign it here.') + '</div>'
+                        + '<div style="color:#64748b; font-size:0.75em; margin-top:4px;">Shown in the preview until you fill it. The final render leaves this slide as designed if it is still empty.</div></div>';
+                }
                 return '<div class="xv-item" data-ytclip="' + _xvEsc(c.id) + '"><div style="display:flex; gap:6px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">'
                     + '<input class="xv-input" data-k="label" value="' + _xvEsc(c.label || '') + '" placeholder="Label" style="flex:1; min-width:80px;"' + dis + '>'
                     + '<input class="xv-input" data-k="start" value="' + _xvFmtT(c.start) + '" style="width:84px;"' + dis + '>'

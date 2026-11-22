@@ -10447,6 +10447,7 @@ def _xv_state(p) -> dict:
         "span": d.get("span"), "host": None,
         "pip_frame": _xv.pip_frame_key(None, ((d.get("host") or {}).get("pip_frame") or d.get("pip_frame"))),
         "bubble": _xv.bubble_mode_key(None, d.get("bubble")),
+        "visual_style": _xv.visual_style_key(None, d.get("visual_style")),
         "youtube": _xv.yt_public(p),
     }
     host = p.host()
@@ -10476,6 +10477,14 @@ def _xv_state(p) -> dict:
         out["stills"] = sorted(str(x.relative_to(p.dir)) for x in (p.dir / "stills").glob(f"sheet_v{n:03d}_*.png"))
         out["start"], out["end"] = comp["start"], comp["end"]
         out["host_windows"] = comp.get("host_windows") or []
+        if _xv.sync_demo_placeholders(p, comp.get("slides") or []):
+            out["youtube"] = _xv.yt_public(p)
+        try:
+            import explainer_brands as _xb
+            _xb.ensure_brand_logos(p, [s.get("spoken") or "" for s in comp.get("slides") or []])
+        except Exception:
+            pass
+        out["brands"] = list((p.data.get("brands") or []))
     return out
 
 
@@ -10501,6 +10510,7 @@ def explainer_options():
                     "presenters": _xv_presenters(title, [v["seconds"] for v in voiceovers]),
                     "host_shares": _xv.HOST_SHARES, "pip_frames": list(_xv.PIP_FRAME_MODES),
                     "bubble_modes": list(_xv.BUBBLE_MODES),
+                    "visual_styles": list(_xv.VISUAL_STYLES),
                     "chrome": bool(_xv.find_chrome()), "claude": bool((os.getenv("ANTHROPIC_API_KEY") or "").strip()),
                     "elevenlabs": bool(_eleven_key()), "model": _xv.MODEL_LABEL,
                     "render_workers": _xv.RENDER_WORKERS})
@@ -10585,6 +10595,7 @@ def explainer_start():
     share = _xv.host_share_key(data.get("share"))
     pip_frame = _xv.pip_frame_key(data.get("pip_frame"))
     bubble = _xv.bubble_mode_key(data.get("bubble"))
+    visual_style = _xv.visual_style_key(data.get("visual_style"))
     pid = _xv.new_project_id()
     folder = _get_run_output_dir(title) / "explainer" / pid
     folder.mkdir(parents=True, exist_ok=True)
@@ -10592,7 +10603,8 @@ def explainer_start():
     project.write("script.txt", script)
     project.write("spoken.txt", spoken)
     project.data.update(title=title, created=time.time(), voiceover=voiceover, text_source=source,
-                        model=_xv.MODEL, status="running", pip_frame=pip_frame, bubble=bubble)
+                        model=_xv.MODEL, status="running", pip_frame=pip_frame, bubble=bubble,
+                        visual_style=visual_style)
     project.save()
     counts = _xv.production_counts(script)
     logger.info(f"🎞️ Explainer video for {title[:60]!r}: {voiceover}, {len(spoken.split()):,} spoken words "
@@ -10606,7 +10618,7 @@ def explainer_start():
                               pauses=_audio_pauses, logos=logos, images_dir=_xv_images_dir(title),
                               cancel=cancel, status=status, log=_xv_log, test=test, presenter=presenter,
                               root=_get_run_output_dir(title, create=False), share=share,
-                              pip_frame=pip_frame, bubble=bubble)
+                              pip_frame=pip_frame, bubble=bubble, visual_style=visual_style)
 
     _xv.start_job(project, "create", job, _xv_log)
     return jsonify({"success": True, "project": pid, "state": _xv_state(project)})
@@ -10640,6 +10652,7 @@ def explainer_preview(pid):
         host = {**host, "video": (f"/api/explainer/{pid}/file?title={urllib.parse.quote(p.data.get('title') or '')}"
                                   f"&path={urllib.parse.quote(host['proxy'])}&v={int(host.get('created') or 0)}")}
     compiled = p.compile(n)
+    visual_style = _xv.visual_style_key(None, p.data.get("visual_style"))
     quote_title = urllib.parse.quote(p.data.get("title") or "")
 
     def _clip_url(rel, _pid=pid, _title=quote_title):
@@ -10650,7 +10663,8 @@ def explainer_preview(pid):
         origin = ""
     page = _xv.page_html(compiled, mode="preview", title=p.data.get("title") or "Explainer", host=host,
                          pip_frame=frame, bubble=bubble, clips=_xv.preview_clip_payloads(p, compiled, _clip_url),
-                         media_origin=origin)
+                         media_origin=origin, visual={"style": visual_style},
+                         demos=_xv.demo_payloads(compiled, _xv.load_youtube(p.data)["clips"], "preview"))
     resp = Response(page, mimetype="text/html")
     resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -10748,10 +10762,45 @@ def explainer_youtube(pid):
         elif action == "remove_video":
             _xv.yt_cancel((data.get("id") or "").strip())
             _xv.yt_delete_video(p, (data.get("id") or "").strip())
+        elif action == "upload":
+            return jsonify({"success": False, "error": "Upload the file with the clip form."}), 400
         else:
             return jsonify({"success": False, "error": "Unknown clip action."}), 400
     except _xv.YoutubeError as e:
         return jsonify({"success": False, "error": str(e)}), 400
+    return jsonify({"success": True, **_xv_state(p)})
+
+
+@app.route("/api/explainer/<pid>/clip-upload", methods=["POST"])
+def explainer_clip_upload(pid):
+    """A local screen recording becomes a clip. Optional In/Out trim. Narration stays (mute)."""
+    title = _xv_title()
+    p = _xv_project(title, pid)
+    if p is None:
+        return jsonify({"success": False, "error": "Project not found."}), 404
+    up = request.files.get("file")
+    if up is None or not up.filename:
+        return jsonify({"success": False, "error": "Choose an mp4, mov or webm."}), 400
+    name = re.sub(r"[^A-Za-z0-9._ -]+", "_", Path(up.filename).name).strip(" .")
+    if Path(name).suffix.lower() not in _xv.UPLOAD_EXTS:
+        return jsonify({"success": False, "error": "Upload an mp4, mov, webm or m4v."}), 400
+    folder = p.dir / "working" / "media"
+    folder.mkdir(parents=True, exist_ok=True)
+    raw = folder / ("src_" + uuid.uuid4().hex[:8] + Path(name).suffix.lower())
+    up.save(raw)
+    start = request.form.get("start") or "0"
+    end = request.form.get("end") or ""
+    try:
+        start_s = _xv.parse_timecode(start)
+        end_s = _xv.parse_timecode(end) if str(end).strip() else None
+        _xv.yt_add_upload(p, raw, label=(request.form.get("label") or Path(name).stem),
+                          start=start_s, end=end_s)
+    except _xv.YoutubeError as e:
+        raw.unlink(missing_ok=True)
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        raw.unlink(missing_ok=True)
+        return jsonify({"success": False, "error": "Could not read that video. " + str(e)[:180]}), 400
     return jsonify({"success": True, **_xv_state(p)})
 
 
@@ -10958,15 +11007,19 @@ def explainer_host(pid):
     if _xv.job_running(p.id):
         return jsonify({"success": False, "error": "Wait for the running job to finish."}), 409
     host = p.host()
-    if "pip_frame" in data or "bubble" in data:
+    if "pip_frame" in data or "bubble" in data or "visual_style" in data:
         if "pip_frame" in data and data.get("pip_frame") not in _xv.PIP_FRAME_MODES:
             return jsonify({"success": False, "error": "Unknown corner frame."}), 400
         if "bubble" in data and data.get("bubble") not in _xv.BUBBLE_MODES:
             return jsonify({"success": False, "error": "Unknown guide setting."}), 400
+        if "visual_style" in data and data.get("visual_style") not in _xv.VISUAL_STYLES:
+            return jsonify({"success": False, "error": "Unknown picture style."}), 400
         if not any(k in data for k in ("focus", "share", "remove", "source")):
             with p.lock:
                 if "bubble" in data:
                     p.data["bubble"] = data["bubble"]
+                if "visual_style" in data:
+                    p.data["visual_style"] = data["visual_style"]
                 if "pip_frame" in data:
                     p.data["pip_frame"] = data["pip_frame"]
                     if host:
