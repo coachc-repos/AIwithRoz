@@ -108,16 +108,29 @@
     };
     function hash(s) { var h = 2166136261; for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return ((h >>> 0) % 1000) / 1000; }
 
-    // ---- particle background: ~20 rows riding slow waves, packed toward the
+    // ---- particle background: rows of dots riding waves, packed toward the
     // bottom and fading out by mid-screen. Flat colors, no gradients.
+    // WAVE_ROWS and WAVE_SPEED come from the page (explainer_imagery.py).
+    // The old field was 20 rows at speed 1. Every style uses this field.
+    var _waves = (CFG.visual || {}).waves || {};
+    var WAVE_ROWS = Math.max(8, Math.round(+_waves.rows || 34));
+    var WAVE_SPEED = (+_waves.speed > 0) ? +_waves.speed : 1.4;
+    var STYLE = ((CFG.visual || {}).style === 'cinematic' || (CFG.visual || {}).style === 'rich') ? 'cinematic' : 'classic';
+    var POP = (CFG.visual || {}).pop || {
+        body: { rot: 11, z: 64, overshoot: 1.04, glint: 0.42, dof: 0.7, push: 1.022, shadow: 0.42 },
+        hook: { rot: 20, z: 128, overshoot: 1.08, glint: 0.82, dof: 1.35, push: 1.05, shadow: 0.62 }
+    };
+    var HOOK_UNTIL = (CFG.visual || {}).hookUntil;
     var ROWS = [];
     (function () {
-        for (var r = 0; r < 20; r++) {
-            var f = r / 19;
+        for (var r = 0; r < WAVE_ROWS; r++) {
+            var f = r / Math.max(1, WAVE_ROWS - 1);
             ROWS.push({
                 y: 1068 - Math.pow(f, 1.55) * 500,
-                amp: 6 + 10 * f, len: 220 + 160 * hash('l' + r), spd: 0.25 + 0.35 * hash('s' + r),
-                drift: (hash('d' + r) - 0.5) * 14, gap: 15 + Math.round(f * 9), rad: 1.9 - 0.7 * f,
+                amp: 6 + 10 * f, len: 220 + 160 * hash('l' + r),
+                spd: (0.25 + 0.35 * hash('s' + r)) * WAVE_SPEED,
+                drift: (hash('d' + r) - 0.5) * 14 * WAVE_SPEED,
+                gap: 15 + Math.round(f * 9), rad: 1.9 - 0.7 * f,
                 alpha: 0.55 * Math.pow(1 - f, 1.35) + 0.04, phase: hash('p' + r) * 6.283,
                 color: r % 5 === 2 ? '245,184,61' : '118,138,186'
             });
@@ -130,124 +143,11 @@
         ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r);
         ctx.closePath();
     }
-    // Picture treatment. classic keeps the particle field below. rich and
-    // cinematic draw cached stills (and, for cinematic, depth layers) behind
-    // the slide HTML, then a grade. Type and motion stay on the slides.
-    var VISUAL = CFG.visual || { style: 'classic', plates: [] };
-    var GRADE = VISUAL.grade || {};
-    (VISUAL.plates || []).forEach(function (p) {
-        (p.layers || []).forEach(function (L) {
-            var im = document.createElement('img');
-            im.alt = '';
-            im.src = L.uri;
-            im.style.cssText = 'position:absolute; left:-4px; top:-4px; width:1px; height:1px; opacity:0; pointer-events:none;';
-            stage.appendChild(im);
-            L.im = im;
-        });
-    });
-    if (VISUAL.grain) {
-        var grainIm = document.createElement('img');
-        grainIm.alt = '';
-        grainIm.src = VISUAL.grain;
-        grainIm.style.cssText = 'position:absolute; left:-4px; top:-4px; width:1px; height:1px; opacity:0; pointer-events:none;';
-        stage.appendChild(grainIm);
-        VISUAL.grainIm = grainIm;
-    }
-    function drawCover(im, z, ox, oy, alpha) {
-        if (!im || !im.complete || !im.naturalWidth || alpha <= 0) return;
-        var scale = Math.max(1920 / im.naturalWidth, 1080 / im.naturalHeight) * z;
-        var w = im.naturalWidth * scale, h = im.naturalHeight * scale;
-        ctx.save();
-        ctx.globalAlpha = alpha;
-        ctx.drawImage(im, 960 - w / 2 + ox, 540 - h / 2 + oy, w, h);
-        ctx.restore();
-    }
-    function plateAlpha(p, t) {
-        var a0 = +p.t0, a1 = +p.t1, fade = 0.4;
-        if (t < a0 || t >= a1 + fade) return 0;
-        var a = 1;
-        if (t < a0 + fade && a0 > 0.05) a = (t - a0) / fade;
-        if (t >= a1) a = Math.min(a, 1 - (t - a1) / fade);
-        return a < 0 ? 0 : a;
-    }
-    function drawGrain(t) {
-        var im = VISUAL.grainIm, a = +GRADE.grain || 0;
-        if (!im || !im.complete || !im.naturalWidth || a <= 0) return;
-        ctx.save();
-        ctx.globalAlpha = Math.min(0.45, a);
-        var s = 256, ox = Math.floor(t * 37) % s, oy = Math.floor(t * 21) % s;
-        for (var y = -s; y < 1080; y += s) {
-            for (var x = -s; x < 1920; x += s) ctx.drawImage(im, x + ox, y + oy, s, s);
-        }
-        ctx.restore();
-    }
-    function drawGrade(t) {
-        var veil = +GRADE.veil || 0;
-        if (veil > 0) {
-            for (var i = 0; i < 16; i++) {
-                ctx.fillStyle = 'rgba(5,8,14,' + (veil * Math.pow(1 - i / 16, 1.45)).toFixed(3) + ')';
-                ctx.fillRect(0, i * 42, 1920, 42);
-            }
-        }
-        var warm = +GRADE.warm || 0;
-        if (warm > 0) {
-            var rings = [240, 150, 80];
-            for (var r = 0; r < rings.length; r++) {
-                ctx.fillStyle = 'rgba(255,186,110,' + (0.09 * warm * (1 - r / rings.length)).toFixed(3) + ')';
-                ctx.beginPath();
-                ctx.ellipse(1520, 840, rings[r] * 1.35, rings[r], 0, 0, 6.283);
-                ctx.fill();
-            }
-        }
-        var shaft = +GRADE.shaft || 0;
-        if (shaft > 0) {
-            var shift = (t % 7) * 8;
-            ctx.fillStyle = 'rgba(255,214,160,' + (0.09 * shaft).toFixed(3) + ')';
-            ctx.beginPath();
-            ctx.moveTo(1340 + shift, -20); ctx.lineTo(1580 + shift, -20);
-            ctx.lineTo(1060 + shift, 1100); ctx.lineTo(840 + shift, 1100);
-            ctx.fill();
-        }
-        var vig = +GRADE.vignette || 0;
-        if (vig > 0) {
-            for (var e = 0; e < 14; e++) {
-                ctx.fillStyle = 'rgba(0,0,0,' + (vig * Math.pow(e / 14, 1.6) * 0.5).toFixed(3) + ')';
-                var m = e * 11;
-                ctx.fillRect(0, 0, 1920, m + 8);
-                ctx.fillRect(0, 1080 - (m + 8), 1920, m + 8);
-                ctx.fillRect(0, 0, m + 8, 1080);
-                ctx.fillRect(1920 - (m + 8), 0, m + 8, 1080);
-            }
-        }
-        drawGrain(t);
-    }
-    function drawRichBg(t) {
-        ctx.fillStyle = '#090c12';
-        ctx.fillRect(0, 0, 1920, 1080);
-        var plates = VISUAL.plates || [];
-        for (var i = 0; i < plates.length; i++) {
-            var p = plates[i], a = plateAlpha(p, t);
-            if (a <= 0) continue;
-            var span = Math.max(0.001, (+p.t1) - (+p.t0));
-            var u = clamp((t - (+p.t0)) / span, 0, 1);
-            var layers = p.layers || [];
-            for (var j = 0; j < layers.length; j++) {
-                var L = layers[j];
-                var depth = +L.depth || 1;
-                var z = 1.08 + (+L.zoom || 0) * u;
-                drawCover(L.im, z, depth * (+L.dx || 0) * (u - 0.5), depth * (+L.dy || 0) * (u - 0.5), a * (+L.opacity || 1));
-            }
-        }
-        drawGrade(t);
-    }
     var dpr = 0;
     function drawBg(t, holes, frame) {
         var k = window.devicePixelRatio || 1;
         if (k !== dpr) { dpr = k; canvas.width = 1920 * k; canvas.height = 1080 * k; canvas.style.width = '1920px'; canvas.style.height = '1080px'; }
         ctx.setTransform(k, 0, 0, k, 0, 0);
-        if ((VISUAL.style || 'classic') !== 'classic' && (VISUAL.plates || []).length) {
-            drawRichBg(t);
-        } else {
         ctx.fillStyle = '#090c12';
         ctx.fillRect(0, 0, 1920, 1080);
         for (var r = 0; r < ROWS.length; r++) {
@@ -261,7 +161,6 @@
                 ctx.arc(x, y, row.rad, 0, 6.283);
             }
             ctx.fill();
-        }
         }
         // Presenter areas: cut out, as far as the slide showing them is faded in.
         // A framed corner cuts the device's screen, not the whole corner.
@@ -415,6 +314,39 @@
         return it.prefix + s + it.suffix;
     }
 
+    // Cinematic touches objects (cards, icons, charts, figures), not the type.
+    // It runs only while that object's own entrance is in progress.
+    var POP_CLASS = ['card', 'overlay-card', 'lower-third', 'skeleton', 'quote', 'chip', 'badge', 'stat', 'photo-spot', 'logo', 'bar'];
+    function isPopTarget(e) {
+        if (!e || !e.tagName || !e.classList) return false;
+        var tag = e.tagName.toLowerCase();
+        if (tag === 'span' || tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'p' || tag === 'li') return false;
+        if (e.classList.contains('w') || e.classList.contains('huge') || e.classList.contains('kicker')
+            || e.classList.contains('lead') || e.classList.contains('body') || e.classList.contains('h1')
+            || e.classList.contains('h2') || e.classList.contains('h3') || e.classList.contains('fill')
+            || e.classList.contains('scene') || e.classList.contains('camera')) return false;
+        var kinds = (e.dataset.anim || '').split(/\s+/);
+        if (kinds.indexOf('words') >= 0 || kinds.indexOf('count') >= 0 || kinds.indexOf('fade') >= 0) return false;
+        if (tag === 'svg' || tag === 'img' || tag === 'image') return true;
+        for (var i = 0; i < POP_CLASS.length; i++) if (e.classList.contains(POP_CLASS[i])) return true;
+        return false;
+    }
+    function hookBoost(s) {
+        if (HOOK_UNTIL === null || HOOK_UNTIL === undefined || HOOK_UNTIL === '') return s.i === 0;
+        return s.t0 < +HOOK_UNTIL - 0.02;
+    }
+    function popLevel(s) { return hookBoost(s) ? (POP.hook || POP.body) : POP.body; }
+    function centerIn(el, root) {
+        var x = el.offsetWidth / 2, y = el.offsetHeight / 2, n = el;
+        while (n && n !== root) {
+            x += n.offsetLeft; y += n.offsetTop;
+            var next = n.offsetParent;
+            if (!next || (root && !root.contains(next) && next !== root)) break;
+            n = next;
+        }
+        return { x: x, y: y };
+    }
+
     function prep(s) {
         if (s.prepped) return;
         s.prepped = true;
@@ -455,6 +387,14 @@
                     var fill = sh.getAttribute('fill') || getComputedStyle(sh).fill;
                     return { sh: sh, fill: fill && fill !== 'none' };
                 });
+            }
+            it.object = STYLE === 'cinematic' && !!main && isPopTarget(e);
+            var _tag = e.tagName.toLowerCase();
+            if (it.object && e.namespaceURI !== 'http://www.w3.org/2000/svg' && _tag !== 'img' && _tag !== 'image') {
+                var glint = document.createElement('div');
+                glint.className = 'xv-glint';
+                e.appendChild(glint);
+                it.glint = glint;
             }
             if (main === 'count') {
                 var txt = e.textContent.trim();
@@ -546,6 +486,38 @@
             if (it.out === 'down') tf += ' translateY(' + (q * 60).toFixed(2) + 'px)';
             else if (it.out === 'shrink') tf += ' scale(' + (1 - 0.4 * q).toFixed(4) + ')';
         }
+        // Object entrance. The 2D move above keeps its timing. This adds depth
+        // only while that entrance is running, then the object sits as drawn.
+        it._popping = false;
+        if (it.object && t >= it.t && r < 1) {
+            var k = popLevel(s), fly = 1 - p;
+            var rx = fly * (+k.rot || 11) * 0.7;
+            var ry = fly * (+k.rot || 11);
+            var tz = -fly * (+k.z || 64);
+            var depth = 'perspective(1200px) translateZ(' + tz.toFixed(1) + 'px) rotateX(' + rx.toFixed(2) + 'deg) rotateY(' + ry.toFixed(2) + 'deg)';
+            if (it.main !== 'pop' && it.main !== 'stamp') {
+                var sc = 1 + ((+k.overshoot || 1.04) - 1) * Math.sin(r * Math.PI);
+                depth += ' scale(' + sc.toFixed(4) + ')';
+            }
+            tf = depth + (tf ? ' ' + tf : '');
+            var blur = 3 + 14 * fly;
+            var alpha = (0.18 + 0.4 * (1 - fly)) * (+k.shadow || 0.4);
+            var trail = fly > 0.2 ? ' drop-shadow(' + (-22 * fly).toFixed(1) + 'px ' + (6 * fly).toFixed(1) + 'px 0 rgba(8,12,20,' + (0.28 * fly).toFixed(3) + '))' : '';
+            e.style.filter = 'drop-shadow(' + (8 + 8 * fly).toFixed(1) + 'px ' + (10 + 10 * fly).toFixed(1) + 'px ' + blur.toFixed(1) + 'px rgba(0,0,0,' + Math.min(0.72, alpha).toFixed(3) + '))' + trail;
+            e.style.transformOrigin = '22% 16%';
+            e.classList.add('xv-pop');
+            if (it.glint) {
+                var sweep = clamp((r - 0.12) / 0.7, 0, 1);
+                it.glint.style.opacity = (Math.sin(sweep * Math.PI) * (+k.glint || 0.4)).toFixed(3);
+                it.glint.style.transform = 'translateX(' + (-180 + sweep * 340).toFixed(1) + '%) skewX(-18deg)';
+            }
+            it._popping = true;
+        } else if (it.object) {
+            e.style.filter = '';
+            e.style.transformOrigin = '';
+            e.classList.remove('xv-pop');
+            if (it.glint) it.glint.style.opacity = '0';
+        }
         e.style.opacity = o >= 1 ? '' : o.toFixed(3);
         var full = (e.__base + tf).trim();
         e.style.transform = full;
@@ -570,6 +542,39 @@
             x += (k[i].x - x) * q; y += (k[i].y - y) * q; z += (k[i].z - z) * q;
         }
         c.e.style.transform = 'translate(' + (960 - x * z).toFixed(2) + 'px,' + (540 - y * z).toFixed(2) + 'px) scale(' + z.toFixed(4) + ')';
+    }
+
+    function depthOfField(s, t) {
+        var busy = false;
+        for (var i = 0; i < s.items.length; i++) {
+            var it = s.items[i];
+            if (it.object && t >= it.t && t < it.t + it.dur) busy = true;
+        }
+        var px = busy ? (+popLevel(s).dof || 0) : 0;
+        for (var j = 0; j < s.items.length; j++) {
+            var item = s.items[j];
+            if (!item.object || item._popping) continue;
+            var rr = (t - item.t) / (item.dur || 0.001);
+            item.e.style.filter = (px && rr >= 1) ? 'blur(' + px.toFixed(2) + 'px)' : '';
+        }
+    }
+    function objectCamera(s, t) {
+        var best = null, bestE = -1, bestR = 0;
+        for (var i = 0; i < s.items.length; i++) {
+            var it = s.items[i];
+            if (!it.object) continue;
+            var r = (t - it.t) / (it.dur || 0.001);
+            if (r <= 0.02 || r >= 0.98) continue;
+            var energy = Math.sin(r * Math.PI);
+            if (energy > bestE) { bestE = energy; best = it; bestR = r; }
+        }
+        if (!best) return '';
+        var push = +popLevel(s).push || 1.02;
+        var z = 1 + (push - 1) * Math.sin(bestR * Math.PI);
+        var c = centerIn(best.e, s.el);
+        var tx = -(c.x - 960) * (z - 1) * 0.7;
+        var ty = -(c.y - 540) * (z - 1) * 0.7;
+        return 'translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px) scale(' + z.toFixed(4) + ')';
     }
 
     function transitionOf(s) { var n = slides[s.i + 1]; return n ? n.trans : 'cut'; }
@@ -599,11 +604,17 @@
                 o *= 1 - q2; ty -= transitionOf(s) === 'push' ? q2 * 90 : 0;
             }
             s.el.style.opacity = o >= 1 ? '' : o.toFixed(3);
-            s.el.style.transform = ty ? 'translateY(' + ty.toFixed(2) + 'px)' : '';
             if (s.host) holes[s.host] = Math.max(holes[s.host] || 0, o);
             s.el.style.zIndex = String(s.i + 1);
             for (var j = 0; j < s.items.length; j++) apply(s, s.items[j], t);
             for (var c = 0; c < s.cams.length; c++) camera(s.cams[c], t);
+            var slideTf = ty ? 'translateY(' + ty.toFixed(2) + 'px)' : '';
+            if (STYLE === 'cinematic') {
+                depthOfField(s, t);
+                var push = objectCamera(s, t);
+                if (push) slideTf = (slideTf + ' ' + push).trim();
+            }
+            s.el.style.transform = slideTf;
             if (s.hud) hudW = Math.max(hudW, o);
             if (o > labelW) { labelW = o; labelS = s; }
         });

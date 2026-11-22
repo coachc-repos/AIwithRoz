@@ -10503,7 +10503,6 @@ def explainer_options():
                     "host_shares": _xv.HOST_SHARES, "pip_frames": list(_xv.PIP_FRAME_MODES),
                     "bubble_modes": list(_xv.BUBBLE_MODES),
                     "visual_styles": list(_xv.VISUAL_STYLES),
-                    "imagery_grok": bool(_xv.grok_key_present()),
                     "chrome": bool(_xv.find_chrome()), "claude": bool((os.getenv("ANTHROPIC_API_KEY") or "").strip()),
                     "elevenlabs": bool(_eleven_key()), "model": _xv.MODEL_LABEL,
                     "render_workers": _xv.RENDER_WORKERS})
@@ -10646,12 +10645,6 @@ def explainer_preview(pid):
                                   f"&path={urllib.parse.quote(host['proxy'])}&v={int(host.get('created') or 0)}")}
     compiled = p.compile(n)
     visual_style = _xv.visual_style_key(None, p.data.get("visual_style"))
-    visual = _xv.imagery_for_page(p.dir, compiled.get("slides") or [], visual_style)
-    _vstats = visual.get("stats") or {}
-    if _vstats:
-        logger.info(f"🖼️ Explainer pictures ({visual.get('style')}): "
-                    f"{_vstats.get('grok', 0)} generated, {_vstats.get('painted', 0)} painted, "
-                    f"{_vstats.get('cache_hits', 0)} from cache")
     quote_title = urllib.parse.quote(p.data.get("title") or "")
 
     def _clip_url(rel, _pid=pid, _title=quote_title):
@@ -10662,7 +10655,7 @@ def explainer_preview(pid):
         origin = ""
     page = _xv.page_html(compiled, mode="preview", title=p.data.get("title") or "Explainer", host=host,
                          pip_frame=frame, bubble=bubble, clips=_xv.preview_clip_payloads(p, compiled, _clip_url),
-                         media_origin=origin, visual=visual)
+                         media_origin=origin, visual={"style": visual_style})
     resp = Response(page, mimetype="text/html")
     resp.headers["Cache-Control"] = "no-store"
     return resp

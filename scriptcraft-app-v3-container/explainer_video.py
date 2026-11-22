@@ -45,11 +45,11 @@ when the slide ends, so later slides stay on the spoken words. Per clip, the
 audio is muted under the narration (the default), replaces the narration, or
 is sidechain-ducked under it.
 
-Pictures: a saved visual_style of classic (the default) keeps this particle field.
-rich and cinematic keep the same type, figures and motion, and add a still
-behind each slide — a slow move, grain and light, and in cinematic three
-depth layers. Stills are cached in the project. Grok Imagine is used when a
-key is set; otherwise the still is painted. See explainer_imagery.py.
+Pictures: the particle waves stay on every style (denser and a little faster
+than the original field). visual_style classic is those waves. cinematic
+keeps the same type, figures and timing, and adds a short 3D entrance on the
+objects only, stronger on the hook (before the first chapter card). A saved
+"rich" means cinematic. See explainer_imagery.py.
 
 The module has no Flask dependency; web_gui.py wires the routes and passes in
 the Anthropic client, the ElevenLabs key and its pause detector.
@@ -177,8 +177,7 @@ if _APP_DIR not in _imagery_sys.path:
 from explainer_imagery import (  # noqa: E402
     VISUAL_STYLE_DEFAULT,
     VISUAL_STYLES,
-    grok_key_present,
-    imagery_for_page,
+    page_visual,
     visual_style_key,
 )
 
@@ -2582,9 +2581,8 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
     a drawn bubble, both as local images. Assigned YouTube clips (`clips`)
     play in preview as each slide's picture; the renderer lays the same
     files on with ffmpeg, holding the last frame when the clip is shorter.
-    `visual` is the picture treatment (classic / rich / cinematic). Classic,
-    or a treatment with no plates, keeps the particle field. The slide HTML
-    is not changed."""
+    `visual` picks classic or cinematic. Both keep the wave background.
+    Cinematic adds the object entrance. The slide HTML is not changed."""
     css = (ASSET_DIR / "design.css").read_text(encoding="utf-8")
     js = (ASSET_DIR / "runtime.js").read_text(encoding="utf-8")
     host_on = bool(host) and compiled.get("host_on")
@@ -2594,13 +2592,7 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
     clip_cfg = [{k: c.get(k) for k in ("id", "slide", "src", "audio", "seconds", "t0", "t1", "label")}
                 for c in (clips or [])]
     style = visual_style_key((visual or {}).get("style"))
-    plates = (visual or {}).get("plates") or []
-    if style == "classic" or not plates:
-        visual_cfg = {"style": "classic", "plates": []}
-        style = "classic"
-    else:
-        visual_cfg = {"style": style, "grade": (visual or {}).get("grade") or {},
-                      "grain": (visual or {}).get("grain") or "", "plates": plates}
+    visual_cfg = page_visual(style, compiled.get("slides"))
     cfg = json.dumps({"duration": compiled["duration"], "fps": FPS, "mode": mode,
                       "start": compiled.get("start", 0.0), "end": compiled.get("end", compiled["duration"]),
                       "sections": compiled.get("sections") or [],
@@ -4541,9 +4533,9 @@ def write_page(project: Project, compiled: dict, mode: str, name: str) -> Path:
     host = project.host()
     frame, bubble = look_of(project.data, host)
     style = visual_style_key(None, project.data.get("visual_style"))
-    visual = imagery_for_page(project.dir, compiled.get("slides") or [], style)
     page.write_text(page_html(compiled, mode=mode, title=project.data.get("title") or "Explainer",
-                              host=host, pip_frame=frame, bubble=bubble, visual=visual), encoding="utf-8")
+                              host=host, pip_frame=frame, bubble=bubble,
+                              visual={"style": style}), encoding="utf-8")
     return page
 
 
