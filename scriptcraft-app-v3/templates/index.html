@@ -3711,6 +3711,7 @@
                         <div class="xv-tabs">
                             <button class="xv-tab on" data-pane="needs" onclick="xvTab('needs')">Needs you <span id="xvNeedsCount"></span></button>
                             <button class="xv-tab" data-pane="slides" onclick="xvTab('slides')">Slides <span id="xvSlidesCount"></span></button>
+                            <button class="xv-tab" data-pane="clips" onclick="xvTab('clips')">Clips <span id="xvClipCount"></span></button>
                             <button class="xv-tab" data-pane="presenter" onclick="xvTab('presenter')">Presenter <span id="xvHostCount"></span></button>
                             <button class="xv-tab" data-pane="plan" onclick="xvTab('plan')">Plan</button>
                             <button class="xv-tab" data-pane="versions" onclick="xvTab('versions')">Versions</button>
@@ -3725,6 +3726,7 @@
                             </div>
                             <div id="xvSlideList"></div>
                         </div>
+                        <div id="xvPane-clips" class="xv-pane"></div>
                         <div id="xvPane-presenter" class="xv-pane"></div>
                         <div id="xvPane-plan" class="xv-pane"></div>
                         <div id="xvPane-versions" class="xv-pane"></div>
@@ -12156,6 +12158,7 @@ Thank you for watching!`;
         const _xv = { title: '', pid: '', opts: null, state: null, poll: null, t: 0, playing: false, dur: 0,
                       start: 0, end: 0, slides: [], checks: {}, selected: new Set(), frameKey: '', audioPid: '',
                       lastStage: '', images: [] };
+        window._xv = _xv;
         const _XV_HOST_NAMES = { '': 'No presenter', full: 'Full frame', left: 'Left panel', right: 'Right panel', pip: 'Corner window' };
 
         function _xvQ() { return 'title=' + encodeURIComponent(_xv.title); }
@@ -12399,7 +12402,8 @@ Thank you for watching!`;
             const prev = _xv.state;
             _xv.state = d;
             _xvRenderState(prev);
-            const running = d.job && d.job.status === 'running';
+            const downloading = ((d.youtube || {}).videos || []).some(v => v.status === 'downloading');
+            const running = (d.job && d.job.status === 'running') || downloading;
             if (running && !_xv.poll) _xv.poll = setInterval(xvRefresh, 2000);
             if (!running && _xv.poll) { clearInterval(_xv.poll); _xv.poll = null; }
         }
@@ -12438,7 +12442,8 @@ Thank you for watching!`;
             // Preview: reload when the version, values or logos change.
             const note = document.getElementById('xvFrameNote');
             if (s.current) {
-                const key = s.current + '|' + JSON.stringify([s.values, s.logo_choices, s.logos, s.span, s.pip_frame, s.bubble, s.host && [s.host.created, s.host.focus, s.host.sections, s.host.pip_frame]]);
+                const yclips = ((s.youtube || {}).clips || []).map(c => [c.id, c.slide, c.audio, c.file, c.start, c.end, c.status]);
+                const key = s.current + '|' + JSON.stringify([s.values, s.logo_choices, s.logos, s.span, s.pip_frame, s.bubble, yclips, s.host && [s.host.created, s.host.focus, s.host.sections, s.host.pip_frame]]);
                 if (key !== _xv.frameKey) {
                     _xv.frameKey = key;
                     document.getElementById('xvFrame').src = _xvApi('/preview?' + _xvQ() + '&v=' + s.current + '&_=' + Date.now());
@@ -12455,6 +12460,7 @@ Thank you for watching!`;
             }
             _xvRenderNeeds();
             _xvRenderSlides();
+            _xvRenderClips();
             _xvRenderPresenter();
             _xvRenderSpan();
             _xvRenderPlan();
@@ -12479,6 +12485,9 @@ Thank you for watching!`;
                   + (hostLow ? ' ℹ️ The presenter clips are 1080p and will be scaled up: Presenter → Rescan picks up 4K upscales.' : '');
             document.getElementById('xvNeedsCount').textContent = left ? '(' + left + ')' : '';
             document.getElementById('xvSlidesCount').textContent = (s.slides || []).length ? '(' + s.slides.length + ')' : '';
+            const clipN = ((s.youtube || {}).clips || []).length;
+            const clipCount = document.getElementById('xvClipCount');
+            if (clipCount) clipCount.textContent = clipN ? '(' + clipN + ')' : '';
             document.getElementById('xvReviseBtn').disabled = running || !s.current;
             xvScopeChanged();
         }
@@ -12496,6 +12505,13 @@ Thank you for watching!`;
         }
 
         function _xvFmtD(x) { x = Math.max(0, +x || 0); return Math.floor(x / 60) + ':' + (x % 60).toFixed(1).padStart(4, '0'); }
+        function _xvFmtT(s) {
+            s = Math.max(0, +s || 0);
+            const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+            const whole = Math.abs(sec - Math.round(sec)) < 0.05;
+            const ss = whole ? String(Math.round(sec)).padStart(2, '0') : sec.toFixed(2).padStart(5, '0');
+            return h ? h + ':' + String(m).padStart(2, '0') + ':' + ss : m + ':' + ss;
+        }
         function _xvLayoutOpts(sel) {
             return Object.keys(_XV_HOST_NAMES).filter(k => k).map(k => '<option value="' + k + '"' + (sel === k ? ' selected' : '') + '>' + _XV_HOST_NAMES[k] + '</option>').join('');
         }
@@ -12783,6 +12799,142 @@ Thank you for watching!`;
             return server.concat(client);
         }
 
+        function _xvYtClips() { return ((_xv.state && _xv.state.youtube && _xv.state.youtube.clips) || []); }
+        function _xvYtVideos() { return ((_xv.state && _xv.state.youtube && _xv.state.youtube.videos) || []); }
+        function _xvClipName(c) {
+            if (!c) return '';
+            if (c.label) return c.label;
+            const v = _xvYtVideos().find(x => x.id === c.video);
+            return (v && v.title) || c.id;
+        }
+        function _xvClipSelect(slideId, running) {
+            const clips = _xvYtClips().filter(c => c.status === 'ready' || c.ready);
+            if (!clips.length && !_xvYtVideos().length) return '';
+            const cur = _xvYtClips().find(c => c.slide === slideId);
+            const opts = '<option value="">No clip</option>' + clips.map(c =>
+                '<option value="' + _xvEsc(c.id) + '"' + (cur && cur.id === c.id ? ' selected' : '') + '>'
+                + _xvEsc(_xvClipName(c)) + ' · ' + _xvFmt(c.seconds) + '</option>').join('');
+            return '<select class="xv-input" title="YouTube clip for this slide" style="width:auto; max-width:168px; padding:1px 4px; height:auto; font-size:0.95em; margin-left:4px;" data-id="' + _xvEsc(slideId) + '"'
+                + (running ? ' disabled' : '') + ' onclick="event.stopPropagation()" onchange="xvClipAssign(this.dataset.id, this.value)">' + opts + '</select>';
+        }
+        function _xvClipDraftSave() {
+            const g = id => { const el = document.getElementById(id); return el ? el.value : null; };
+            const url = g('xvYtUrl');
+            if (url === null) return;
+            _xv.clipDraft = { url: url, video: g('xvYtVideo'), start: g('xvYtStart'), end: g('xvYtEnd'), label: g('xvYtLabel') };
+        }
+        function _xvClipDraftRestore() {
+            const d = _xv.clipDraft;
+            if (!d) return;
+            const s = (id, v) => { const el = document.getElementById(id); if (el && v !== null && v !== undefined) el.value = v; };
+            s('xvYtUrl', d.url); s('xvYtVideo', d.video); s('xvYtStart', d.start); s('xvYtEnd', d.end); s('xvYtLabel', d.label);
+        }
+        async function _xvYt(body) {
+            _xvClipDraftSave();
+            const d = await _xvPost(_xvApi('/youtube'), body);
+            if (!d.success) { _xvStatus('❌ ' + _xvEsc(d.error || 'Could not update clips.'), '#f87171'); return d; }
+            _xv.state = Object.assign(_xv.state || {}, d);
+            _xv.clipKey = '';
+            _xvRenderState(_xv.state);
+            const downloading = ((d.youtube || {}).videos || []).some(v => v.status === 'downloading');
+            if (downloading && !_xv.poll) _xv.poll = setInterval(xvRefresh, 2000);
+            return d;
+        }
+        async function xvYtDownload() { await _xvYt({ action: 'download', url: (document.getElementById('xvYtUrl') || {}).value || '' }); }
+        async function xvYtAdd() {
+            const video = (document.getElementById('xvYtVideo') || {}).value || '';
+            await _xvYt({ action: 'clip', video: video, start: (document.getElementById('xvYtStart') || {}).value || '',
+                end: (document.getElementById('xvYtEnd') || {}).value || '', label: (document.getElementById('xvYtLabel') || {}).value || '' });
+        }
+        async function xvYtSave(id) {
+            const row = document.querySelector('[data-ytclip="' + CSS.escape(id) + '"]');
+            if (!row) return;
+            const g = k => (row.querySelector('[data-k="' + k + '"]') || {}).value || '';
+            await _xvYt({ action: 'update', id: id, start: g('start'), end: g('end'), label: g('label') });
+        }
+        async function xvYtAudio(id, mode) { await _xvYt({ action: 'audio', id: id, audio: mode }); }
+        async function xvYtRemove(id) { await _xvYt({ action: 'remove', id: id }); }
+        async function xvYtRemoveVideo(id) { await _xvYt({ action: 'remove_video', id: id }); }
+        async function xvClipAssign(slideId, clipId) {
+            const current = _xvYtClips().find(c => c.slide === slideId);
+            if (!clipId) {
+                if (current) await _xvYt({ action: 'assign', id: current.id, slide: '' });
+                return;
+            }
+            await _xvYt({ action: 'assign', id: clipId, slide: slideId });
+        }
+        function _xvRenderClips() {
+            const el = document.getElementById('xvPane-clips');
+            if (!el) return;
+            const s = _xv.state || {};
+            const running = !!(s.job && s.job.status === 'running');
+            const yt = s.youtube || { videos: [], clips: [], timing: '' };
+            const focus = document.activeElement;
+            if (focus && focus.closest && focus.closest('#xvPane-clips') && (focus.tagName === 'INPUT' || focus.tagName === 'SELECT')) {
+                (yt.videos || []).forEach(v => {
+                    const prog = document.getElementById('xvYtProg-' + v.id);
+                    if (!prog) return;
+                    prog.textContent = v.status === 'downloading' ? (v.message || 'Downloading…') : (v.status === 'error' ? '' : '');
+                });
+                return;
+            }
+            const key = JSON.stringify([s.id, running, yt]);
+            if (key === _xv.clipKey) return;
+            _xv.clipKey = key;
+            _xvClipDraftSave();
+            const dis = running ? ' disabled' : '';
+            const ready = (yt.videos || []).filter(v => v.status === 'ready');
+            const audioOpts = [['mute', 'Mute (keep narration)'], ['clip', 'Clip audio only'], ['mix', 'Mix (ducked under narration)']];
+            let html = '<div class="xv-item"><span class="xv-label">YouTube video</span>'
+                + '<div style="color:#64748b; font-size:0.78em; margin:2px 0 8px;">Paste a public YouTube link. It is saved as an mp4 (up to 1080p) in this project’s working/media folder. Private and age-restricted videos are refused. ffmpeg has to be installed.</div>'
+                + '<div style="display:flex; gap:6px;"><input id="xvYtUrl" class="xv-input" placeholder="https://www.youtube.com/watch?v=…" onkeydown="if (event.key===\'Enter\') xvYtDownload()">'
+                + '<button class="xv-btn small primary" onclick="xvYtDownload()"' + dis + '>Download</button></div></div>';
+            (yt.videos || []).forEach(v => {
+                const title = v.title || v.url || v.id;
+                const prog = v.status === 'downloading'
+                    ? '<div id="xvYtProg-' + _xvEsc(v.id) + '" style="color:#fbbf24; margin-top:4px;">⏳ ' + _xvEsc(v.message || 'Downloading…')
+                        + (v.progress ? ' (' + Math.round(v.progress * 100) + '%)' : '') + '</div>'
+                    : (v.status === 'error' ? '<div style="color:#f87171; margin-top:4px;">❌ ' + _xvEsc(v.error || 'Download failed') + '</div>' : '');
+                html += '<div class="xv-item"><div style="display:flex; gap:6px; align-items:center;"><span style="flex:1; min-width:0; color:#e2e8f0; font-weight:650; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + _xvEsc(title) + '">'
+                    + _xvEsc(title) + '</span>'
+                    + (v.seconds ? '<span style="color:#64748b;">' + _xvFmt(v.seconds) + (v.height ? ' · ' + v.height + 'p' : '') + '</span>' : '')
+                    + '<button class="xv-btn small" onclick="xvYtRemoveVideo(\'' + _xvEsc(v.id) + '\')"' + dis + ' title="Remove this video and its clips">✕</button></div>'
+                    + prog + '</div>';
+            });
+            html += '<div class="xv-item"><span class="xv-label">Cut a clip</span>'
+                + '<div style="color:#64748b; font-size:0.78em; margin:2px 0 8px;">Times can be seconds (90), m:ss (1:30) or h:mm:ss (1:02:03). The end has to be after the start and inside the video. Each clip gets an optional label. Unassigned clips stay in this list; pick one on a slide below or on the Slides tab.</div>'
+                + (ready.length ? '<div class="xv-sec" style="flex-wrap:wrap;"><select id="xvYtVideo" class="xv-input" style="flex:1; min-width:140px;">'
+                    + ready.map(v => '<option value="' + _xvEsc(v.id) + '">' + _xvEsc(v.title || v.id) + '</option>').join('') + '</select></div>'
+                    + '<div class="xv-sec" style="flex-wrap:wrap;"><span>In</span><input id="xvYtStart" class="xv-input" placeholder="0:00">'
+                    + '<span>Out</span><input id="xvYtEnd" class="xv-input" placeholder="0:15">'
+                    + '<input id="xvYtLabel" class="xv-input" placeholder="Label (optional)" style="flex:1; min-width:100px;">'
+                    + '<button class="xv-btn small primary" onclick="xvYtAdd()"' + dis + '>Add clip</button></div>'
+                    : '<div style="color:#64748b; font-size:0.78em;">Download a video first.</div>')
+                + '</div>';
+            const slides = s.slides || [];
+            html += (yt.clips || []).map(c => {
+                const on = slides.find(m => m.id === c.slide);
+                const where = c.slide ? (on ? 'On ' + c.slide : 'Was on ' + c.slide + ' (not in this version)') : 'Not on a slide';
+                return '<div class="xv-item" data-ytclip="' + _xvEsc(c.id) + '"><div style="display:flex; gap:6px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">'
+                    + '<input class="xv-input" data-k="label" value="' + _xvEsc(c.label || '') + '" placeholder="Label" style="flex:1; min-width:80px;"' + dis + '>'
+                    + '<input class="xv-input" data-k="start" value="' + _xvFmtT(c.start) + '" style="width:84px;"' + dis + '>'
+                    + '<input class="xv-input" data-k="end" value="' + _xvFmtT(c.end) + '" style="width:84px;"' + dis + '>'
+                    + '<button class="xv-btn small" onclick="xvYtSave(\'' + _xvEsc(c.id) + '\')"' + dis + '>Save</button>'
+                    + '<button class="xv-btn small" onclick="xvYtRemove(\'' + _xvEsc(c.id) + '\')"' + dis + ' title="Remove clip">✕</button></div>'
+                    + '<div class="xv-sec" style="flex-wrap:wrap;"><select class="xv-input" style="flex:1;"' + dis
+                    + ' onchange="xvYtAudio(\'' + _xvEsc(c.id) + '\', this.value)">'
+                    + audioOpts.map(o => '<option value="' + o[0] + '"' + ((c.audio || 'mute') === o[0] ? ' selected' : '') + (o[0] !== 'mute' && !c.has_audio ? ' disabled' : '') + '>' + o[1] + '</option>').join('')
+                    + '</select><span style="color:#64748b;">' + _xvEsc(where) + ' · ' + _xvFmt(c.seconds) + '</span></div>'
+                    + (c.error ? '<div style="color:#f87171;">' + _xvEsc(c.error) + '</div>' : '')
+                    + '</div>';
+            }).join('');
+            html += '<div style="color:#64748b; font-size:0.75em; line-height:1.45; padding:0 2px 8px;">'
+                + _xvEsc(yt.timing || 'The narration keeps the timing. A clip shorter than its slide plays once and holds the last frame (it does not loop). A longer clip stops when the slide ends, so later slides stay on the spoken words.')
+                + '</div>';
+            el.innerHTML = html;
+            _xvClipDraftRestore();
+        }
+
         function _xvRenderSlides() {
             const list = (_xv.state && _xv.state.slides) || [];
             const icon = { scene: '🌃', chapter: '📖', asset: '📋', slide: '🟦' };
@@ -12792,6 +12944,7 @@ Thank you for watching!`;
             const hostSel = m => !hostOn ? '' : '<select class="xv-input" title="Presenter on this slide (no Claude call)" style="width:auto; padding:1px 4px; height:auto; font-size:0.95em; margin-left:4px;" data-id="' + _xvEsc(m.id) + '"'
                 + (running ? ' disabled' : '') + ' onclick="event.stopPropagation()" onchange="xvSlideHost(this.dataset.id, this.value)">'
                 + Object.keys(_XV_HOST_NAMES).map(k => '<option value="' + k + '"' + ((m.host || '') === k ? ' selected' : '') + '>' + (k ? '🧑‍💼 ' : '') + _XV_HOST_NAMES[k] + '</option>').join('') + '</select>';
+            const clipSel = m => _xvClipSelect(m.id, running);
             document.getElementById('xvSlideList').innerHTML = list.length ? list.map(m => {
                 const ws = _xvAllWarnings(m);
                 const major = ws.filter(w => !w.minor);
@@ -12799,7 +12952,7 @@ Thank you for watching!`;
                     + '<input type="checkbox" ' + (_xv.selected.has(m.id) ? 'checked ' : '') + 'onclick="event.stopPropagation(); xvToggleSlide(this.parentNode.dataset.id, this.checked)">'
                     + '<div style="flex:1; min-width:0;"><div><strong style="color:#e2e8f0;">' + _xvEsc(m.id) + '</strong> · ' + _xvFmt(m.t0) + '–' + _xvFmt(m.t1)
                     + ' · ' + (icon[m.kind] || '') + ' ' + _xvEsc(m.kind) + (m.section ? ' · <span style="color:#64748b;">' + _xvEsc(m.section) + '</span>' : '')
-                    + (major.length ? ' <span style="color:#fbbf24;">⚠️ ' + major.length + '</span>' : '') + hostSel(m) + '</div>'
+                    + (major.length ? ' <span style="color:#fbbf24;">⚠️ ' + major.length + '</span>' : '') + hostSel(m) + clipSel(m) + '</div>'
                     + '<div style="color:#94a3b8; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">' + _xvEsc(m.idea || '') + '</div>'
                     + ws.map(w => '<div style="color:' + (w.minor ? '#64748b' : '#fbbf24') + '; font-size:0.95em;">• ' + _xvEsc(w.msg) + '</div>').join('')
                     + '</div></div>';
@@ -12954,6 +13107,9 @@ Thank you for watching!`;
                 xvSeek(_xv.t);
                 document.getElementById('xvChecking').textContent = 'Checking the layout…';
                 fr.contentWindow.postMessage({ xv: 'check' }, '*');
+            } else if (d.xv === 'narration') {
+                const a = document.getElementById('xvAudio');
+                if (a) a.muted = !!d.mute;
             } else if (d.xv === 'checks') {
                 _xv.checks = {};
                 (d.issues || []).forEach(x => { _xv.checks[x.id] = x.issues; });

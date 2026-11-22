@@ -10385,7 +10385,7 @@ def heygen_audio_video_file(job_id):
 import explainer_video as _xv
 
 _XV_STATUSES = {"confirmed", "edited", "filled", "dropped"}
-_XV_FILE_DIRS = ("renders", "final", "stills", "logos", "host")
+_XV_FILE_DIRS = ("renders", "final", "stills", "logos", "host", "working")
 
 
 def _xv_log(msg: str, level: str = "info") -> None:
@@ -10447,6 +10447,7 @@ def _xv_state(p) -> dict:
         "span": d.get("span"), "host": None,
         "pip_frame": _xv.pip_frame_key(None, ((d.get("host") or {}).get("pip_frame") or d.get("pip_frame"))),
         "bubble": _xv.bubble_mode_key(None, d.get("bubble")),
+        "youtube": _xv.yt_public(p),
     }
     host = p.host()
     if host:
@@ -10638,8 +10639,18 @@ def explainer_preview(pid):
     if host and host.get("proxy"):
         host = {**host, "video": (f"/api/explainer/{pid}/file?title={urllib.parse.quote(p.data.get('title') or '')}"
                                   f"&path={urllib.parse.quote(host['proxy'])}&v={int(host.get('created') or 0)}")}
-    page = _xv.page_html(p.compile(n), mode="preview", title=p.data.get("title") or "Explainer", host=host,
-                         pip_frame=frame, bubble=bubble)
+    compiled = p.compile(n)
+    quote_title = urllib.parse.quote(p.data.get("title") or "")
+
+    def _clip_url(rel, _pid=pid, _title=quote_title):
+        return f"/api/explainer/{_pid}/file?title={_title}&path={urllib.parse.quote(rel)}"
+
+    origin = request.host_url.rstrip("/")
+    if not origin.startswith(("http://", "https://")):
+        origin = ""
+    page = _xv.page_html(compiled, mode="preview", title=p.data.get("title") or "Explainer", host=host,
+                         pip_frame=frame, bubble=bubble, clips=_xv.preview_clip_payloads(p, compiled, _clip_url),
+                         media_origin=origin)
     resp = Response(page, mimetype="text/html")
     resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -10666,6 +10677,82 @@ def explainer_file(pid):
         return jsonify({"success": False, "error": "File not found."}), 404
     return send_file(path, conditional=True, as_attachment=request.args.get("download") == "1",
                      download_name=path.name)
+
+
+def _xv_youtube_download(p, url: str):
+    """Start a yt-dlp download into the project's working/media folder."""
+    problem = _xv.youtube_url_problem(url)
+    if problem:
+        return jsonify({"success": False, "error": problem}), 400
+    try:
+        _xv.require_ffmpeg()
+        _xv.ytdlp_base_cmd()
+    except _xv.YoutubeError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    rec, created = _xv.yt_begin_video(p, url)
+    if not created:
+        return jsonify({"success": True, **_xv_state(p)})
+    vid = rec["id"]
+
+    def work():
+        try:
+            last = {"p": -1.0}
+
+            def progress(frac, msg, _last=last):
+                if frac < 0.999 and frac - _last["p"] < 0.05:
+                    return
+                _last["p"] = frac
+                _xv.yt_update_video(p, vid, progress=round(frac, 3), message=msg)
+
+            info = _xv.yt_download(url, p.dir / rec["file"], on_progress=progress, video_id=vid)
+            _xv.yt_finish_video(p, vid, info)
+            _xv_log(f"⬇️ YouTube video for the explainer: {info.get('title') or url}")
+        except _xv.YoutubeError as e:
+            _xv.yt_update_video(p, vid, status="error", error=str(e), progress=0, message="")
+            _xv_log(f"⚠️ YouTube download failed: {e}", "warning")
+        except Exception as e:
+            _xv.yt_update_video(p, vid, status="error", error="The download failed. " + str(e)[:240],
+                               progress=0, message="")
+            _xv_log(f"❌ YouTube download failed: {e}", "error")
+
+    threading.Thread(target=work, name=f"yt-{vid}", daemon=True).start()
+    return jsonify({"success": True, **_xv_state(p)})
+
+
+@app.route("/api/explainer/<pid>/youtube", methods=["POST"])
+def explainer_youtube(pid):
+    """Download a public YouTube video, cut clips, and assign them to slides."""
+    data = request.get_json(silent=True) or {}
+    p = _xv_project((data.get("title") or "").strip(), pid)
+    if p is None:
+        return jsonify({"success": False, "error": "Project not found."}), 404
+    action = (data.get("action") or "").strip()
+    try:
+        if action == "download":
+            return _xv_youtube_download(p, (data.get("url") or "").strip())
+        if action == "clip":
+            _xv.yt_add_clip(p, (data.get("video") or "").strip(), data.get("start"), data.get("end"),
+                            label=(data.get("label") or ""))
+        elif action == "update":
+            _xv.yt_update_clip(p, (data.get("id") or "").strip(), start=data.get("start"),
+                               end=data.get("end"), label=data.get("label"))
+        elif action == "audio":
+            _xv.yt_set_audio(p, (data.get("id") or "").strip(), (data.get("audio") or "").strip())
+        elif action == "assign":
+            known = None
+            if p.data.get("current"):
+                known = {m["id"] for m in p.compile().get("slides") or []}
+            _xv.yt_assign(p, (data.get("id") or "").strip(), data.get("slide") or "", known=known)
+        elif action == "remove":
+            _xv.yt_delete_clip(p, (data.get("id") or "").strip())
+        elif action == "remove_video":
+            _xv.yt_cancel((data.get("id") or "").strip())
+            _xv.yt_delete_video(p, (data.get("id") or "").strip())
+        else:
+            return jsonify({"success": False, "error": "Unknown clip action."}), 400
+    except _xv.YoutubeError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    return jsonify({"success": True, **_xv_state(p)})
 
 
 @app.route("/api/explainer/<pid>/values", methods=["POST"])

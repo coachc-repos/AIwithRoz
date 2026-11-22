@@ -4,7 +4,10 @@
    Slides, cues and camera keys carry times the server resolved from the
    narration (data-t0/t1, data-t, data-tout, data-camt). Slides with
    data-host leave the presenter's area see-through: the renderer puts the
-   footage under the frame, the preview plays a small copy of it there. */
+   footage under the frame, the preview plays a small copy of it there.
+   An assigned YouTube clip covers that slide, fitted inside the frame.
+   A shorter clip holds its last frame until the slide ends (it does not
+   loop). A longer clip stops when the slide ends. */
 (function () {
     'use strict';
     var CFG = window.__EXPLAINER || {};
@@ -12,6 +15,7 @@
     var DUR = +CFG.duration || 1;
     var SECTIONS = CFG.sections || [];
     var HOST = CFG.host || { on: false };
+    var CLIPS = CFG.clips || [];
     var LAYOUTS = HOST.layouts || {};
     var SECS = HOST.sections || [];      // presenter sections the user placed: {t0, t1, layout}
     var SFADE = +HOST.fade || 0.3;
@@ -28,6 +32,73 @@
     var hudR = document.getElementById('hud-right');
     var hud = document.getElementById('hud');
     var bar = document.getElementById('progress');
+
+    // YouTube clip for the slide on screen. Preview only: the renderer lays
+    // the same file on with ffmpeg and holds the last frame the same way.
+    var clipVid = null;
+    var clipId = '';
+    var clipLocal = 0;
+    var clipPlaying = false;
+    if (MODE === 'preview' && CLIPS.length) {
+        clipVid = document.createElement('video');
+        clipVid.playsInline = true;
+        clipVid.preload = 'auto';
+        clipVid.muted = true;
+        clipVid.setAttribute('playsinline', '');
+        clipVid.style.cssText = 'position:absolute; left:0; top:0; width:1920px; height:1080px; object-fit:contain; background:#000; z-index:800; visibility:hidden; pointer-events:none;';
+        clipVid.onloadedmetadata = applyClip;
+        clipVid.onloadeddata = applyClip;
+        clipVid.oncanplay = applyClip;
+        stage.appendChild(clipVid);
+    }
+    function applyClip() {
+        if (!clipVid || !clipId) return;
+        var dur = clipVid.duration;
+        // A zero-length seekable range means the browser has not buffered a frame yet.
+        var end = clipVid.seekable && clipVid.seekable.length ? clipVid.seekable.end(clipVid.seekable.length - 1) : 0;
+        if (!dur || !isFinite(dur) || end < 0.05) return;
+        var local = clipLocal;
+        // A shorter clip holds its last frame. It does not loop.
+        var hold = local >= dur - 0.05;
+        var want = hold ? Math.max(0, Math.min(dur, end) - 0.04) : Math.min(local, Math.max(0, Math.min(dur, end) - 0.04));
+        if (hold || !clipPlaying) {
+            if (!clipVid.paused) clipVid.pause();
+            if (Math.abs(clipVid.currentTime - want) > 0.05) clipVid.currentTime = want;
+        } else if (clipVid.paused) {
+            clipVid.currentTime = want;
+            var pr = clipVid.play();
+            if (pr && pr.catch) pr.catch(function () {});
+        } else if (Math.abs(clipVid.currentTime - want) > 0.3) clipVid.currentTime = want;
+    }
+    function clipAt(t) {
+        var best = null;
+        for (var i = 0; i < CLIPS.length; i++) {
+            var c = CLIPS[i];
+            if (t >= +c.t0 && t < +c.t1) best = c;
+        }
+        return best;
+    }
+    function placeClip(t, playing) {
+        if (!clipVid) return null;
+        var c = clipAt(t);
+        if (!c) {
+            clipVid.style.visibility = 'hidden';
+            if (!clipVid.paused) clipVid.pause();
+            clipId = '';
+            return null;
+        }
+        clipVid.style.visibility = '';
+        clipLocal = Math.max(0, t - (+c.t0));
+        clipPlaying = !!playing;
+        if (clipId !== c.id || clipVid.getAttribute('src') !== c.src) {
+            clipId = c.id;
+            clipVid.muted = c.audio === 'mute';
+            clipVid.volume = c.audio === 'mix' ? 0.2 : 1;
+            if (clipVid.getAttribute('src') !== c.src) clipVid.src = c.src;
+        }
+        applyClip();
+        return c;
+    }
 
     function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
     var E = {
@@ -613,7 +684,13 @@
         var lastT = 0;
         window.addEventListener('message', function (ev) {
             var d = ev.data || {};
-            if (d.xv === 'seek') { lastT = +d.t || 0; seek(lastT); syncHost(lastT, !!d.playing); }
+            if (d.xv === 'seek') {
+                lastT = +d.t || 0;
+                seek(lastT);
+                syncHost(lastT, !!d.playing);
+                var shown = placeClip(lastT, !!d.playing);
+                parent.postMessage({ xv: 'narration', mute: !!(shown && shown.audio === 'clip') }, '*');
+            }
             else if (d.xv === 'check') {
                 var issues = check();
                 seek(lastT);

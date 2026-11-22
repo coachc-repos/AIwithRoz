@@ -26,3 +26,6 @@ autogen-core>=0.4.0
 tweepy>=4.14.0
 youtube-transcript-api>=1.0.0
 pypdf>=4.0.0
+
+# YouTube clip import for the explainer. The image already installs ffmpeg.
+yt-dlp>=2025.1.15
