@@ -36,6 +36,15 @@ character can hold a short line taken from that slide's narration, lower
 left, only where it stays clear of the presenter. Both are drawn locally,
 and both can be turned off.
 
+YouTube clips: a public video URL is saved with yt-dlp as an mp4 (1080p max;
+ffmpeg merges the tracks) under the project's working/media folder. The user
+marks one or more ranges and ffmpeg re-encodes each cut. A clip can be
+assigned to a slide. The narration keeps the clock: a shorter clip holds its
+last frame until the slide ends (it does not loop), and a longer clip stops
+when the slide ends, so later slides stay on the spoken words. Per clip, the
+audio is muted under the narration (the default), replaces the narration, or
+is sidechain-ducked under it.
+
 The module has no Flask dependency; web_gui.py wires the routes and passes in
 the Anthropic client, the ElevenLabs key and its pause detector.
 """
@@ -62,6 +71,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -322,6 +332,792 @@ def media_seconds(path: Path) -> float:
     r = _run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
               "-of", "default=nw=1:nk=1", str(path)], timeout=60)
     return float(r.stdout.strip() or 0)
+
+
+# ---------------------------------------------------------------------------
+# YouTube clips. Downloads live in <project>/working/media. Assignments and
+# the per-clip audio choice are stored on project.json under "youtube", the
+# same save the presenter share, corner frame and guide bubble use. A project
+# with no "youtube" key is unchanged.
+# ---------------------------------------------------------------------------
+
+# Prefer an mp4 at or under 1080p. ffmpeg merges video+audio when the best
+# pair is split, and a non-mp4 result is re-encoded to mp4 afterwards.
+YT_FORMAT = (
+    "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/"
+    "bv*[height<=1080][ext=mp4]+ba/"
+    "bv*[height<=1080]+ba/"
+    "b[height<=1080][ext=mp4]/"
+    "b[height<=1080]/b"
+)
+YT_AUDIO_MODES = ("mute", "clip", "mix")
+YT_AUDIO_DEFAULT = "mute"
+# The narration keeps the clock. Documented here and in the clips tab.
+CLIP_TIMING_NOTE = (
+    "The narration keeps the timing. A clip shorter than its slide plays once and "
+    "holds the last frame (it does not loop). A longer clip stops when the slide "
+    "ends, so later slides stay on the spoken words."
+)
+_YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be"}
+_YT_ID_RE = re.compile(r"^[\w-]{6,}$")
+_YT_CANCELS: dict = {}
+_YT_CANCEL_LOCK = threading.Lock()
+
+
+class YoutubeError(Exception):
+    """A download, cut or clip edit the user can act on. `kind` is a short tag."""
+
+    def __init__(self, message: str, kind: str = "error"):
+        super().__init__(message)
+        self.kind = kind
+
+
+class _YtCancel:
+    def __init__(self):
+        self.event = threading.Event()
+        self.proc = None
+
+
+def parse_timecode(text) -> float:
+    """Seconds from '90', '90.5', '1:30', '1:05.25' or '1:02:03.5'."""
+    raw = ("" if text is None else str(text)).strip()
+    if not raw:
+        raise YoutubeError("Enter a time: seconds, m:ss, or h:mm:ss.")
+    if re.fullmatch(r"\d+(?:\.\d+)?", raw):
+        return round(float(raw), 3)
+    m = re.fullmatch(r"(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)", raw)
+    if not m:
+        raise YoutubeError(f"Can't read “{raw}”. Use seconds (90), m:ss (1:30), or h:mm:ss (1:02:03).")
+    hours = int(m.group(1) or 0)
+    minutes = int(m.group(2))
+    seconds = float(m.group(3))
+    if seconds >= 60:
+        raise YoutubeError(f"Seconds in “{raw}” must be under 60.")
+    if m.group(1) is not None and minutes >= 60:
+        raise YoutubeError(f"Minutes in “{raw}” must be under 60.")
+    return round(hours * 3600 + minutes * 60 + seconds, 3)
+
+
+def validate_clip_range(start: float, end: float, duration: float) -> "tuple[float, float]":
+    """end must be after start, and both must sit inside the download."""
+    start, end = round(float(start), 3), round(float(end), 3)
+    if start < 0:
+        raise YoutubeError("The start time can't be negative.")
+    if end <= start:
+        raise YoutubeError("The end time has to be after the start.")
+    if end - start < 0.2:
+        raise YoutubeError("A clip has to be at least 0.2 seconds.")
+    if duration and end > float(duration) + 0.05:
+        raise YoutubeError(f"That range goes past the video ({fmt_secs(duration)}).")
+    if duration:
+        end = min(end, round(float(duration), 3))
+    return start, end
+
+
+def youtube_url_problem(url: str) -> Optional[str]:
+    """A reason to refuse `url` before calling yt-dlp, or None when it is a video link."""
+    raw = (url or "").strip()
+    if not raw:
+        return "Paste a YouTube URL."
+    try:
+        parts = urllib.parse.urlparse(raw)
+    except Exception:
+        return "That doesn't look like a YouTube link. Paste a youtube.com or youtu.be URL."
+    host = (parts.hostname or "").lower()
+    if parts.scheme not in ("http", "https") or host not in _YT_HOSTS:
+        return "That doesn't look like a YouTube link. Paste a youtube.com or youtu.be URL."
+    if host.endswith("youtu.be"):
+        vid = parts.path.strip("/").split("/")[0]
+    else:
+        path = parts.path or ""
+        if "/shorts/" in path:
+            vid = path.split("/shorts/", 1)[1].split("/")[0]
+        elif "/embed/" in path:
+            vid = path.split("/embed/", 1)[1].split("/")[0]
+        elif "/live/" in path:
+            vid = path.split("/live/", 1)[1].split("/")[0]
+        else:
+            vid = (urllib.parse.parse_qs(parts.query).get("v") or [""])[0]
+    if not _YT_ID_RE.match(vid or ""):
+        return "That YouTube link is missing the video id."
+    return None
+
+
+def classify_ytdlp_error(text: str) -> str:
+    """A short message for a yt-dlp failure (bad URL, private, age-restricted, no ffmpeg)."""
+    raw = (text or "").strip()
+    t = raw.lower()
+    if "no module named" in t and "yt_dlp" in t:
+        return "yt-dlp is not installed. From the app folder run: pip install -r requirements.txt"
+    if "ffmpeg" in t and any(s in t for s in ("not found", "not installed", "merging")):
+        return ("ffmpeg is not installed, so the download can't be merged into an mp4. "
+                "Install ffmpeg and try again.")
+    if "not a bot" in t or ("sign in to confirm" in t and "bot" in t):
+        return ("YouTube blocked the download and asked to confirm this is not a bot. "
+                "Public videos usually work from a home network; this one was refused.")
+    if "age" in t and any(s in t for s in ("restrict", "confirm your age", "sign in to confirm")):
+        return "That video is age-restricted. YouTube won't hand it over without a signed-in account."
+    if "private video" in t or "video is private" in t:
+        return "That video is private, so it can't be downloaded."
+    if "sign in" in t and any(s in t for s in ("private", "bot", "confirm", "age")):
+        return "YouTube asked for a sign-in (private or age-restricted). This download only works for public videos."
+    if any(s in t for s in ("unsupported url", "incomplete youtube id", "is not a valid url")):
+        return "That doesn't look like a YouTube link. Paste a youtube.com or youtu.be URL."
+    if any(s in t for s in ("video unavailable", "has been removed", "account associated with this video")):
+        return "YouTube says that video is unavailable."
+    last = raw.splitlines()[-1] if raw else ""
+    return "The download failed. " + last[:300]
+
+
+def require_ffmpeg() -> str:
+    found = shutil.which("ffmpeg")
+    if not found:
+        raise YoutubeError(
+            "ffmpeg is not installed, so the download can't be merged into an mp4 and clips can't be cut. "
+            "Install ffmpeg and try again.", "ffmpeg")
+    return found
+
+
+def ytdlp_base_cmd(*, require: bool = True) -> list:
+    """How to launch yt-dlp. `require=False` still returns the module command so
+    tests can inspect it without the package installed."""
+    import importlib.util
+    if importlib.util.find_spec("yt_dlp") is not None:
+        return [sys.executable, "-m", "yt_dlp"]
+    found = shutil.which("yt-dlp")
+    if found:
+        return [found]
+    if not require:
+        return [sys.executable, "-m", "yt_dlp"]
+    raise YoutubeError(
+        "yt-dlp is not installed. From the app folder run: pip install -r requirements.txt", "ytdlp")
+
+
+def ytdlp_dump_cmd(url: str) -> list:
+    return [*ytdlp_base_cmd(require=False), "--no-playlist", "--no-warnings", "--dump-single-json",
+            "--skip-download", url]
+
+
+def ytdlp_get_cmd(url: str, dest: Path) -> list:
+    tmpl = str(Path(dest).with_name(Path(dest).stem + ".download.%(ext)s"))
+    return [*ytdlp_base_cmd(require=False), "--no-playlist", "--no-warnings", "--newline",
+            "--merge-output-format", "mp4", "-f", YT_FORMAT, "-o", tmpl, url]
+
+
+def _yt_progress_line(line: str, on_progress: Optional[Callable[[float, str], None]]) -> None:
+    if not on_progress:
+        return
+    m = re.search(r"\[download\]\s+(\d+(?:\.\d+)?)%", line or "")
+    if m:
+        frac = float(m.group(1)) / 100.0
+        on_progress(frac, f"Downloading… {float(m.group(1)):.0f}%")
+        return
+    low = (line or "").lower()
+    if "merger" in low or "merging formats" in low:
+        on_progress(0.99, "Merging video and audio into an mp4…")
+
+
+def _reject_unavailable(info: dict) -> None:
+    avail = str(info.get("availability") or "").lower()
+    age = int(info.get("age_limit") or 0)
+    if avail in ("private", "needs_auth", "premium_only", "subscriber_only"):
+        if age >= 18 or "age" in avail:
+            raise YoutubeError(
+                "That video is age-restricted. YouTube won't hand it over without a signed-in account.", "age")
+        if avail == "private":
+            raise YoutubeError("That video is private, so it can't be downloaded.", "private")
+        raise YoutubeError("That video needs a sign-in, so it can't be downloaded.", "private")
+    live = str(info.get("live_status") or "").lower()
+    if info.get("is_live") or live in ("is_live", "is_upcoming"):
+        raise YoutubeError("Live streams can't be saved as clips. Use a finished video.")
+    try:
+        duration = float(info.get("duration") or 0)
+    except (TypeError, ValueError):
+        duration = 0
+    if duration <= 0:
+        raise YoutubeError("YouTube did not report a length for that video, so it can't be cut into clips.")
+
+
+def _run_ytdlp(cmd: list, *, timeout: float, on_line: Optional[Callable[[str], None]] = None,
+               runner=None, cancel: Optional[_YtCancel] = None) -> subprocess.CompletedProcess:
+    if runner is not None:
+        return runner(cmd, stream=bool(on_line))
+    if on_line is None and cancel is None:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    if cancel is not None:
+        cancel.proc = proc
+    lines: list = []
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            lines.append(line)
+            if on_line:
+                on_line(line.rstrip("\n"))
+            if cancel is not None and cancel.event.is_set():
+                proc.kill()
+                break
+        try:
+            rc = proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rc = proc.wait(timeout=10)
+    finally:
+        if cancel is not None:
+            cancel.proc = None
+    return subprocess.CompletedProcess(cmd, rc, "".join(lines), "")
+
+
+def _take_download(dest: Path) -> None:
+    """Move yt-dlp's file onto `dest` as mp4 (re-encode when the download is not already mp4)."""
+    folder, stem = dest.parent, dest.stem
+    found = [p for p in folder.glob(stem + ".download.*")
+             if p.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov", ".m4v"} and not p.name.endswith(".part")]
+    if not found:
+        raise YoutubeError("yt-dlp finished without a video file.")
+    src = max(found, key=lambda p: p.stat().st_mtime)
+    if src.suffix.lower() == ".mp4":
+        if dest.exists():
+            dest.unlink()
+        src.replace(dest)
+        return
+    require_ffmpeg()
+    tmp = dest.with_suffix(".transcode.mp4")
+    _run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src),
+          "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(tmp)])
+    tmp.replace(dest)
+    src.unlink(missing_ok=True)
+
+
+def yt_info_from_dump(info: dict) -> dict:
+    _reject_unavailable(info)
+    return {"title": str(info.get("title") or "YouTube video")[:180],
+            "youtube_id": str(info.get("id") or "")[:32],
+            "seconds": round(float(info.get("duration") or 0), 3),
+            "width": int(info.get("width") or 0), "height": int(info.get("height") or 0)}
+
+
+def yt_download(url: str, dest: Path, *, on_progress: Optional[Callable[[float, str], None]] = None,
+                runner=None, video_id: str = "") -> dict:
+    """Download one public YouTube video to `dest` (mp4, capped at 1080p).
+
+    `runner(cmd, stream=False)` replaces the subprocess in tests. It must
+    return a CompletedProcess; for the download command it also creates the
+    `*.download.mp4` file yt-dlp would have written.
+    """
+    problem = youtube_url_problem(url)
+    if problem:
+        raise YoutubeError(problem, "bad_url")
+    if runner is None:
+        require_ffmpeg()
+        ytdlp_base_cmd()
+    cancel = None
+    if video_id:
+        cancel = _YtCancel()
+        with _YT_CANCEL_LOCK:
+            _YT_CANCELS[video_id] = cancel
+    try:
+        if cancel is not None and cancel.event.is_set():
+            raise YoutubeError("Download cancelled.")
+        dumped = _run_ytdlp(ytdlp_dump_cmd(url), timeout=180, runner=runner)
+        if dumped.returncode != 0:
+            raise YoutubeError(classify_ytdlp_error((dumped.stderr or "") + "\n" + (dumped.stdout or "")))
+        try:
+            info = json.loads(dumped.stdout or "{}")
+        except json.JSONDecodeError as e:
+            raise YoutubeError("yt-dlp did not return video details. " + classify_ytdlp_error(dumped.stdout or "")) from e
+        meta = yt_info_from_dump(info)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if on_progress:
+            on_progress(0.01, "Starting the download…")
+
+        def line(text, _cb=on_progress):
+            _yt_progress_line(text, _cb)
+
+        got = _run_ytdlp(ytdlp_get_cmd(url, dest), timeout=3600, on_line=line, runner=runner, cancel=cancel)
+        if cancel is not None and cancel.event.is_set():
+            raise YoutubeError("Download cancelled.")
+        if got.returncode != 0:
+            raise YoutubeError(classify_ytdlp_error(got.stdout or got.stderr or ""))
+        _take_download(dest)
+        probed = probe_video(dest)
+        if probed:
+            meta["seconds"] = probed["seconds"]
+            meta["width"] = probed["w"]
+            meta["height"] = probed["h"]
+            meta["has_audio"] = bool(probed["audio"])
+        else:
+            meta["has_audio"] = True
+        if on_progress:
+            on_progress(1.0, "Ready")
+        return meta
+    finally:
+        if video_id:
+            with _YT_CANCEL_LOCK:
+                _YT_CANCELS.pop(video_id, None)
+
+
+def yt_cancel(video_id: str) -> None:
+    with _YT_CANCEL_LOCK:
+        job = _YT_CANCELS.get(video_id)
+    if not job:
+        return
+    job.event.set()
+    proc = job.proc
+    if proc is not None and proc.poll() is None:
+        proc.kill()
+
+
+def load_youtube(data: Optional[dict]) -> dict:
+    """The saved videos and clips. Missing or odd data becomes an empty pair."""
+    raw = (data or {}).get("youtube") if isinstance(data, dict) else None
+    if not isinstance(raw, dict):
+        return {"videos": [], "clips": []}
+    videos = [dict(v) for v in raw.get("videos") or [] if isinstance(v, dict) and v.get("id")]
+    clips = [dict(c) for c in raw.get("clips") or [] if isinstance(c, dict) and c.get("id")]
+    return {"videos": videos, "clips": clips}
+
+
+def _yt_mutate(project: "Project", fn: Callable):
+    with project.lock:
+        bundle = load_youtube(project.data)
+        result = fn(bundle)
+        project.data["youtube"] = {"videos": bundle["videos"], "clips": bundle["clips"]}
+        project.save()
+        return result
+
+
+def yt_update_video(project: "Project", video_id: str, **fields) -> None:
+    def edit(bundle):
+        for v in bundle["videos"]:
+            if v.get("id") == video_id:
+                v.update(fields)
+                return v
+        return None
+    _yt_mutate(project, edit)
+
+
+def yt_begin_video(project: "Project", url: str) -> "tuple[dict, bool]":
+    """A downloading record for `url`. The bool is False when one is already in progress or ready."""
+    created = {"ok": False}
+
+    def edit(bundle, _url=url.strip()):
+        for v in bundle["videos"]:
+            if v.get("url") != _url:
+                continue
+            if v.get("status") == "error":
+                v.update(status="downloading", error="", progress=0, message="Starting the download…")
+                created["ok"] = True
+                return v
+            return v
+        vid = "yt_" + uuid.uuid4().hex[:8]
+        (project.dir / "working" / "media").mkdir(parents=True, exist_ok=True)
+        rec = {"id": vid, "url": _url, "title": "", "youtube_id": "", "file": f"working/media/{vid}.mp4",
+               "seconds": 0, "width": 0, "height": 0, "has_audio": True, "status": "downloading",
+               "error": "", "progress": 0, "message": "Starting the download…", "created": time.time()}
+        bundle["videos"].append(rec)
+        created["ok"] = True
+        return rec
+    rec = _yt_mutate(project, edit)
+    return rec, bool(created["ok"])
+
+
+def yt_finish_video(project: "Project", video_id: str, info: dict) -> None:
+    yt_update_video(project, video_id, status="ready", error="", progress=1, message="Ready",
+                    title=info.get("title") or "", youtube_id=info.get("youtube_id") or "",
+                    seconds=info.get("seconds") or 0, width=info.get("width") or 0,
+                    height=info.get("height") or 0, has_audio=bool(info.get("has_audio", True)))
+
+
+def _clip_label(text) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()[:80]
+
+
+def cut_clip_cmd(src: Path, dest: Path, start: float, end: float, *, audio: bool = True) -> list:
+    """Accurate cut: decode from the start of the file, then re-encode the range."""
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src),
+           "-ss", f"{float(start):.3f}", "-to", f"{float(end):.3f}",
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"]
+    cmd += ["-c:a", "aac", "-b:a", "160k"] if audio else ["-an"]
+    cmd += ["-movflags", "+faststart", str(dest)]
+    return cmd
+
+
+def _cut_range(src: Path, dest: Path, start: float, end: float, *, run=None) -> bool:
+    """Write the cut. Returns whether the cut has an audio track."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    cmd = cut_clip_cmd(src, dest, start, end, audio=True)
+    if run is not None:
+        got = run(cmd)
+        if getattr(got, "returncode", 1) != 0:
+            raise YoutubeError("Could not cut that clip. " + ((getattr(got, "stderr", "") or "")[-240:]))
+        return True
+    require_ffmpeg()
+    try:
+        _run(cmd)
+        return True
+    except RuntimeError as first:
+        msg = str(first).lower()
+        if "audio" not in msg and "matches no streams" not in msg and "stream specifier" not in msg:
+            if "ffmpeg" in msg and "not found" in msg:
+                raise YoutubeError(
+                    "ffmpeg is not installed, so the clip can't be cut. Install ffmpeg and try again.", "ffmpeg") from first
+            raise YoutubeError("Could not cut that clip. " + str(first)[-240:]) from first
+        try:
+            _run(cut_clip_cmd(src, dest, start, end, audio=False))
+        except RuntimeError as second:
+            raise YoutubeError("Could not cut that clip. " + str(second)[-240:]) from second
+        return False
+
+
+def _video_of(bundle: dict, video_id: str) -> dict:
+    video = next((v for v in bundle["videos"] if v.get("id") == video_id), None)
+    if video is None or video.get("status") != "ready":
+        raise YoutubeError("Download a video before cutting clips from it.")
+    return video
+
+
+def yt_add_clip(project: "Project", video_id: str, start_text, end_text, label: str = "", *, run=None) -> dict:
+    with project.lock:
+        bundle = load_youtube(project.data)
+        video = _video_of(bundle, video_id)
+        start, end = validate_clip_range(parse_timecode(start_text), parse_timecode(end_text),
+                                         float(video.get("seconds") or 0))
+        src = project.dir / (video.get("file") or "")
+        if not src.is_file():
+            raise YoutubeError("The downloaded video file is missing. Download it again.")
+        cid = "yc_" + uuid.uuid4().hex[:8]
+        rel = f"working/media/{cid}.mp4"
+        width, height = int(video.get("width") or 0), int(video.get("height") or 0)
+        has_src_audio = bool(video.get("has_audio", True))
+    dest = project.dir / rel
+    has_audio = _cut_range(src, dest, start, end, run=run) and has_src_audio
+    probed = probe_video(dest)
+    if probed:
+        width, height = probed["w"], probed["h"]
+        has_audio = bool(probed["audio"])
+    rec = {"id": cid, "video": video_id, "label": _clip_label(label), "start": start, "end": end,
+           "file": rel, "seconds": round(end - start, 3), "width": width, "height": height,
+           "has_audio": has_audio, "audio": YT_AUDIO_DEFAULT, "slide": "", "status": "ready",
+           "error": "", "created": time.time()}
+
+    def add(bundle, _rec=rec, _vid=video_id):
+        if not any(v.get("id") == _vid for v in bundle["videos"]):
+            dest.unlink(missing_ok=True)
+            raise YoutubeError("That video was removed before the clip was saved.")
+        bundle["clips"].append(_rec)
+        return _rec
+    return _yt_mutate(project, add)
+
+
+def yt_update_clip(project: "Project", clip_id: str, *, start=None, end=None, label=None, run=None) -> dict:
+    with project.lock:
+        bundle = load_youtube(project.data)
+        clip = next((c for c in bundle["clips"] if c.get("id") == clip_id), None)
+        if clip is None:
+            raise YoutubeError("That clip is no longer in the list.")
+        video = _video_of(bundle, clip.get("video") or "")
+        new_start = clip["start"] if start is None else parse_timecode(start)
+        new_end = clip["end"] if end is None else parse_timecode(end)
+        new_start, new_end = validate_clip_range(new_start, new_end, float(video.get("seconds") or 0))
+        src = project.dir / (video.get("file") or "")
+        rel = clip.get("file") or f"working/media/{clip_id}.mp4"
+        recut = abs(new_start - float(clip["start"])) > 0.001 or abs(new_end - float(clip["end"])) > 0.001
+        new_label = clip.get("label") if label is None else _clip_label(label)
+        has_src_audio = bool(video.get("has_audio", True))
+    has_audio = bool(clip.get("has_audio", True))
+    if recut:
+        if not src.is_file():
+            raise YoutubeError("The downloaded video file is missing. Download it again.")
+        has_audio = _cut_range(src, project.dir / rel, new_start, new_end, run=run) and has_src_audio
+        probed = probe_video(project.dir / rel)
+        if probed:
+            has_audio = bool(probed["audio"])
+
+    def edit(bundle, _id=clip_id):
+        cur = next((c for c in bundle["clips"] if c.get("id") == _id), None)
+        if cur is None:
+            raise YoutubeError("That clip is no longer in the list.")
+        cur["start"], cur["end"] = new_start, new_end
+        cur["seconds"] = round(new_end - new_start, 3)
+        cur["label"] = new_label
+        cur["file"] = rel
+        cur["has_audio"] = has_audio
+        cur["status"] = "ready"
+        cur["error"] = ""
+        if not has_audio:
+            cur["audio"] = "mute"
+        return cur
+    return _yt_mutate(project, edit)
+
+
+def yt_set_audio(project: "Project", clip_id: str, mode: str) -> dict:
+    if mode not in YT_AUDIO_MODES:
+        raise YoutubeError("Audio must be mute (keep narration), clip audio only, or mix.")
+
+    def edit(bundle, _id=clip_id, _mode=mode):
+        cur = next((c for c in bundle["clips"] if c.get("id") == _id), None)
+        if cur is None:
+            raise YoutubeError("That clip is no longer in the list.")
+        if _mode != "mute" and not cur.get("has_audio", True):
+            raise YoutubeError("This clip has no audio track, so it stays muted under the narration.")
+        cur["audio"] = _mode
+        return cur
+    return _yt_mutate(project, edit)
+
+
+def yt_assign(project: "Project", clip_id: str, slide: str, *, known: Optional[set] = None) -> dict:
+    """Put the clip on one slide. Another clip already on that slide is unassigned."""
+    slide = (slide or "").strip()
+    if slide and (known is None or slide not in known):
+        raise YoutubeError("That slide is not in this version." if known else "Build the slides before assigning a clip.")
+
+    def edit(bundle, _id=clip_id, _slide=slide):
+        cur = next((c for c in bundle["clips"] if c.get("id") == _id), None)
+        if cur is None:
+            raise YoutubeError("That clip is no longer in the list.")
+        if _slide:
+            for other in bundle["clips"]:
+                if other.get("id") != _id and other.get("slide") == _slide:
+                    other["slide"] = ""
+        cur["slide"] = _slide
+        return cur
+    return _yt_mutate(project, edit)
+
+
+def _unlink_rel(project: "Project", rel: str) -> None:
+    if not rel or ".." in Path(rel).parts:
+        return
+    path = project.dir / rel
+    try:
+        if path.is_file() and (project.dir / "working").resolve() in path.resolve().parents:
+            path.unlink()
+    except OSError:
+        pass
+
+
+def yt_delete_clip(project: "Project", clip_id: str) -> None:
+    removed = {}
+
+    def edit(bundle, _id=clip_id):
+        keep = []
+        for c in bundle["clips"]:
+            if c.get("id") == _id:
+                removed["file"] = c.get("file") or ""
+            else:
+                keep.append(c)
+        if "file" not in removed:
+            raise YoutubeError("That clip is no longer in the list.")
+        bundle["clips"] = keep
+    _yt_mutate(project, edit)
+    _unlink_rel(project, removed.get("file") or "")
+
+
+def yt_delete_video(project: "Project", video_id: str) -> None:
+    removed: list = []
+
+    def edit(bundle, _id=video_id):
+        video = next((v for v in bundle["videos"] if v.get("id") == _id), None)
+        if video is None:
+            raise YoutubeError("That video is no longer in the list.")
+        removed.append(video.get("file") or "")
+        bundle["videos"] = [v for v in bundle["videos"] if v.get("id") != _id]
+        kept = []
+        for c in bundle["clips"]:
+            if c.get("video") == _id:
+                removed.append(c.get("file") or "")
+            else:
+                kept.append(c)
+        bundle["clips"] = kept
+    _yt_mutate(project, edit)
+    for rel in removed:
+        _unlink_rel(project, rel)
+
+
+def yt_public(project: "Project") -> dict:
+    """What the dialog shows. Paths stay relative to the project folder."""
+    bundle = load_youtube(project.data)
+    videos, clips = [], []
+    for v in bundle["videos"]:
+        rel = v.get("file") or ""
+        videos.append({"id": v.get("id"), "url": v.get("url") or "", "title": v.get("title") or "",
+                       "youtube_id": v.get("youtube_id") or "", "seconds": v.get("seconds") or 0,
+                       "width": v.get("width") or 0, "height": v.get("height") or 0,
+                       "has_audio": bool(v.get("has_audio", True)), "status": v.get("status") or "",
+                       "error": v.get("error") or "", "progress": v.get("progress") or 0,
+                       "message": v.get("message") or "", "file": rel,
+                       "ready": bool(rel) and (project.dir / rel).is_file() and v.get("status") == "ready"})
+    for c in bundle["clips"]:
+        rel = c.get("file") or ""
+        clips.append({"id": c.get("id"), "video": c.get("video") or "", "label": c.get("label") or "",
+                      "start": c.get("start") or 0, "end": c.get("end") or 0, "seconds": c.get("seconds") or 0,
+                      "audio": c.get("audio") or YT_AUDIO_DEFAULT, "slide": c.get("slide") or "",
+                      "has_audio": bool(c.get("has_audio", True)), "status": c.get("status") or "",
+                      "error": c.get("error") or "", "file": rel,
+                      "ready": bool(rel) and (project.dir / rel).is_file() and c.get("status") == "ready"})
+    return {"videos": videos, "clips": clips, "timing": CLIP_TIMING_NOTE}
+
+
+def preview_clip_payloads(project: "Project", compiled: dict, url_of: Callable[[str], str]) -> list:
+    """Assigned, ready clips with the slide window they play in."""
+    slides = {m["id"]: m for m in (compiled or {}).get("slides") or []}
+    out = []
+    for c in load_youtube(project.data)["clips"]:
+        sid = c.get("slide") or ""
+        meta = slides.get(sid)
+        rel = c.get("file") or ""
+        if not meta or c.get("status") != "ready" or not rel or not (project.dir / rel).is_file():
+            continue
+        out.append({"id": c["id"], "slide": sid, "label": c.get("label") or "", "src": url_of(rel),
+                    "audio": c.get("audio") if c.get("audio") in YT_AUDIO_MODES else YT_AUDIO_DEFAULT,
+                    "seconds": float(c.get("seconds") or 0), "t0": meta["t0"], "t1": meta["t1"]})
+    return out
+
+
+def fit_contain(src_w: int, src_h: int, box_w: int, box_h: int) -> "tuple[int, int, int, int]":
+    """Even width, height and origin that fit the source inside the box (letterboxed)."""
+    src_w, src_h = max(1, int(src_w)), max(1, int(src_h))
+    box_w, box_h = max(2, int(box_w) // 2 * 2), max(2, int(box_h) // 2 * 2)
+    scale = min(box_w / src_w, box_h / src_h)
+    sw = min(box_w, max(2, int(round(src_w * scale)) // 2 * 2))
+    sh = min(box_h, max(2, int(round(src_h * scale)) // 2 * 2))
+    x = (box_w - sw) // 2
+    y = (box_h - sh) // 2
+    return sw, sh, x - (x % 2), y - (y % 2)
+
+
+def clip_render_plan(project: "Project", start: float, end: float) -> list:
+    """Assigned clips that overlap [start, end), with times relative to the render."""
+    try:
+        compiled = project.compile()
+    except Exception:
+        return []
+    slides = {m["id"]: m for m in (compiled.get("slides") or [])}
+    out = []
+    for c in load_youtube(project.data)["clips"]:
+        if c.get("status") != "ready":
+            continue
+        meta = slides.get(c.get("slide") or "")
+        rel = c.get("file") or ""
+        path = project.dir / rel if rel else None
+        if not meta or path is None or not path.is_file():
+            continue
+        t0, t1 = float(meta["t0"]), float(meta["t1"])
+        a, b = max(t0, float(start)), min(t1, float(end))
+        if b - a < 1.0 / FPS:
+            continue
+        src_skip = max(0.0, a - t0)
+        full = float(c.get("seconds") or 0)
+        remain = max(0.0, full - src_skip) if full else (b - a)
+        if full and remain <= 0.05:
+            src_skip = max(0.0, full - 0.08)
+            remain = 0.08
+        audio = c.get("audio") if c.get("audio") in YT_AUDIO_MODES else YT_AUDIO_DEFAULT
+        if audio != "mute" and not c.get("has_audio", True):
+            audio = "mute"
+        out.append({"path": str(path), "audio": audio, "t0": t0, "t1": t1,
+                    "offset": round(a - float(start), 3), "show": round(b - a, 3),
+                    "src_skip": round(src_skip, 3), "seconds": round(remain, 3),
+                    "w": int(c.get("width") or 1920) or 1920, "h": int(c.get("height") or 1080) or 1080})
+    return out
+
+
+def build_overlay_cmd(base: Path, out: Path, clips: list, width: int, height: int, crf: int = 18) -> list:
+    """Lay each clip over the rendered frames, fitted inside the frame.
+
+    A clip shorter than its on-screen window is padded by cloning the last
+    frame (hold, not loop). A longer clip is trimmed to the window.
+    """
+    inputs: list = ["-i", str(base)]
+    chains = ["[0:v]setpts=PTS-STARTPTS[vin]"]
+    last = "vin"
+    for i, c in enumerate(clips):
+        skip = float(c.get("src_skip") or 0)
+        if skip > 0.02:
+            inputs += ["-ss", f"{skip:.3f}"]
+        inputs += ["-i", str(c["path"])]
+        sw, sh, x, y = fit_contain(int(c.get("w") or width), int(c.get("h") or height), width, height)
+        show = max(1.0 / FPS, float(c["show"]))
+        remain = max(0.0, float(c.get("seconds") or show))
+        hold = max(0.0, show - remain)
+        pad = f",tpad=stop_mode=clone:stop_duration={hold + 0.08:.3f}" if hold > 0.04 else ""
+        lab, nxt = f"c{i}", f"v{i}"
+        off = float(c["offset"])
+        chains.append(
+            f"[{i + 1}:v]setpts=PTS-STARTPTS,fps={FPS},scale={sw}:{sh}:flags=lanczos,setsar=1,"
+            f"pad={width}:{height}:{x}:{y}:black,format=yuv420p{pad},"
+            f"trim=duration={show:.3f},setpts=PTS-STARTPTS+{off:.3f}/TB[{lab}]")
+        chains.append(
+            f"[{last}][{lab}]overlay=0:0:eof_action=pass:enable='between(t,{off:.3f},{off + show:.3f})'[{nxt}]")
+        last = nxt
+    return ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *inputs, "-filter_complex", ";".join(chains),
+            "-map", f"[{last}]", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", str(int(crf)),
+            "-pix_fmt", "yuv420p", str(out)]
+
+
+def build_mux_cmd(video: Path, narration: Path, out: Path, start: float, dur: float, clips: list) -> list:
+    """Mux the narration. Mute clips leave it alone. 'clip' replaces it on that
+    window. 'mix' sidechain-ducks the clip under the narration."""
+    audible = [c for c in clips or [] if c.get("audio") in ("clip", "mix")]
+    if not audible:
+        return ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video),
+                "-ss", f"{float(start):.3f}", "-i", str(narration),
+                "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-af", "apad",
+                "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                "-t", f"{float(dur):.3f}", "-movflags", "+faststart", str(out)]
+    inputs = ["-i", str(video), "-ss", f"{float(start):.3f}", "-i", str(narration)]
+    for c in audible:
+        inputs += ["-i", str(c["path"])]
+    enables = []
+    for c in audible:
+        if c.get("audio") != "clip":
+            continue
+        a, b = float(c["offset"]), float(c["offset"]) + float(c["show"])
+        if b - a > 0.02:
+            enables.append(f"between(t,{a:.3f},{b:.3f})")
+    if enables:
+        narr = (f"[1:a]volume=0:enable='{'+'.join(enables)}',apad=whole_dur={float(dur):.3f},"
+                f"aformat=sample_rates=48000:channel_layouts=stereo[narr]")
+    else:
+        narr = (f"[1:a]apad=whole_dur={float(dur):.3f},aformat=sample_rates=48000:channel_layouts=stereo[narr]")
+    chains = [narr]
+    mix_labs, only_labs = [], []
+    for i, c in enumerate(audible):
+        skip = float(c.get("src_skip") or 0)
+        play = max(0.05, min(float(c["show"]), float(c.get("seconds") or c["show"])))
+        delay = int(round(float(c["offset"]) * 1000))
+        lab = f"a{i}"
+        chains.append(
+            f"[{i + 2}:a]atrim={skip:.3f}:{skip + play:.3f},asetpts=PTS-STARTPTS,adelay={delay}|{delay},"
+            f"apad=whole_dur={float(dur):.3f},aformat=sample_rates=48000:channel_layouts=stereo[{lab}]")
+        (only_labs if c.get("audio") == "clip" else mix_labs).append(lab)
+    tails, n_in = ["[narr]"], 1
+    if mix_labs:
+        if len(mix_labs) == 1:
+            mixbus = mix_labs[0]
+        else:
+            chains.append("".join(f"[{x}]" for x in mix_labs) +
+                          f"amix=inputs={len(mix_labs)}:duration=longest:dropout_transition=0:normalize=0[mixbus]")
+            mixbus = "mixbus"
+        chains.append(f"[narr]asplit=2[nmain][nsc];[{mixbus}][nsc]sidechaincompress="
+                      "threshold=0.02:ratio=8:attack=20:release=250[ducked]")
+        tails, n_in = ["[nmain]", "[ducked]"], 2
+    if only_labs:
+        if len(only_labs) == 1:
+            tails.append(f"[{only_labs[0]}]")
+        else:
+            chains.append("".join(f"[{x}]" for x in only_labs) +
+                          f"amix=inputs={len(only_labs)}:duration=longest:dropout_transition=0:normalize=0[onlybus]")
+            tails.append("[onlybus]")
+        n_in += 1
+    if n_in == 1:
+        chains.append(f"{tails[0]}anull[aout]")
+    else:
+        chains.append("".join(tails) + f"amix=inputs={n_in}:duration=first:dropout_transition=0:normalize=0[aout]")
+    return ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *inputs, "-filter_complex", ";".join(chains),
+            "-map", "0:v:0", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+            "-ar", "48000", "-ac", "2", "-t", f"{float(dur):.3f}", "-movflags", "+faststart", str(out)]
 
 
 def usage_cost(u: dict) -> float:
@@ -1753,30 +2549,39 @@ def compile_composition(raw: str, timeline: Timeline, *, duration: float, plan: 
 
 def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer",
               host: Optional[dict] = None, pip_frame: Optional[str] = None,
-              bubble: Optional[str] = None) -> str:
+              bubble: Optional[str] = None, clips: Optional[list] = None,
+              media_origin: str = "") -> str:
     """A self-contained page: design CSS, the compiled slides, the runtime.
     The runtime exposes __seek(t), __check() and __ready for the renderer;
     in preview mode it answers postMessage seeks from the dialog. With a
     presenter (`host`: focus, and in preview the proxy video's URL) the
     presenter areas are see-through; the preview plays the proxy under them.
     Corner windows carry their device frame, and guide-character cues carry
-    a drawn bubble, both as local images."""
+    a drawn bubble, both as local images. Assigned YouTube clips (`clips`)
+    play in preview as each slide's picture; the renderer lays the same
+    files on with ffmpeg, holding the last frame when the clip is shorter."""
     css = (ASSET_DIR / "design.css").read_text(encoding="utf-8")
     js = (ASSET_DIR / "runtime.js").read_text(encoding="utf-8")
     host_on = bool(host) and compiled.get("host_on")
     video = (host or {}).get("video") if host_on and mode == "preview" else None
     frame_mode = pip_frame_key(pip_frame, None if pip_frame is not None else (host or {}).get("pip_frame"))
     windows = framed_windows(compiled.get("host_windows") or [], frame_mode) if host_on else []
+    clip_cfg = [{k: c.get(k) for k in ("id", "slide", "src", "audio", "seconds", "t0", "t1", "label")}
+                for c in (clips or [])]
     cfg = json.dumps({"duration": compiled["duration"], "fps": FPS, "mode": mode,
                       "start": compiled.get("start", 0.0), "end": compiled.get("end", compiled["duration"]),
                       "sections": compiled.get("sections") or [],
                       "asides": _aside_payloads(compiled.get("slides") or [], bubble),
+                      "clips": clip_cfg,
                       "host": {"on": True, "layouts": HOST_LAYOUTS, "focus": float(host.get("focus", HOST_FOCUS)),
                                "video": video, "sections": compiled.get("host_sections") or [],
                                "fade": HOST_SECTION_FADE, "windows": windows,
                                "frames": _frame_payloads(windows)} if host_on else {"on": False}}).replace("</", "<\\/")
+    media = bool(video) or any(c.get("src") for c in clip_cfg)
+    origin = media_origin if str(media_origin).startswith(("http://", "https://")) else ""
     csp = ("default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
-           "script-src 'unsafe-inline'; font-src data:" + ("; media-src 'self'" if video else ""))
+           "script-src 'unsafe-inline'; font-src data:"
+           + (("; media-src 'self'" + (f" {origin}" if origin else "")) if media else ""))
     cls = f"mode-{mode}" + (" host-on" if host_on else "")
     return (f"<!doctype html><html class=\"{cls}\"><head><meta charset=\"utf-8\">"
             f"<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">"
@@ -3626,13 +4431,19 @@ def render_video(project: Project, page: Path, *, start: float, end: float, scal
         _run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0",
               "-i", str(lst), "-c", "copy", str(video)])
         dur = frames / FPS
+        yclips = clip_render_plan(project, start, start + dur)
+        if yclips:
+            # The narration keeps the clock: a short clip holds its last frame,
+            # a long one is trimmed to the slide. This re-encodes the joined picture.
+            status(message=f"{label}: fitting YouTube clips into the frame…",
+                   progress=lo + (hi - lo) * 0.97)
+            laid = work / "with_clips.mp4"
+            _run(build_overlay_cmd(video, laid, yclips, int(round(STAGE_W * scale)),
+                                   int(round(STAGE_H * scale)), crf=crf))
+            video = laid
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(".part.mp4")
-        _run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video),
-              "-ss", f"{start:.3f}", "-i", str(project.dir / "narration.wav"),
-              "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-af", "apad",
-              "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-t", f"{dur:.3f}",
-              "-movflags", "+faststart", str(tmp)])
+        _run(build_mux_cmd(video, project.dir / "narration.wav", tmp, start, dur, yclips))
         tmp.replace(out)
         return out
     finally:

@@ -83,3 +83,6 @@ tweepy>=4.14.0
 # Fetch transcripts of adjacency-target YouTube videos for the Idea Generator
 youtube-transcript-api>=1.0.0
 pypdf
+
+# YouTube clip import for the explainer. ffmpeg (separate install) merges and cuts.
+yt-dlp>=2025.1.15
