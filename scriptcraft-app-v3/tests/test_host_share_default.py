@@ -46,6 +46,8 @@ def check_module(xv, app: str) -> None:
     assert xv.host_share_key(None, "some") == "some"
     assert xv.host_share_key("nope", "little") == "little"
     assert xv.host_share_key("", "lots") == "lots"
+    # A planned HeyGen presenter (clips made after the storyboard) gets the same default.
+    assert xv.planned_host()["share"] == "brief" and xv.planned_host("lots")["share"] == "lots", app
 
     unset = xv._host_guide({"parts": [1]})
     assert "about 10% of the runtime" in unset, unset

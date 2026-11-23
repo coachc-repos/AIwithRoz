@@ -104,14 +104,15 @@ svg [data-anim], svg [data-loop], svg g[data-t] { transform-box: fill-box; trans
 /* Scene art stays smooth at the 1080p preview and at the 4K render. */
 svg, svg * { shape-rendering: geometricPrecision; text-rendering: geometricPrecision; }
 svg.sc { overflow: visible; }
-.sc-pill { display: inline-block; margin-top: 18px; padding: 10px 22px; border-radius: 999px; background: #121824; border: 2px solid #2a3446; color: #f2f4f8; font-size: 26px; font-weight: 650; }
+.sc-pill { display: inline-block; white-space: nowrap; margin-top: 18px; padding: 10px 22px; border-radius: 999px; background: #121824; border: 2px solid #2a3446; color: #f2f4f8; font-size: 26px; font-weight: 650; }
 .sc-message { display: inline-block; padding: 16px 28px; border-radius: 999px; background: #121824; border: 2px solid #2a3446; color: #f2f4f8; font-size: 32px; font-weight: 650; }
 .sc-hub { display: inline-block; padding: 12px 26px; border-radius: 999px; background: #0b0f16; color: #f2f4f8; font-size: 28px; font-weight: 750; border: 2px solid #f5b83d; }
 .sc-demo { position: absolute; left: 1040px; top: 240px; width: 760px; height: 428px; border: 3px dashed #f5b83d; border-radius: 28px; background: rgba(12, 21, 38, 0.82); color: #f2f4f8; display: none; z-index: 40; box-sizing: border-box; padding: 36px 40px; }
 .sc-demo .k { font-size: 22px; letter-spacing: 0.14em; text-transform: uppercase; color: #f5b83d; font-weight: 750; }
 .sc-demo .t { font-size: 48px; font-weight: 750; margin: 18px 0 12px; }
 .sc-demo .n { font-size: 28px; color: #8a94a6; line-height: 1.35; }
-body.mode-preview .ph-pending { outline: 3px dashed var(--amber); outline-offset: 6px; border-radius: 6px; }
+/* A value still to confirm: a light dashed box that hugs the words, so it does not run into the text beside it. */
+body.mode-preview .ph-pending { outline: 2px dashed var(--amber); outline-offset: 1px; border-radius: 4px; background: rgba(245, 184, 61, 0.10); }
 
 /* Article sheet and emphasis strokes sit over the waves. They do not restyle cards. */
 #article-layer { position: absolute; inset: 0; z-index: 850; pointer-events: none; }

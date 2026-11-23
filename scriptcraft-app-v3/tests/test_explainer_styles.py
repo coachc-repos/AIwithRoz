@@ -100,9 +100,9 @@ def test_camera_travels_and_pulls_back_and_manual_chips_stay():
     assert all(item["style"] != "glitch" for item in fx)
     waves = st.page_fx(sample, "waves")
     assert any(item["style"] == "glitch" for item in waves)
-    page = xv.page_html(lesson["compiled"], mode="render", bubble="off", words=lesson["words"])
+    page = xv.page_html(lesson["compiled"], mode="render", words=lesson["words"])
     assert "film-board" not in page.split("<body", 1)[1][:120]
-    board = xv.page_html(lesson["compiled"], mode="render", bubble="off", film_look="whiteboard",
+    board = xv.page_html(lesson["compiled"], mode="render", film_look="whiteboard",
                          words=lesson["words"])
     assert "film-board" in board and "XVBoard" in board
     assert board.split('<div id="slides">', 1)[1].split("</div><div id=\"hud\">", 1)[0] == \
@@ -207,14 +207,14 @@ def test_render_smoke_and_presenter_hole():
             varied = {}
             for look in ("tilt", "island", "tabletop", "popup"):
                 page = Path(tempfile.mkdtemp()) / f"{look}.html"
-                page.write_text(xv.page_html(lesson["compiled"], mode="render", bubble="off",
+                page.write_text(xv.page_html(lesson["compiled"], mode="render",
                                             film_look=look, words=lesson["words"]), encoding="utf-8")
                 await ch.open(page, 0.5, transparent=False)
                 png = await ch.frame(6.0)
                 varied[look] = _kinds(png)
             for look in ("whiteboard", "chalkboard", "sketchnote", "marker"):
                 page = Path(tempfile.mkdtemp()) / f"{look}.html"
-                page.write_text(xv.page_html(lesson["compiled"], mode="render", bubble="off",
+                page.write_text(xv.page_html(lesson["compiled"], mode="render",
                                             film_look=look, words=lesson["words"]), encoding="utf-8")
                 await ch.open(page, 0.5, transparent=False)
                 early = await ch.frame(0.25)
@@ -224,8 +224,8 @@ def test_render_smoke_and_presenter_hole():
             comp["host_on"] = True
             comp["html"] = comp["html"].replace('id="d2"', 'id="d2" data-host="pip"', 1)
             host_page = Path(tempfile.mkdtemp()) / "host.html"
-            host_page.write_text(xv.page_html(comp, mode="render", bubble="off", film_look="whiteboard",
-                                             words=lesson["words"], host={"focus": 0.45}, pip_frame="off"),
+            host_page.write_text(xv.page_html(comp, mode="render", film_look="whiteboard",
+                                             words=lesson["words"], host={"focus": 0.45}),
                                  encoding="utf-8")
             await ch.open(host_page, 1.0, transparent=True)
             await ch.frame(12.0)

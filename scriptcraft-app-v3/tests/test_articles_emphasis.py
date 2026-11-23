@@ -261,7 +261,7 @@ def _page(xv, kind: str):
                      "t0": 0.0, "t1": 4.0, "lines": cues, "accent": "#f5b83d"}]
         emphasis = {"marks": [], "accent": "#f5b83d"}
         return xv.page_html(_compiled(html, slides, 4.0), mode="render", title="Article",
-                            articles=articles, emphasis=emphasis, bubble="off"), 4.0, image
+                            articles=articles, emphasis=emphasis), 4.0, image
     slides = [{"id": "s1", "t0": 0.0, "t1": 3.2, "kind": "slide", "spoken": "Keep the edge honed."}]
     html = (
         '<section class="slide kind-slide" id="s1" data-kind="slide" data-t0="0.000" data-t1="3.200" '
@@ -270,7 +270,7 @@ def _page(xv, kind: str):
     )
     emphasis = {"marks": [{"slide": "s1", "phrase": "honed", "t": 1.15, "t1": 3.2}], "accent": "#f5b83d"}
     return xv.page_html(_compiled(html, slides, 3.2), mode="render", title="Emphasis",
-                        articles=[], emphasis=emphasis, bubble="off"), 3.2, None
+                        articles=[], emphasis=emphasis), 3.2, None
 
 
 def _gold(px) -> bool:

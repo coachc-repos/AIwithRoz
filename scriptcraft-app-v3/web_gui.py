@@ -24,7 +24,7 @@ from flask import Flask, render_template, request, jsonify, Response, make_respo
 import requests
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 # Add paths for imports - prioritize local scriptcraft-app directory
 current_dir = Path(__file__).parent
@@ -110,6 +110,7 @@ def _hydrate_env_from_settings() -> None:
             "heygen_api_key": "HEYGEN_API_KEY",
             "heygen_voice_id": "HEYGEN_VOICE_ID",
             "elevenlabs_api_key": "ELEVENLABS_API_KEY",
+            "topaz_api_key": "TOPAZ_API_KEY",
             "grok_api_key": "XAI_API_KEY",
             "anthropic_api_key": "ANTHROPIC_API_KEY",
             "x_api_key": "X_API_KEY",
@@ -2138,6 +2139,15 @@ async def process_script_creation(session_id, topic, audience, tone,
             # writer puts between every sentence into single-spaced Host blocks.
             raw_script_content = _tidy_generated_script(result["script_content"])
 
+            # How well the spoken text kept the writers' ASD-STE100 plain speech rules.
+            try:
+                from linedrive_azure.agents.pro_script_writer import plain_speech_summary
+                _ps = plain_speech_summary(raw_script_content)
+                print(_ps)
+                streamer.send_update(_ps, 98)
+            except Exception as _pse:
+                logger.warning(f"Plain speech check skipped: {_pse}")
+
             # Enhanced script with bold tool formatting (EXACT COPY - NO TIMEOUTS!)
             from console_ui.text_processing import (
                 enhance_script_with_bold_tools,
@@ -3248,6 +3258,7 @@ async def process_existing_script(
         flow_analysis = ""
         heygen_script = None
         curl_commands = None
+        shortened_script = ""  # the Shorten stage's script, sent back to the script box
         hook_result = {}  # Initialize to empty dict to prevent undefined variable errors
         thumbnail_hook_text = ""
         thumbnail_hook_text_options: list[str] = []
@@ -3280,9 +3291,20 @@ async def process_existing_script(
                     except Exception:
                         _target_words_override = None
                 _effective_target = _target_words_override if _target_words_override else _target_words
+
+                def _mmss(words: int) -> str:
+                    # Runtime at the measured HeyGen pace, as the page shows it.
+                    return "%d:%02d" % divmod(round(words * 60 / HEYGEN_WPM), 60)
+
+                if _target_words_override:
+                    _goal = (f"by {_percent_raw}% (target ~{_effective_target} spoken words, "
+                             f"about {_mmss(_effective_target)}")
+                else:
+                    _goal = (f"to ~{_target_minutes:.0f} min (target ~{_effective_target} "
+                             f"spoken words")
                 streamer.send_update(
-                    f"✂️ Shortening script to ~{_target_minutes:.0f} min "
-                    f"(target ~{_effective_target} Host words, current {_before_host_words})",
+                    f"✂️ Shortening script {_goal}; now {_before_host_words}, "
+                    f"about {_mmss(_before_host_words)})",
                     12,
                 )
 
@@ -3314,11 +3336,18 @@ async def process_existing_script(
                                 _shortened, _short_blocks, cleaned_script)
                             _after_host_words = _host_word_count(cleaned_script)
                             streamer.send_update(
-                                f"✅ Shortened: Host words {_before_host_words} → {_after_host_words} "
-                                f"(target ~{_target_words})",
+                                f"✅ Shortened: {_before_host_words} → {_after_host_words} spoken words, "
+                                f"about {_mmss(_before_host_words)} → {_mmss(_after_host_words)} "
+                                f"(target ~{_effective_target})",
                                 14,
                             )
                             _stages_run.add("shorten")
+                            # The cleanup above drops a leading "# Title" line; put it
+                            # back so the next run still finds the title.
+                            shortened_script = (
+                                cleaned_script
+                                if not script_title or script_title in cleaned_script
+                                else f"# {script_title}\n\n{cleaned_script}")
                             # Auto-save shortened script using the loaded
                             # filename + "_shortened" suffix. Prefer the
                             # source script's own directory (when the user
@@ -4544,6 +4573,7 @@ async def process_existing_script(
             "youtube_details": youtube_details,
             "markdown_path": saved_markdown_path,
             "docx_path": saved_docx_path,
+            "shortened_script": shortened_script,
         }
         streamer.result["stages_run"] = sorted(
             {"load"} | _stages_run | _artifact_stages(streamer.result))
@@ -8261,6 +8291,7 @@ def progress_stream(session_id):
                                 "hooks": streamer.result.get("hooks", []),
                                 "hook_labels": streamer.result.get("hook_labels", []),
                                 "original_script": streamer.result.get("original_script", ""),
+                                "shortened_script": streamer.result.get("shortened_script", ""),
                             }
 
                             print("\n" + "="*70)
@@ -8593,7 +8624,9 @@ def api_titles_suggest():
     last_err = None
     for model in (IDEA_MODEL, ANTHROPIC_MODEL):
         try:
-            raw = _anthropic_complete(_TITLE_SYSTEM, user, max_tokens=1500,
+            # A good reply used 1,336 tokens; at 1,500 two replies were cut off
+            # mid-JSON (2026-11-10).
+            raw = _anthropic_complete(_TITLE_SYSTEM, user, max_tokens=4000,
                                       use_web_search=False, model=model, timeout=90.0)
             raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', _strip_reminder_tags(raw).strip())
             items = json.loads(raw[raw.index("{"):raw.rindex("}") + 1]).get("titles") or []
@@ -9288,6 +9321,11 @@ def _eleven_key() -> str:
     return _saved_or_env_key("elevenlabs_api_key", "ELEVENLABS_API_KEY")
 
 
+def _topaz_key() -> str:
+    """Topaz Video API key (4K upscales of HeyGen clips)."""
+    return _saved_or_env_key("topaz_api_key", "TOPAZ_API_KEY")
+
+
 def _eleven_error(resp) -> str:
     """Plain-language error from an ElevenLabs response (key never included)."""
     status = getattr(resp, "status_code", 0)
@@ -9404,14 +9442,18 @@ def _eleven_chunks(text: str, limit: int = _ELEVEN_CHUNK_CHARS) -> list:
 
 
 def _eleven_tts_part(key: str, voice_id: str, model_id: str, text: str,
-                     previous_ids: list, voice_settings: dict = None) -> "tuple[bytes, str]":
+                     previous_ids: list, voice_settings: dict = None,
+                     extra: Optional[dict] = None) -> "tuple[bytes, str]":
     """One text-to-speech request. Returns (mp3 bytes, request id). Retries
-    busy/5xx replies; raises RuntimeError with a plain message otherwise."""
+    busy/5xx replies; raises RuntimeError with a plain message otherwise.
+    `extra` adds body fields (previous_text / next_text for a re-read)."""
     body = {"text": text, "model_id": model_id}
     if voice_settings:
         body["voice_settings"] = voice_settings
     if previous_ids:
         body["previous_request_ids"] = previous_ids[-3:]
+    if extra:
+        body.update(extra)
     last = ""
     for attempt, wait in enumerate((0, 3, 8, 20)):
         if wait:
@@ -9434,29 +9476,188 @@ def _eleven_tts_part(key: str, voice_id: str, model_id: str, text: str,
     raise RuntimeError(_redact_secret(last, key))
 
 
-def _eleven_join_mp3(parts: list, out_path: Path) -> None:
-    """Join MP3 parts into out_path. ffmpeg copies the frames and writes a
-    header with the real length; without ffmpeg the bytes are concatenated."""
+# ---- Even voiceover volume ----
+# ElevenLabs gets quieter as it reads one long request, and the next request
+# starts loud again (worse at Clone Strength 100%: a 13 min episode measured
+# -34 LUFS with 20 s stretches 8 dB apart, one part 6 dB under the first).
+# So each part's speech level is measured every 100 ms (EBU R128 momentary
+# loudness, pauses left out) and smoothed over ~20 s; a gain curve brings it
+# to one level. The parts are then joined, set to ELEVEN_TARGET_LUFS and
+# peak-limited. A part's curve never looks into the next part.
+ELEVEN_TARGET_LUFS = -18.0       # the voiceover's loudness (mono); the Explainer takes its copy to -14
+_ELEVEN_PEAK_LIMIT = 0.75        # limiter ceiling (-2.5 dBFS): true peaks stay under -1.5 dBTP in the MP3
+_ELEVEN_LEVEL_WINDOW = 10.0      # seconds each side: the gain follows the slow fade, not single words
+_ELEVEN_LEVEL_SMOOTH = 2.0       # seconds each side, moving average of that level
+_ELEVEN_LEVEL_RANGE = (-12.0, 18.0)   # dB a stretch may be turned down / up against the rest
+_ELEVEN_LEVEL_BITRATE = "192k"   # constant bitrate, so editors seek it exactly
+
+
+def _eleven_momentary(src: str, cwd: str) -> list:
+    """Momentary loudness (LUFS) every 100 ms of an audio file."""
+    import math
+    import subprocess
+    subprocess.run(["ffmpeg", "-v", "error", "-i", src, "-af",
+                    "ebur128=metadata=1,ametadata=mode=print:key=lavfi.r128.M:file=m.txt",
+                    "-f", "null", "-"], cwd=cwd, check=True, capture_output=True, timeout=300)
+    out = []
+    for v in re.findall(r"lavfi\.r128\.M=(\S+)", (Path(cwd) / "m.txt").read_text(encoding="utf-8")):
+        try:
+            x = float(v)
+        except ValueError:
+            x = -120.0
+        out.append(x if math.isfinite(x) else -120.0)
+    return out
+
+
+def _loudness_integrated(ms: list) -> float:
+    """EBU R128 integrated loudness from momentary values (400 ms blocks)."""
+    import math
+    p = [10 ** (m / 10) for m in ms if m > -70]
+    if not p:
+        return -70.0
+    gate = 10 * math.log10(sum(p) / len(p)) - 10
+    q = [x for x in p if 10 * math.log10(x) > gate] or p
+    return 10 * math.log10(sum(q) / len(q))
+
+
+def _loudness_swing(ms: list) -> float:
+    """dB between the loudest and the quietest 20 s stretch of speech."""
+    import statistics
+    speech = [m for m in ms if m > -70]
+    if not speech:
+        return 0.0
+    floor = statistics.median(speech) - 20
+    buckets = {}
+    for i, m in enumerate(ms):
+        if m > floor:
+            buckets.setdefault(i // 200, []).append(m)
+    meds = [statistics.median(v) for v in buckets.values() if len(v) >= 50]
+    return max(meds) - min(meds) if meds else 0.0
+
+
+def _eleven_level_gains(parts: list) -> list:
+    """Per part, the dB to add every 100 ms so its speech sits at the level
+    of the whole voiceover: the median of the speech within +-10 s (pauses
+    left out), averaged over +-2 s."""
+    import statistics
+    speech = [m for ms in parts for m in ms if m > -70]
+    ref = statistics.median(speech) if speech else -30.0
+    floor = ref - 20
+    w, s = int(_ELEVEN_LEVEL_WINDOW * 10), int(_ELEVEN_LEVEL_SMOOTH * 10)
+    lo_db, hi_db = _ELEVEN_LEVEL_RANGE
+    out = []
+    for ms in parts:
+        idx = [i for i, m in enumerate(ms) if m > floor]
+        raw, lo, hi = [], 0, 0
+        for i in range(len(ms)):
+            while lo < len(idx) and idx[lo] < i - w:
+                lo += 1
+            while hi < len(idx) and idx[hi] <= i + w:
+                hi += 1
+            if hi - lo >= 20:   # 2 s of speech
+                raw.append(statistics.median(ms[j] for j in idx[lo:hi]))
+            else:
+                raw.append(raw[-1] if raw else ref)
+        pre = [0.0]
+        for v in raw:
+            pre.append(pre[-1] + v)
+        n, gains = len(raw), []
+        for k in range(n):
+            a, b = max(0, k - s), min(n, k + s + 1)
+            gains.append(max(lo_db, min(hi_db, ref - (pre[b] - pre[a]) / (b - a))))
+        out.append(gains)
+    return out
+
+
+def _eleven_render(cwd: str, names: list, gains: list, shift: float, out: Optional[str]) -> float:
+    """Each part through its gain curve (+shift dB), joined and peak-limited,
+    into `out` (an MP3), or only measured when `out` is None. Returns the
+    measured integrated loudness (LUFS), or 0.0 after writing a file."""
+    import subprocess
+    chains = []
+    for k, (name, g) in enumerate(zip(names, gains)):
+        cmds, last = [], None
+        for i, db in enumerate(g):
+            lin = round(10 ** ((db + shift) / 20), 4)
+            if lin != last:
+                cmds.append(f"{i / 10:.1f} volume@v{k} volume {lin};")
+                last = lin
+        first = 10 ** (((g[0] if g else 0.0) + shift) / 20)
+        send = ""
+        if cmds:
+            (Path(cwd) / f"{name}.cmd").write_text("\n".join(cmds) + "\n", encoding="utf-8")
+            send = f"asendcmd=f={name}.cmd,"
+        chains.append(f"[{k}:a]{send}volume@v{k}={first:.4f}:precision=float[p{k}]")
+    graph = (";".join(chains) + ";" + "".join(f"[p{k}]" for k in range(len(names)))
+             + f"concat=n={len(names)}:v=0:a=1,"
+             + f"alimiter=limit={_ELEVEN_PEAK_LIMIT}:attack=5:release=50:level=0:latency=1")
+    cmd = ["ffmpeg", "-y", "-nostats", "-hide_banner"]
+    for name in names:
+        cmd += ["-i", name]
+    if out is None:
+        cmd += ["-filter_complex", graph + ",ebur128", "-f", "null", "-"]
+    else:
+        cmd += ["-filter_complex", graph + "[out]", "-map", "[out]", "-ar", "44100", "-ac", "1",
+                "-c:a", "libmp3lame", "-b:a", _ELEVEN_LEVEL_BITRATE, out]
+    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=900)
+    if r.returncode != 0:
+        raise RuntimeError(f"ffmpeg: {r.stderr.strip()[-300:]}")
+    if out is not None:
+        return 0.0
+    found = re.findall(r"I:\s+(-?[\d.]+) LUFS", r.stderr)
+    if not found:
+        raise RuntimeError("ffmpeg ebur128 did not report the loudness")
+    return float(found[-1])
+
+
+def _eleven_level(cwd: str, names: list, out_path: Path) -> dict:
+    """Join the part files in `cwd` into out_path with the volume evened out
+    (see above). Returns the loudness and swing before and after."""
+    ms = [_eleven_momentary(n, cwd) for n in names]
+    gains = _eleven_level_gains(ms)
+    raw = [m for p in ms for m in p]
+    shift = ELEVEN_TARGET_LUFS - _loudness_integrated(
+        [m + g for p, gp in zip(ms, gains) for m, g in zip(p, gp)])
+    # The limiter takes some loudness off with the peaks (about 1 LU for a
+    # cloned voice); measure it once and make it up.
+    shift += ELEVEN_TARGET_LUFS - _eleven_render(cwd, names, gains, shift, None)
+    out = str(out_path.resolve())   # ffmpeg runs in cwd
+    _eleven_render(cwd, names, gains, shift, out)
+    after = _eleven_momentary(out, cwd)
+    return {"before": round(_loudness_integrated(raw), 1), "after": round(_loudness_integrated(after), 1),
+            "swing_before": round(_loudness_swing(raw), 1), "swing_after": round(_loudness_swing(after), 1)}
+
+
+def _eleven_join_mp3(parts: list, out_path: Path) -> Optional[dict]:
+    """Join MP3 parts into out_path with the volume evened out; returns what
+    _eleven_level measured. If that fails the parts are only joined (None):
+    ffmpeg copies the frames and writes a header with the real length;
+    without ffmpeg the bytes are concatenated."""
     import shutil
     import subprocess
     import tempfile
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    if len(parts) > 1 and shutil.which("ffmpeg"):
+    if shutil.which("ffmpeg"):
         with tempfile.TemporaryDirectory() as td:
-            lst = Path(td) / "parts.txt"
             names = []
             for i, b in enumerate(parts):
-                p = Path(td) / f"part_{i:03d}.mp3"
-                p.write_bytes(b)
-                names.append(f"file '{p}'")
-            lst.write_text("\n".join(names) + "\n", encoding="utf-8")
-            r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
-                                "-i", str(lst), "-c", "copy", str(out_path)],
-                               capture_output=True, text=True, timeout=300)
-            if r.returncode == 0 and out_path.exists() and out_path.stat().st_size:
-                return
-            logger.warning(f"⚠️ ffmpeg join failed ({r.stderr.strip()[:200]}); joining bytes")
+                (Path(td) / f"part_{i:03d}.mp3").write_bytes(b)
+                names.append(f"part_{i:03d}.mp3")
+            try:
+                return _eleven_level(td, names, out_path)
+            except Exception as e:
+                logger.warning(f"⚠️ Voiceover volume not evened out ({str(e)[:300]}); joining the parts as they are")
+            if len(parts) > 1:
+                lst = Path(td) / "parts.txt"
+                lst.write_text("".join(f"file '{n}'\n" for n in names), encoding="utf-8")
+                r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+                                    "-i", str(lst), "-c", "copy", str(out_path)],
+                                   capture_output=True, text=True, timeout=300)
+                if r.returncode == 0 and out_path.exists() and out_path.stat().st_size:
+                    return None
+                logger.warning(f"⚠️ ffmpeg join failed ({r.stderr.strip()[:200]}); joining bytes")
     out_path.write_bytes(b"".join(parts))
+    return None
 
 
 def _eleven_set(job_id: str, **kw) -> None:
@@ -9483,16 +9684,24 @@ def _eleven_run(job_id: str, key: str, voice_id: str, voice_name: str, model_id:
             logger.info(f"🎙️ ElevenLabs part {i}/{total}: {len(chunk):,} chars → "
                         f"{len(audio) / 1024:,.0f} KB in {time.time() - t0:.1f}s")
             _eleven_set(job_id, done=i)
-        _eleven_join_mp3(parts, out_path)
+        _eleven_set(job_id, message="Evening out the volume…")
+        level = _eleven_join_mp3(parts, out_path)
+        if level:
+            logger.info(f"🎚️ Voiceover volume evened out: {level['before']} → {level['after']} LUFS, "
+                        f"20 s stretches {level['swing_before']} → {level['swing_after']} dB apart")
         # The exact text read, so the explainer video can time every word.
         out_path.with_suffix(".txt").write_text("\n\n".join(chunks), encoding="utf-8")
+        # The voice it was read with, so "Fix a section" re-reads with the same one.
+        out_path.with_name(out_path.stem + ".voice.json").write_text(json.dumps(
+            {"voice_id": voice_id, "voice_name": voice_name, "model_id": model_id,
+             "similarity": similarity, "clone_strength": clone_strength}), encoding="utf-8")
         size = out_path.stat().st_size
-        seconds = int(size * 8 / 128000)   # mp3_44100_128 is constant bitrate
+        seconds = int(round(_audio_seconds(out_path)))
         elapsed = time.time() - started
         logger.info(f"✅ ElevenLabs voiceover saved: {out_path} ({size / 1048576:.1f} MB, "
                     f"~{seconds // 60}:{seconds % 60:02d}, {elapsed:.0f}s)")
         _eleven_set(job_id, status="done", path=str(out_path), size=size,
-                    audio_seconds=seconds, elapsed=round(elapsed),
+                    audio_seconds=seconds, elapsed=round(elapsed), leveled=level,
                     message=f"Saved {out_path.name}")
     except Exception as e:
         err = _redact_secret(str(e), key)
@@ -9673,38 +9882,576 @@ def elevenlabs_tts_audio(job_id):
                      download_name=Path(path).name)
 
 
-# ---- HeyGen video from an ElevenLabs voiceover (audio-to-video) ----
-# The MP3 is uploaded as a HeyGen asset and drives the avatar of one of your
+# ---- Fix a section: re-read a few sentences of a saved voiceover ----
+# A stretch of a long read can come out echoey or flat. The user picks
+# sentences; ElevenLabs reads only those, with the sentences around them as
+# context (previous_text / next_text). The take replaces the old reading at
+# the same length: its speech is fitted to the old speech's span (atempo,
+# within _ELEVEN_FIX_STRETCH) and set to the old stretch's loudness, so the
+# Explainer's word timings and the other presenter clips stay in sync. The
+# MP3 a fix replaces is kept (Undo), and Explainer projects made from this
+# MP3 get the new narration copy.
+_ELEVEN_FIX_STRETCH = (0.8, 1.25)   # take speech length / old speech length that is fitted
+_ELEVEN_FIX_CONTEXT = 2             # sentences each side sent as context (not read)
+_ELEVEN_FIX_PAD = 3.0               # seconds around the section in the before/after previews
+_ELEVEN_FIX_EDGE = 0.02             # seconds kept before/after the take's speech
+_ELEVEN_FIX_MAX_CHARS = 2500        # one request; pick fewer sentences beyond this
+_ELEVEN_FIX_BUSY: set = set()
+_ELEVEN_FIX_LOCK = threading.Lock()
+_ELEVEN_FIX_TAKE_RE = re.compile(r"^[0-9a-f]{12}$")
+_ELEVEN_SENT_END_RE = re.compile(r"[.!?…][\"'”’)\]*_]*$")
+
+
+def _eleven_fix_mp3(title: str, name: str) -> Path:
+    """The voiceover MP3 called `name` in this script's voiceover folder."""
+    name = (name or "").strip()
+    if not title or not name or Path(name).name != name or name.startswith(".") \
+            or not name.lower().endswith(".mp3"):
+        raise ValueError("Pick one of this script's voiceover MP3s.")
+    path = _voiceover_dir(title) / name
+    if not path.is_file():
+        raise FileNotFoundError(f"{name} is not in this script's voiceover folder.")
+    return path
+
+
+def _eleven_fix_dir(mp3: Path) -> Path:
+    return mp3.parent / "fixes" / mp3.stem
+
+
+def _eleven_fix_history(mp3: Path) -> list:
+    f = _eleven_fix_dir(mp3) / "history.json"
+    try:
+        return json.loads(f.read_text(encoding="utf-8")) if f.is_file() else []
+    except (OSError, ValueError):
+        return []
+
+
+def _eleven_fix_save_history(mp3: Path, history: list) -> None:
+    d = _eleven_fix_dir(mp3)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "history.json").write_text(json.dumps(history, indent=1), encoding="utf-8")
+
+
+def _eleven_sentences(words: list) -> list:
+    """Sentences of a timed word list: [{i, text, start, end, w0, w1}], w1 exclusive."""
+    out, cur = [], []
+    for k, w in enumerate(words):
+        cur.append(k)
+        if _ELEVEN_SENT_END_RE.search(w.get("text") or "") or k == len(words) - 1:
+            out.append({"i": len(out), "text": " ".join(words[j]["text"] for j in cur),
+                        "start": round(float(words[cur[0]]["start"]), 3),
+                        "end": round(float(words[cur[-1]]["end"]), 3), "w0": cur[0], "w1": cur[-1] + 1})
+            cur = []
+    return out
+
+
+def _eleven_fix_projects(title: str, mp3: Path) -> list:
+    """The Explainer projects narrated by this MP3."""
+    root = _get_run_output_dir(title, create=False)
+    out = []
+    for info in _xv.list_projects(root, title):
+        if info.get("voiceover") == mp3.name:
+            p = _xv_project(title, info["id"])
+            if p is not None:
+                out.append(p)
+    return out
+
+
+def _eleven_fix_words(title: str, mp3: Path, key: str) -> "tuple[list, str]":
+    """Every word's time in the MP3: cached next to it, else from an Explainer
+    made from it (timed against this file), else ElevenLabs forced alignment
+    of the text it was read from."""
+    seconds = _audio_seconds(mp3)
+    cache = mp3.with_name(mp3.stem + ".words.json")
+    try:
+        d = json.loads(cache.read_text(encoding="utf-8")) if cache.is_file() else {}
+    except (OSError, ValueError):
+        d = {}
+    if d.get("words") and abs(float(d.get("seconds") or 0) - seconds) < 0.3:
+        return d["words"], d.get("source") or "saved"
+    words, source = None, ""
+    for p in _eleven_fix_projects(title, mp3):
+        if (p.data.get("timing") or {}).get("source") == "elevenlabs" \
+                and abs(float(p.data.get("audio_seconds") or 0) - seconds) < 0.3:
+            words = json.loads(p.read("words.json") or "[]") or None
+            if words:
+                source = "explainer"
+                break
+    if not words:
+        txt = mp3.with_suffix(".txt")
+        if not txt.is_file():
+            raise RuntimeError(f"{txt.name} (the text this MP3 was read from) is missing, so its words cannot be timed.")
+        if not key:
+            raise RuntimeError("Add your ElevenLabs API key in 🔑 API Keys first (it times the words).")
+        words, _ = _xv.align_words(mp3, txt.read_text(encoding="utf-8"), key)
+        source = "elevenlabs"
+    cache.write_text(json.dumps({"seconds": round(seconds, 3), "source": source, "words": words}),
+                     encoding="utf-8")
+    return words, source
+
+
+def _eleven_fix_lufs(src: Path, start: Optional[float] = None, end: Optional[float] = None) -> float:
+    """Integrated loudness (LUFS) of a file, or of start..end of it."""
+    import subprocess
+    cmd = ["ffmpeg", "-nostats", "-hide_banner"]
+    if start is not None:
+        cmd += ["-ss", f"{start:.3f}"]
+    if end is not None:
+        cmd += ["-to", f"{end:.3f}"]
+    r = subprocess.run(cmd + ["-i", str(src), "-af", "ebur128", "-f", "null", "-"],
+                       capture_output=True, text=True, timeout=300)
+    found = re.findall(r"I:\s+(-?[\d.]+) LUFS", r.stderr)
+    if r.returncode != 0 or not found:
+        raise RuntimeError(f"Could not measure the loudness of {Path(src).name}")
+    return float(found[-1])
+
+
+def _eleven_fix_cuts(words: list, first: dict, last: dict, duration: float) -> dict:
+    """Where the section starts and ends in the MP3: the speech (first word
+    start .. last word end), the pauses around it (p0 .. s0, e1 .. p1) and
+    cut points halfway into them (the file's start or end at its edges)."""
+    w0, w1 = first["w0"], last["w1"]
+    s0, e1 = float(words[w0]["start"]), float(words[w1 - 1]["end"])
+    p0 = float(words[w0 - 1]["end"]) if w0 > 0 else 0.0
+    p1 = float(words[w1]["start"]) if w1 < len(words) else duration
+    a = (p0 + s0) / 2 if w0 > 0 else 0.0
+    b = (e1 + p1) / 2 if w1 < len(words) else duration
+    return {"s0": round(s0, 3), "e1": round(e1, 3), "a": round(max(0.0, min(a, s0)), 3),
+            "b": round(min(duration, max(b, e1)), 3), "p0": round(p0, 3), "p1": round(min(duration, p1), 3)}
+
+
+def _eleven_fix_heard(mp3: Path, cuts: dict) -> dict:
+    """The old speech as heard, and quiet places to cut. Forced alignment can
+    put a sentence's first word a few tenths late (or its last word early),
+    so the speech span is widened through any speech touching it: 10 ms steps
+    within 20 dB of the section's loudness, with no gap over 40 ms. A breath
+    in the pause (around -45 dB, after a short silence) is not speech. Each
+    cut point then moves to the quietest 10 ms of its pause (nearest the
+    middle on a tie), so it does not split a breath."""
+    import subprocess
+    step, a, b = 0.01, cuts["a"], cuts["b"]
+    lo, hi = cuts.get("p0", a), cuts.get("p1", b)
+    try:
+        thr = _eleven_fix_lufs(mp3, cuts["s0"], cuts["e1"]) - 20.0
+    except RuntimeError:
+        return cuts
+    r = subprocess.run(["ffmpeg", "-nostats", "-hide_banner", "-ss", f"{lo:.3f}", "-to", f"{hi:.3f}", "-i", str(mp3),
+                        "-af", "aresample=44100,asetnsamples=n=441:p=0,astats=metadata=1:reset=1,"
+                               "ametadata=print:key=lavfi.astats.Overall.RMS_level", "-f", "null", "-"],
+                       capture_output=True, text=True, timeout=120)
+    import math
+    levels = []
+    for v in re.findall(r"RMS_level=(\S+)", r.stderr):
+        try:
+            x = float(v)
+        except ValueError:
+            x = -120.0
+        levels.append(x if math.isfinite(x) else -120.0)      # digital silence reads -inf
+    if r.returncode != 0 or not levels:
+        return cuts
+    on = [x >= thr for x in levels]
+    n = len(on)
+    at = lambda t: max(0, min(n - 1, int((t - lo) / step)))     # noqa: E731
+
+    def walk(k: int, direction: int) -> int:
+        edge, gap, j = k, 0, k + direction
+        while 0 <= j < n:
+            if on[j]:
+                edge, gap = j, 0
+            else:
+                gap += 1
+                if gap > 4:
+                    break
+            j += direction
+        return edge
+
+    k0, k1 = at(cuts["s0"]), at(cuts["e1"])
+    s0 = min(cuts["s0"], lo + walk(k0, -1) * step) if on[k0] or any(on[max(0, k0 - 4):k0]) else cuts["s0"]
+    e1 = max(cuts["e1"], lo + (walk(k1, 1) + 1) * step) if on[k1] or any(on[k1 + 1:k1 + 5]) else cuts["e1"]
+    s0, e1 = max(lo, s0), min(hi, e1)
+
+    def quiet(t0: float, t1: float, mid: float, keep: float) -> float:
+        ks = range(at(t0), at(t1))
+        if t1 - t0 < 0.03 or not ks:
+            return keep
+        k = min(ks, key=lambda q: (round(levels[q]), abs(lo + (q + 0.5) * step - mid)))
+        return lo + (k + 0.5) * step
+
+    a = 0.0 if a <= 0.0 else quiet(lo + 0.03, s0 - 0.02, (lo + s0) / 2, min(a, s0))
+    b = cuts["b"] if b >= hi else quiet(e1 + 0.02, hi - 0.03, (e1 + hi) / 2, max(b, e1))
+    return {**cuts, "s0": round(s0, 3), "e1": round(e1, 3), "a": round(max(lo if a > 0 else 0.0, min(a, s0)), 3),
+            "b": round(min(hi if b < hi else b, max(b, e1)), 3)}
+
+
+def _eleven_fix_splice(mp3: Path, take_wav: Path, cuts: dict, gain_db: float, out: Path) -> dict:
+    """The MP3 with cuts a..b replaced by the take: its speech stretched to the
+    old speech's length (plus the edges) and placed where the old speech
+    was, silence around it, the same total length. Returns the fit."""
+    import subprocess
+    take_len = _audio_seconds(take_wav)
+    target = (cuts["e1"] - cuts["s0"]) + 2 * _ELEVEN_FIX_EDGE
+    ratio = take_len / target if target > 0 else 0.0
+    lo, hi = _ELEVEN_FIX_STRETCH
+    if not lo <= ratio <= hi:
+        longer = ratio > 1
+        raise ValueError(f"This reading is {abs(ratio - 1):.0%} {'longer' if longer else 'shorter'} than the "
+                         f"original, too much to fit it in its place. Press Try again for another take.")
+    seg = cuts["b"] - cuts["a"]
+    lead = max(0.0, cuts["s0"] - _ELEVEN_FIX_EDGE - cuts["a"])
+    fade = min(0.015, target / 4)
+    mono = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=mono"
+    graph = (f"[0:a]{mono},asplit=2[o1][o2];"
+             f"[o1]atrim=end={cuts['a']:.6f},asetpts=PTS-STARTPTS[pa];"
+             f"[o2]atrim=start={cuts['b']:.6f},asetpts=PTS-STARTPTS[pc];"
+             f"[1:a]{mono},atempo={ratio:.6f},volume={gain_db:.2f}dB,"
+             f"afade=t=in:d={fade:.3f},afade=t=out:st={max(0.0, target - fade):.3f}:d={fade:.3f},"
+             f"alimiter=limit={_ELEVEN_PEAK_LIMIT}:attack=5:release=50:level=0:latency=1,"
+             f"adelay={int(round(lead * 1000))}:all=1,apad=whole_dur={seg:.6f},"
+             f"atrim=end={seg:.6f},asetpts=PTS-STARTPTS[pb];"
+             f"[pa][pb][pc]concat=n=3:v=0:a=1[out]")
+    tmp = out.with_name(out.name + ".part")
+    r = subprocess.run(["ffmpeg", "-y", "-nostats", "-hide_banner", "-loglevel", "error",
+                        "-i", str(mp3), "-i", str(take_wav), "-filter_complex", graph, "-map", "[out]",
+                        "-ar", "44100", "-ac", "1", "-c:a", "libmp3lame", "-b:a", _ELEVEN_LEVEL_BITRATE,
+                        "-f", "mp3", str(tmp)], capture_output=True, text=True, timeout=900)
+    if r.returncode != 0:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg: {r.stderr.strip()[-300:]}")
+    tmp.replace(out)
+    return {"ratio": round(ratio, 3), "take_seconds": round(take_len, 3), "target_seconds": round(target, 3)}
+
+
+def _eleven_fix_clip(src: Path, start: float, end: float, out: Path) -> None:
+    import subprocess
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
+                    "-i", str(src), "-c:a", "libmp3lame", "-b:a", "128k", str(out)],
+                   check=True, capture_output=True, timeout=120)
+
+
+def _eleven_fix_trim(raw: Path, out: Path) -> None:
+    """The take as a WAV without the silence before and after its speech."""
+    import subprocess
+    keep = f"{_ELEVEN_FIX_EDGE:.3f}"
+    trim = (f"silenceremove=start_periods=1:start_threshold=-50dB:start_silence={keep},areverse,"
+            f"silenceremove=start_periods=1:start_threshold=-50dB:start_silence={keep},areverse")
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(raw), "-af", trim,
+                    "-ar", "44100", "-ac", "1", str(out)], check=True, capture_output=True, timeout=120)
+
+
+def _eleven_fix_refresh(title: str, mp3: Path, cuts: dict) -> "tuple[list, list]":
+    """Give the Explainer projects made from this MP3 its new copy (same
+    length, so their word timings stand). Returns (projects updated,
+    presenter clips that overlap the changed stretch: their lip-sync is off)."""
+    updated, clips = [], []
+    for p in _eleven_fix_projects(title, mp3):
+        wav, m4a = p.dir / "narration.fix.wav", p.dir / "narration.fix.m4a"
+        loud = _xv.normalize_audio(mp3, wav, m4a)
+        wav.replace(p.dir / "narration.wav")
+        m4a.replace(p.dir / "narration.m4a")
+        p.data["loudness"] = loud
+        p.save()
+        updated.append(p.id)
+        for k, part in enumerate(sorted((p.host() or {}).get("parts") or [], key=lambda x: x["offset"]), 1):
+            t0, t1 = float(part["offset"]), float(part["offset"]) + float(part["seconds"])
+            if t0 < cuts["b"] and t1 > cuts["a"]:
+                clips.append({"project": p.id, "n": k, "name": Path(part.get("orig") or part["file"]).name,
+                              "start": round(t0, 2), "end": round(t1, 2)})
+    return updated, clips
+
+
+def _eleven_fix_guard(title: str, mp3: Path) -> Optional[str]:
+    """Why this MP3 can't be changed now (an Explainer job is using it), or None."""
+    for p in _eleven_fix_projects(title, mp3):
+        if _xv.job_running(p.id):
+            return "An Explainer job made from this voiceover is running. Wait for it to finish."
+    return None
+
+
+def _eleven_fix_begin(mp3: Path) -> bool:
+    with _ELEVEN_FIX_LOCK:
+        if str(mp3) in _ELEVEN_FIX_BUSY:
+            return False
+        _ELEVEN_FIX_BUSY.add(str(mp3))
+        return True
+
+
+def _eleven_fix_end(mp3: Path) -> None:
+    with _ELEVEN_FIX_LOCK:
+        _ELEVEN_FIX_BUSY.discard(str(mp3))
+
+
+@app.route("/api/elevenlabs/fix/files", methods=["GET"])
+def elevenlabs_fix_files():
+    """This script's voiceover MP3s, newest first, with how many fixes each has."""
+    title = (request.args.get("title") or "").strip()
+    if not title:
+        return jsonify({"success": False, "error": "Open a script first."}), 400
+    files = _voiceover_files(title)
+    for f in files:
+        mp3 = _voiceover_dir(title) / f["name"]
+        f["has_text"] = mp3.with_suffix(".txt").is_file()
+        f["fixes"] = len(_eleven_fix_history(mp3))
+    return jsonify({"success": True, "files": files})
+
+
+@app.route("/api/elevenlabs/fix/load", methods=["POST"])
+def elevenlabs_fix_load():
+    """The MP3's sentences with their times (times every word once if needed)."""
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    try:
+        mp3 = _eleven_fix_mp3(title, data.get("file"))
+        words, source = _eleven_fix_words(title, mp3, _eleven_key())
+    except (ValueError, FileNotFoundError) as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"❌ Voiceover fix: could not time the words: {e}")
+        return jsonify({"success": False, "error": _redact_secret(str(e), _eleven_key())}), 500
+    voice = {}
+    side = mp3.with_name(mp3.stem + ".voice.json")
+    if side.is_file():
+        try:
+            voice = json.loads(side.read_text(encoding="utf-8"))
+        except ValueError:
+            voice = {}
+    sents = [{k: s[k] for k in ("i", "text", "start", "end")} for s in _eleven_sentences(words)]
+    return jsonify({"success": True, "file": mp3.name, "seconds": round(_audio_seconds(mp3), 2),
+                    "timing": source, "sentences": sents, "voice": voice,
+                    "history": _eleven_fix_history(mp3),
+                    "explainers": [p.id for p in _eleven_fix_projects(title, mp3)]})
+
+
+@app.route("/api/elevenlabs/fix/take", methods=["POST"])
+def elevenlabs_fix_take():
+    """Re-read sentences first..last and make the MP3 with that take in place
+    (not saved over the original until "Use this take"). Returns the take's
+    before/after previews."""
+    key = _eleven_key()
+    if not key:
+        return jsonify({"success": False, "needs_key": True,
+                        "error": "Add your ElevenLabs API key in 🔑 API Keys first."}), 400
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    try:
+        mp3 = _eleven_fix_mp3(title, data.get("file"))
+        first, last = int(data.get("first")), int(data.get("last"))
+    except (ValueError, TypeError, FileNotFoundError) as e:
+        return jsonify({"success": False, "error": str(e) if not isinstance(e, TypeError) else "Pick sentences."}), 400
+    voice_id = (data.get("voice_id") or "").strip()
+    model_id = (data.get("model_id") or ELEVEN_DEFAULT_MODEL).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", voice_id):
+        return jsonify({"success": False, "error": "Pick a voice first."}), 400
+    if model_id not in {m for m, _ in ELEVEN_MODELS}:
+        return jsonify({"success": False, "error": f"Unknown model: {model_id}"}), 400
+    try:
+        similarity = round(float(data.get("similarity", ELEVEN_DEFAULT_SIMILARITY)), 2)
+        clone_strength = round(float(data.get("clone_strength", 0.0)), 2)
+    except (TypeError, ValueError):
+        similarity = clone_strength = -1.0
+    if not (0.0 <= similarity <= 1.0 and 0.0 <= clone_strength <= 1.0):
+        return jsonify({"success": False, "error": "Similarity and clone strength go from 0 to 100%."}), 400
+    if not _eleven_fix_begin(mp3):
+        return jsonify({"success": False, "error": "This voiceover is busy with another fix."}), 409
+    import shutil
+    import tempfile
+    try:
+        words, _ = _eleven_fix_words(title, mp3, key)
+        sents = _eleven_sentences(words)
+        if not (0 <= first <= last < len(sents)):
+            return jsonify({"success": False, "error": "Pick sentences of this voiceover."}), 400
+        text = " ".join(s["text"] for s in sents[first:last + 1])
+        if len(text) > _ELEVEN_FIX_MAX_CHARS:
+            return jsonify({"success": False, "error": f"That is {len(text):,} characters; pick up to "
+                                                       f"{_ELEVEN_FIX_MAX_CHARS:,} at a time."}), 400
+        duration = _audio_seconds(mp3)
+        cuts = _eleven_fix_heard(mp3, _eleven_fix_cuts(words, sents[first], sents[last], duration))
+        context = {k: v for k, v in (
+            ("previous_text", " ".join(s["text"] for s in sents[max(0, first - _ELEVEN_FIX_CONTEXT):first])),
+            ("next_text", " ".join(s["text"] for s in sents[last + 1:last + 1 + _ELEVEN_FIX_CONTEXT]))) if v}
+        send_clone = clone_strength if model_id in ELEVEN_CLONE_STRENGTH_MODELS else None
+        vs = _eleven_voice_settings(key, voice_id, similarity, send_clone)
+        try:
+            audio, _rid = _eleven_tts_part(key, voice_id, model_id, text, [], vs, context)
+        except RuntimeError as e:
+            if not context or not re.search(r"previous_text|next_text", str(e)):
+                raise
+            logger.info("🎙️ Voiceover fix: this model takes no surrounding text; reading without it")
+            audio, _rid = _eleven_tts_part(key, voice_id, model_id, text, [], vs)
+        folder = _eleven_fix_dir(mp3)
+        folder.mkdir(parents=True, exist_ok=True)
+        for old in list(folder.glob("take_*")):     # only the newest take can be used
+            old.unlink(missing_ok=True)
+        tid = uuid.uuid4().hex[:12]
+        with tempfile.TemporaryDirectory() as td:
+            raw, wav = Path(td) / "take.mp3", Path(td) / "take.wav"
+            raw.write_bytes(audio)
+            _eleven_fix_trim(raw, wav)
+            try:
+                old_lufs = _eleven_fix_lufs(mp3, cuts["s0"], cuts["e1"])
+                new_lufs = _eleven_fix_lufs(wav)
+                gain = max(-12.0, min(18.0, old_lufs - new_lufs)) if old_lufs > -69 and new_lufs > -69 else 0.0
+            except RuntimeError:
+                gain = 0.0
+            fit = _eleven_fix_splice(mp3, wav, cuts, gain, folder / f"take_{tid}.mp3")
+            shutil.copyfile(raw, folder / f"take_{tid}_raw.mp3")
+        p0, p1 = max(0.0, cuts["a"] - _ELEVEN_FIX_PAD), min(duration, cuts["b"] + _ELEVEN_FIX_PAD)
+        _eleven_fix_clip(mp3, p0, p1, folder / f"take_{tid}_before.mp3")
+        _eleven_fix_clip(folder / f"take_{tid}.mp3", p0, p1, folder / f"take_{tid}_after.mp3")
+        st = mp3.stat()
+        meta = {"take": tid, "first": first, "last": last, "text": text, "cuts": cuts, "gain_db": round(gain, 1),
+                **fit, "chars": len(text), "voice_id": voice_id, "model_id": model_id, "similarity": similarity,
+                "clone_strength": send_clone, "context": sorted(context), "mp3_size": st.st_size,
+                "mp3_mtime": st.st_mtime, "created": time.time()}
+        (folder / f"take_{tid}.json").write_text(json.dumps(meta), encoding="utf-8")
+        logger.info(f"🎙️ Voiceover fix take for {mp3.name}: sentences {first + 1}-{last + 1} "
+                    f"({_fmt_mmss(cuts['a'])}-{_fmt_mmss(cuts['b'])}, {len(text):,} chars), fitted x{fit['ratio']}, "
+                    f"{gain:+.1f} dB")
+        q = f"title={urllib.parse.quote(title)}&file={urllib.parse.quote(mp3.name)}"
+        return jsonify({"success": True, "take": tid, "chars": len(text), "ratio": fit["ratio"],
+                        "gain_db": round(gain, 1), "start": cuts["a"], "end": cuts["b"],
+                        "before": f"/api/elevenlabs/fix/audio?{q}&take={tid}&part=before",
+                        "after": f"/api/elevenlabs/fix/audio?{q}&take={tid}&part=after",
+                        "preview_start": round(p0, 2)})
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        err = _redact_secret(str(e), key)
+        logger.error(f"❌ Voiceover fix take failed: {err}")
+        return jsonify({"success": False, "error": err}), 500
+    finally:
+        _eleven_fix_end(mp3)
+
+
+def _fmt_mmss(t: float) -> str:
+    t = int(round(t))
+    return f"{t // 60}:{t % 60:02d}"
+
+
+@app.route("/api/elevenlabs/fix/apply", methods=["POST"])
+def elevenlabs_fix_apply():
+    """Put the take in the MP3 (the old MP3 is kept for Undo) and give the
+    Explainer projects made from it the new narration."""
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    tid = (data.get("take") or "").strip()
+    try:
+        mp3 = _eleven_fix_mp3(title, data.get("file"))
+    except (ValueError, FileNotFoundError) as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    folder = _eleven_fix_dir(mp3)
+    take, meta_f = folder / f"take_{tid}.mp3", folder / f"take_{tid}.json"
+    if not _ELEVEN_FIX_TAKE_RE.match(tid) or not take.is_file() or not meta_f.is_file():
+        return jsonify({"success": False, "error": "That take is gone; make it again."}), 404
+    meta = json.loads(meta_f.read_text(encoding="utf-8"))
+    st = mp3.stat()
+    if st.st_size != meta.get("mp3_size") or abs(st.st_mtime - float(meta.get("mp3_mtime") or 0)) > 1:
+        return jsonify({"success": False, "error": "The MP3 changed after this take was made; make it again."}), 409
+    busy = _eleven_fix_guard(title, mp3)
+    if busy:
+        return jsonify({"success": False, "error": busy}), 409
+    if not _eleven_fix_begin(mp3):
+        return jsonify({"success": False, "error": "This voiceover is busy with another fix."}), 409
+    import shutil
+    try:
+        history = _eleven_fix_history(mp3)
+        n = (history[-1]["n"] if history else 0) + 1
+        backup = folder / f"before_fix_{n:02d}.mp3"
+        shutil.copy2(mp3, backup)
+        take.replace(mp3)
+        for f in folder.glob(f"take_{tid}*"):
+            f.unlink(missing_ok=True)
+        history.append({"n": n, "first": meta["first"], "last": meta["last"], "text": meta["text"][:400],
+                        "start": meta["cuts"]["a"], "end": meta["cuts"]["b"], "ratio": meta.get("ratio"),
+                        "backup": backup.name, "when": datetime.now().isoformat(timespec="seconds")})
+        _eleven_fix_save_history(mp3, history)
+        updated, clips = _eleven_fix_refresh(title, mp3, meta["cuts"])
+        logger.info(f"✅ Voiceover fix {n} saved in {mp3.name} ({_fmt_mmss(meta['cuts']['a'])}-"
+                    f"{_fmt_mmss(meta['cuts']['b'])}); previous MP3 kept as {backup.name}"
+                    + (f"; Explainer narration updated ({', '.join(updated)})" if updated else ""))
+        return jsonify({"success": True, "n": n, "history": history, "explainers": updated, "clips": clips})
+    except Exception as e:
+        logger.error(f"❌ Voiceover fix could not be saved: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        _eleven_fix_end(mp3)
+
+
+@app.route("/api/elevenlabs/fix/undo", methods=["POST"])
+def elevenlabs_fix_undo():
+    """Put back the MP3 from before the last fix."""
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    try:
+        mp3 = _eleven_fix_mp3(title, data.get("file"))
+    except (ValueError, FileNotFoundError) as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    history = _eleven_fix_history(mp3)
+    if not history:
+        return jsonify({"success": False, "error": "This voiceover has no fixes to undo."}), 400
+    backup = _eleven_fix_dir(mp3) / Path(history[-1]["backup"]).name
+    if not backup.is_file():
+        return jsonify({"success": False, "error": f"{backup.name} is missing, so the last fix can't be undone."}), 404
+    busy = _eleven_fix_guard(title, mp3)
+    if busy:
+        return jsonify({"success": False, "error": busy}), 409
+    if not _eleven_fix_begin(mp3):
+        return jsonify({"success": False, "error": "This voiceover is busy with another fix."}), 409
+    try:
+        last = history.pop()
+        backup.replace(mp3)
+        for f in _eleven_fix_dir(mp3).glob("take_*"):
+            f.unlink(missing_ok=True)
+        _eleven_fix_save_history(mp3, history)
+        cuts = {"a": last["start"], "b": last["end"]}
+        updated, clips = _eleven_fix_refresh(title, mp3, cuts)
+        logger.info(f"↩️ Voiceover fix {last['n']} undone in {mp3.name}"
+                    + (f"; Explainer narration updated ({', '.join(updated)})" if updated else ""))
+        return jsonify({"success": True, "undone": last["n"], "history": history, "explainers": updated,
+                        "clips": clips})
+    except Exception as e:
+        logger.error(f"❌ Voiceover fix undo failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        _eleven_fix_end(mp3)
+
+
+@app.route("/api/elevenlabs/fix/audio", methods=["GET"])
+def elevenlabs_fix_audio():
+    """The voiceover MP3 itself, or a take's before/after preview."""
+    title = (request.args.get("title") or "").strip()
+    try:
+        mp3 = _eleven_fix_mp3(title, request.args.get("file"))
+    except (ValueError, FileNotFoundError) as e:
+        return jsonify({"success": False, "error": str(e)}), 404
+    tid, part = request.args.get("take") or "", request.args.get("part") or ""
+    if not tid:
+        path = mp3
+    elif _ELEVEN_FIX_TAKE_RE.match(tid) and part in ("before", "after"):
+        path = _eleven_fix_dir(mp3) / f"take_{tid}_{part}.mp3"
+    else:
+        return jsonify({"success": False, "error": "Audio not found."}), 404
+    if not path.is_file():
+        return jsonify({"success": False, "error": "Audio not found."}), 404
+    resp = send_file(path, mimetype="audio/mpeg", conditional=True)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+# ---- HeyGen presenter clips from the ElevenLabs voiceover (audio-to-video) ----
+# The Explainer makes presenter clips only for the stretches of narration
+# where its storyboard shows the presenter: each stretch of the MP3 is cut
+# out, uploaded as a HeyGen asset and drives the avatar of one of your
 # templates (POST /v3/videos with audio_asset_id). The template supplies the
-# avatar look, engine, background, and aspect ratio from its composition. The
-# finished video goes in the script's heygen/ folder, not aRoll/: aRoll can
-# already hold chapter clips (the output folder can be shared by scripts), and
-# Create DaVinci Project would put both on the timeline.
-#
-# A long MP3 is cut into the fewest clips that each stay under a frame limit
-# (the upscaler takes up to 9,000 frames per clip), with every cut in a pause
-# between sentences, and HeyGen renders the clips side by side. HeyGen renders
-# at 25 fps and as long as the audio, rounded up to a whole frame: on this
-# account an 887.14 s MP3 gave an 887.16 s video (22,179 frames), and a
-# 314.16 s clip gave 314.20 s (7,855 frames). The upscaler counts frames at its
-# own rate: at 30 fps that 314.20 s clip is 9,426 frames, so the limit is
-# counted at the upscaler's rate (30 fps by default; 9,000 frames = 5:00).
+# avatar look, engine, background, and aspect ratio from its composition.
+# The clips go in the script's heygen/ folder, not aRoll/: aRoll can already
+# hold chapter clips (the output folder can be shared by scripts), and
+# Create DaVinci Project would put both on the timeline. HeyGen renders at
+# 25 fps, as long as the audio.
 HEYGEN_AUDIO_MAX_BYTES = 32 * 1024 * 1024     # audio-to-video upload limit, per video
-HEYGEN_AUDIO_MAX_SECONDS = 30 * 60            # one request renders up to 30 minutes
 HEYGEN_RESOLUTIONS = ("1080p", "720p")
 HEYGEN_FPS = 25
-HEYGEN_DEFAULT_MAX_FRAMES = 9000
-HEYGEN_COUNT_FPS_CHOICES = (23.976, 24, 25, 29.97, 30, 50, 59.94, 60)
-HEYGEN_DEFAULT_COUNT_FPS = 30
-HEYGEN_MAX_FRAMES_RANGE = (250, 108000)
-_HG_FRAME_HEADROOM = 3                        # frames kept free under the limit (MP3 cuts land within ~26 ms)
-_HG_PAUSE_EDGE = 0.05                         # a cut stays this far inside a pause
-_HG_CUT_WINDOW_SECONDS = 15.0                 # prefer the longest pause this close to an even split
-_HG_CUT_TRIES = 12                            # pauses tried per cut before giving up on that clip count
 _HG_AUDIO_POLL_SECONDS = 20
 _HG_AUDIO_MAX_WAIT = 4 * 3600
-_HG_AUDIO_JOBS: dict = {}
-_HG_AUDIO_LOCK = threading.Lock()
 
 
 def _heygen_key() -> str:
@@ -9757,26 +10504,6 @@ def _audio_seconds(path: Path) -> float:
     return path.stat().st_size * 8 / 128000
 
 
-def _hg_frames(seconds: float, fps: float) -> int:
-    """Frames the upscaler counts, at fps, for a HeyGen video of this much audio
-    (HeyGen's video is the audio's length rounded up to a whole 25 fps frame)."""
-    import math
-    video = math.ceil(round(seconds * HEYGEN_FPS, 6)) / HEYGEN_FPS
-    return math.ceil(round(video * fps, 6))
-
-
-def _hg_clip_seconds(max_frames: int, fps: float) -> float:
-    """The longest audio clip whose HeyGen video stays within max_frames at fps."""
-    secs = (max_frames - _HG_FRAME_HEADROOM) / fps - 1 / HEYGEN_FPS
-    return min(secs, HEYGEN_AUDIO_MAX_SECONDS - 1)
-
-
-def _hg_clip_count(seconds: float, max_frames: int, fps: float) -> int:
-    """The fewest clips that could hold the audio (more if the pauses don't line up)."""
-    import math
-    return max(1, math.ceil(seconds / _hg_clip_seconds(max_frames, fps)))
-
-
 _AUDIO_PAUSES_CACHE: dict = {}
 
 
@@ -9805,100 +10532,6 @@ def _audio_pauses(path: Path) -> list:
         _AUDIO_PAUSES_CACHE.clear()
     _AUDIO_PAUSES_CACHE[cache_key] = pauses
     return pauses
-
-
-def _plan_clip_cuts(duration: float, pauses: list, max_seconds: float, n: int):
-    """Cut points that split the audio into n clips of at most max_seconds, every
-    cut inside a pause, or None when the pauses don't allow it. Each cut prefers
-    the longest pause within _HG_CUT_WINDOW_SECONDS of an even split of what's
-    left (cut in its middle, or as near as the limit allows), then the nearest
-    pause. If the clips after it can't be placed, it tries those pauses' latest
-    points (a later cut leaves the rest more room), then the next pauses."""
-    import bisect
-    pauses = sorted(pauses)
-    starts = [s for s, _ in pauses]
-    budget = [20000]                           # place() calls before giving up on this count
-
-    def candidates(lo, hi, target):
-        found = []
-        for s, e in pauses[max(0, bisect.bisect_left(starts, lo - 60)):bisect.bisect_right(starts, hi)]:
-            a, b = max(s + _HG_PAUSE_EDGE, lo), min(e - _HG_PAUSE_EDGE, hi)
-            if a <= b:
-                found.append((min(max((s + e) / 2, a), b), b, e - s))
-        near = sorted((c for c in found if abs(c[0] - target) <= _HG_CUT_WINDOW_SECONDS),
-                      key=lambda c: (-round(c[2], 2), abs(c[0] - target)))
-        far = sorted((c for c in found if abs(c[0] - target) > _HG_CUT_WINDOW_SECONDS),
-                     key=lambda c: abs(c[0] - target))
-        best = (near + far)[:_HG_CUT_TRIES]
-        return [c[0] for c in best] + [c[1] for c in best if c[1] - c[0] > 0.005]
-
-    def place(prev, left):                     # left: cuts still to place
-        if left == 0:
-            return [] if duration - prev <= max_seconds else None
-        budget[0] -= 1
-        if budget[0] < 0:
-            return None
-        lo = max(prev, duration - left * max_seconds)   # what's after must fit in the clips after
-        hi = min(prev + max_seconds, duration)
-        for cut in candidates(lo, hi, prev + (duration - prev) / (left + 1)):
-            rest = place(cut, left - 1)
-            if rest is not None:
-                return [round(cut, 3)] + rest
-        return None
-
-    return place(0.0, n - 1)
-
-
-def _plan_clips(path: Path, duration: float, max_frames: int, fps: float, min_count: int = 1):
-    """(cuts, in_pauses): the fewest clips (at least min_count) under max_frames
-    at fps with every cut in a silence, trying up to 4 more clips than the
-    minimum; with no such plan, even cuts at the minimum count (in_pauses False)."""
-    max_seconds = _hg_clip_seconds(max_frames, fps)
-    n = max(_hg_clip_count(duration, max_frames, fps), min_count)
-    if n == 1:
-        return [], True
-    pauses = _audio_pauses(path)
-    for count in range(n, n + 5):
-        cuts = _plan_clip_cuts(duration, pauses, max_seconds, count)
-        if cuts is not None:
-            return cuts, True
-    return [round(duration * k / n, 3) for k in range(1, n)], False
-
-
-def _split_audio(path: Path, cuts: list, out_paths: list) -> None:
-    """Cut the MP3 at cuts into out_paths (frames copied, not re-encoded)."""
-    import subprocess
-    edges = [0.0] + list(cuts) + [None]
-    for (start, end), out in zip(zip(edges, edges[1:]), out_paths):
-        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(path), "-ss", f"{start:.3f}"]
-        if end is not None:
-            cmd += ["-to", f"{end:.3f}"]
-        r = subprocess.run(cmd + ["-c", "copy", str(out)], capture_output=True, text=True, timeout=300)
-        if r.returncode != 0 or not out.is_file() or not out.stat().st_size:
-            raise RuntimeError(f"ffmpeg could not cut {out.name}: {(r.stderr or '').strip()[:200]}")
-
-
-def _video_frames(path: Path) -> tuple:
-    """(frame count, frame rate) of the video stream; (0, 0) if ffprobe can't tell."""
-    import shutil
-    import subprocess
-    if not shutil.which("ffprobe"):
-        return 0, 0
-    try:
-        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-                            "stream=nb_frames,r_frame_rate", "-of", "default=nw=1", str(path)],
-                           capture_output=True, text=True, timeout=60)
-        info = dict(line.split("=", 1) for line in (r.stdout or "").splitlines() if "=" in line)
-        num, _, den = (info.get("r_frame_rate") or "0/1").partition("/")
-        rate = float(num) / float(den or 1)
-        return int(info.get("nb_frames") or 0), (round(rate, 3) if rate > 0 else 0)
-    except (subprocess.SubprocessError, ValueError, OSError, ZeroDivisionError):
-        return 0, 0
-
-
-def _fmt_secs(secs: float) -> str:
-    secs = int(round(secs))
-    return f"{secs // 60}:{secs % 60:02d}"
 
 
 def _heygen_template_avatar(key: str, template_id: str) -> dict:
@@ -9947,16 +10580,6 @@ def _heygen_template_avatar(key: str, template_id: str) -> dict:
             "engine": engine, "background": bg}
 
 
-def _hg_audio_set(job_id: str, **kw) -> None:
-    with _HG_AUDIO_LOCK:
-        _HG_AUDIO_JOBS.setdefault(job_id, {}).update(kw)
-
-
-def _hg_part_set(job_id: str, index: int, **kw) -> None:
-    with _HG_AUDIO_LOCK:
-        _HG_AUDIO_JOBS[job_id]["parts"][index - 1].update(kw)
-
-
 def _hg_upload_audio(key: str, path: Path) -> str:
     """Upload an MP3 as a HeyGen asset; returns the asset id."""
     with open(path, "rb") as fh:
@@ -10003,224 +10626,122 @@ def _hg_download(url: str, out_path: Path) -> None:
     tmp.replace(out_path)
 
 
-def _hg_audio_run(job_id: str, key: str, audio_path: Path, duration: float, avatar: dict,
-                  resolution: str, title: str, max_frames: int, fps: float, video_dir: Path,
-                  stem: str) -> None:
-    import math
-    started = time.time()
-    n = _hg_clip_count(duration, max_frames, fps)
-    try:
-        # 1. Cut the audio in silences into clips whose videos stay within max_frames
-        #    at fps. The cut MP3s are measured; if one runs over (an MP3 cut can land
-        #    ~26 ms off), the audio is planned again with one more clip.
-        in_pauses = True
-        if n == 1:
-            cuts, audio_files, videos = [], [audio_path], [video_dir / f"{stem}.mp4"]
-        else:
-            _hg_audio_set(job_id, stage="splitting", message="Splitting the audio at pauses…")
-            clip_dir = audio_path.parent / "clips"
-            clip_dir.mkdir(parents=True, exist_ok=True)
-            min_count = n
-            for attempt in range(3):
-                cuts, in_pauses = _plan_clips(audio_path, duration, max_frames, fps, min_count)
-                n = len(cuts) + 1
-                names = [f"{stem}_part{i}of{n}" for i in range(1, n + 1)]
-                audio_files = [clip_dir / f"{nm}.mp3" for nm in names]
-                _split_audio(audio_path, cuts, audio_files)
-                if attempt == 2 or all(_hg_frames(_audio_seconds(af), fps) <= max_frames for af in audio_files):
-                    break                              # (still over after 3 tries: refused below)
-                for af in audio_files:
-                    af.unlink(missing_ok=True)
-                min_count = n + 1
-            videos = [video_dir / f"{nm}.mp4" for nm in names]
-        label = (lambda i: f"clip {i}/{n}") if n > 1 else (lambda i: "video")
-        edges = [0.0] + cuts + [duration]
-        parts = []
-        for i, af in enumerate(audio_files, 1):
-            secs = duration if n == 1 else _audio_seconds(af)
-            frames = _hg_frames(secs, fps)
-            if frames > max_frames:
-                raise RuntimeError(f"Clip {i} came out at {frames:,} frames at {fps:g} fps, over the "
-                                   f"{max_frames:,} limit. Nothing was sent to HeyGen.")
-            if af.stat().st_size > HEYGEN_AUDIO_MAX_BYTES:
-                raise RuntimeError(f"Clip {i} is {af.stat().st_size / 1048576:.0f} MB; HeyGen takes up to "
-                                   f"{HEYGEN_AUDIO_MAX_BYTES // 1048576} MB of audio per video.")
-            parts.append({"index": i, "start": round(edges[i - 1], 2), "end": round(edges[i], 2),
-                          "seconds": round(secs, 2), "frames": frames, "audio": af.name,
-                          "status": "queued", "heygen_status": "", "video_id": "", "path": "",
-                          "size": 0, "video_frames": 0, "error": ""})
-        if n > 1:
-            logger.info(f"✂️ Split {audio_path.name} at {', '.join(f'{c:.2f}s' for c in cuts)} into {n} clips: "
-                        + "; ".join(f"clip {p['index']} {p['seconds']:.2f}s ≈ {p['frames']:,} frames"
-                                    for p in parts) + f" at {fps:g} fps (limit {max_frames:,})"
-                        + ("" if in_pauses else "; no silences line up, so the cuts are even and may fall mid-word"))
-        _hg_audio_set(job_id, parts=parts, clips=n, in_pauses=in_pauses, stage="uploading")
+def _cut_audio(path: Path, start: float, end: float, out: Path) -> None:
+    """[start, end) of the MP3 into out (frames copied, not re-encoded; a cut
+    lands within an MP3 frame, ~26 ms, and the clip is placed by its audio)."""
+    import subprocess
+    r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(path), "-ss", f"{start:.3f}",
+                        "-to", f"{end:.3f}", "-c", "copy", str(out)], capture_output=True, text=True, timeout=300)
+    if r.returncode != 0 or not out.is_file() or not out.stat().st_size:
+        raise RuntimeError(f"ffmpeg could not cut {out.name}: {(r.stderr or '').strip()[:200]}")
 
-        # 2. Upload every clip before rendering any, so a failed upload costs no credits.
-        assets = []
-        for p, af in zip(parts, audio_files):
-            _hg_audio_set(job_id, message=(f"Uploading clip {p['index']} of {n} to HeyGen…" if n > 1
-                                           else f"Uploading {af.name} to HeyGen…"))
-            assets.append(_hg_upload_audio(key, af))
 
-        # 3. Start the renders side by side and poll until every clip is saved or failed.
-        #    A render HeyGen holds back (too many at once) is started again on the next round.
-        def start_render(p, asset_id):
-            i = p["index"]
-            body = {"type": "avatar", "avatar_id": avatar["avatar_id"], "audio_asset_id": asset_id,
-                    "title": (f"{title} (ElevenLabs audio)" + (f" part {i} of {n}" if n > 1 else ""))[:200],
-                    "aspect_ratio": avatar["aspect_ratio"], "resolution": resolution}
-            if avatar.get("engine"):
-                body["engine"] = {"type": avatar["engine"]}
-            if avatar.get("background"):
-                body["background"] = avatar["background"]
+def _hg_render_clips(key: str, avatar: dict, resolution: str, clips: list, status: Callable, cancel) -> None:
+    """Have the template's avatar speak each clip's MP3: every MP3 is
+    uploaded before any render starts (a failed upload costs no credits),
+    the renders run side by side and each finished video is downloaded to
+    its "video" path. clips: [{audio, video, title, label}]; each ends with
+    status "done" or "failed" (+ error) and its HeyGen video_id. A render
+    HeyGen holds back (too many at once) starts again on the next round.
+    Cancelling stops the waiting; renders already started finish in your
+    HeyGen account."""
+    started, n = time.time(), len(clips)
+    for c in clips:
+        c.update(status="queued", heygen_status="", video_id="", error="")
+    assets = []
+    for i, c in enumerate(clips, 1):
+        if cancel.is_set():
+            raise _xv.Cancelled()
+        status("heygen", f"Uploading clip {i} of {n} to HeyGen…", 0.02 + 0.08 * (i - 1) / n)
+        assets.append(_hg_upload_audio(key, c["audio"]))
+
+    def start_render(c, asset_id):
+        body = {"type": "avatar", "avatar_id": avatar["avatar_id"], "audio_asset_id": asset_id,
+                "title": c["title"][:200], "aspect_ratio": avatar["aspect_ratio"], "resolution": resolution}
+        if avatar.get("engine"):
+            body["engine"] = {"type": avatar["engine"]}
+        if avatar.get("background"):
+            body["background"] = avatar["background"]
+        try:
+            cr = requests.post(f"{HEYGEN_API_BASE}/v3/videos",
+                               headers={**_heygen_headers(key), "Content-Type": "application/json"},
+                               json=body, timeout=60)
+        except requests.exceptions.RequestException:
+            return                                     # try again next round
+        if cr.status_code in (200, 201):
+            data = (cr.json() or {}).get("data") or {}
+            video_id = data.get("video_id") or data.get("id")
+            if not video_id:
+                c.update(status="failed", error="HeyGen did not return a video id.")
+                return
+            logger.info(f"🎬 HeyGen {c['label']} started: video {video_id}, avatar {avatar['avatar_name']!r}, "
+                        f"{avatar.get('engine') or 'default engine'}, {resolution}")
+            c.update(status="rendering", heygen_status="waiting", video_id=video_id)
+            return
+        err = _redact_secret(_heygen_error(cr), key)
+        if cr.status_code in (429, 500, 502, 503, 504) or "concurren" in err.lower():
+            if not c.get("held"):
+                logger.info(f"⏳ HeyGen held back {c['label']} ({err}); starting it when a render slot frees up")
+            c["held"] = True
+            return
+        c.update(status="failed", error=err)
+
+    def poll(c):
+        try:
+            sr = requests.get(f"{HEYGEN_API_BASE}/v3/videos/{c['video_id']}", headers=_heygen_headers(key), timeout=30)
+        except requests.exceptions.RequestException:
+            return                                     # keep polling through a blip
+        if sr.status_code != 200:
+            if sr.status_code not in (429, 500, 502, 503, 504):
+                c.update(status="failed", error=_redact_secret(_heygen_error(sr), key))
+            return
+        d = (sr.json() or {}).get("data") or {}
+        st = (d.get("status") or "").lower()
+        if st != c["heygen_status"]:
+            logger.info(f"🎬 HeyGen {c['label']} ({c['video_id']}): {st or 'unknown'} "
+                        f"({int((time.time() - started) / 60)} min)")
+        c["heygen_status"] = st
+        if st == "failed":
+            c.update(status="failed", error="HeyGen could not render it: "
+                     f"{d.get('failure_message') or d.get('failure_code') or 'no reason given'}")
+        elif st == "completed":
+            if not d.get("video_url"):
+                c.update(status="failed", error="HeyGen finished it but returned no download link.")
+                return
             try:
-                cr = requests.post(f"{HEYGEN_API_BASE}/v3/videos",
-                                   headers={**_heygen_headers(key), "Content-Type": "application/json"},
-                                   json=body, timeout=60)
-            except requests.exceptions.RequestException:
-                return                                     # try again next round
-            if cr.status_code in (200, 201):
-                data = (cr.json() or {}).get("data") or {}
-                video_id = data.get("video_id") or data.get("id")
-                if not video_id:
-                    _hg_part_set(job_id, i, status="failed", error="HeyGen did not return a video id.")
-                    return
-                logger.info(f"🎬 HeyGen {label(i)} started: video {video_id}, avatar {avatar['avatar_name']!r}, "
-                            f"{avatar.get('engine') or 'default engine'}, {resolution}")
-                _hg_part_set(job_id, i, status="rendering", heygen_status="waiting", video_id=video_id)
+                _hg_download(d["video_url"], c["video"])
+                _hg_manifest_add(c["video"].parent, c["video_id"], c["video"], c["title"])
+            except Exception as e:
+                c.update(status="failed", error=f"Download failed: {e}. The video ({c['video_id']}) is in your "
+                         "HeyGen account.")
                 return
-            err = _redact_secret(_heygen_error(cr), key)
-            if cr.status_code in (429, 500, 502, 503, 504) or "concurren" in err.lower():
-                if not p.get("held"):
-                    logger.info(f"⏳ HeyGen held back {label(i)} ({err}); starting it when a render slot frees up")
-                _hg_part_set(job_id, i, held=True, heygen_status="held back")
-                return
-            _hg_part_set(job_id, i, status="failed", error=err)
+            logger.info(f"✅ HeyGen {c['label']} saved: {c['video']} ({c['video'].stat().st_size / 1048576:.0f} MB)")
+            c["status"] = "done"
 
-        def poll(p):
-            i = p["index"]
-            try:
-                sr = requests.get(f"{HEYGEN_API_BASE}/v3/videos/{p['video_id']}",
-                                  headers=_heygen_headers(key), timeout=30)
-            except requests.exceptions.RequestException:
-                return                                     # keep polling through a blip
-            if sr.status_code != 200:
-                if sr.status_code not in (429, 500, 502, 503, 504):
-                    _hg_part_set(job_id, i, status="failed", error=_redact_secret(_heygen_error(sr), key))
-                return
-            d = (sr.json() or {}).get("data") or {}
-            status = (d.get("status") or "").lower()
-            if status != p["heygen_status"]:
-                logger.info(f"🎬 HeyGen {label(i)} ({p['video_id']}): {status or 'unknown'} "
-                            f"({int((time.time() - started) / 60)} min)")
-            _hg_part_set(job_id, i, heygen_status=status)
-            if status == "failed":
-                _hg_part_set(job_id, i, status="failed", error="HeyGen could not render it: "
-                             f"{d.get('failure_message') or d.get('failure_code') or 'no reason given'}")
-            elif status == "completed":
-                if not d.get("video_url"):
-                    _hg_part_set(job_id, i, status="failed",
-                                 error="HeyGen finished it but returned no download link.")
-                    return
-                out = videos[i - 1]
-                _hg_part_set(job_id, i, status="downloading")
-                try:
-                    _hg_download(d["video_url"], out)
-                    _hg_manifest_add(out.parent, p["video_id"], out,
-                                     f"{title} (ElevenLabs audio)" + (f" part {i} of {n}" if n > 1 else ""))
-                except Exception as e:
-                    _hg_part_set(job_id, i, status="failed", error=f"Download failed: {e}. "
-                                 f"The video ({p['video_id']}) is in your HeyGen account.")
-                    return
-                native, rate = _video_frames(out)
-                frames = math.ceil(round(native / rate * fps, 6)) if native and rate else 0
-                size = out.stat().st_size
-                counted = f"{native:,} frames at {rate:g} fps = {frames:,} at {fps:g} fps" if frames else ""
-                if frames > max_frames:
-                    logger.warning(f"⚠️ HeyGen {label(i)} is over the {max_frames:,}-frame limit ({counted}): {out}")
-                else:
-                    logger.info(f"✅ HeyGen {label(i)} saved: {out} ({size / 1048576:.0f} MB"
-                                + (f", {counted}" if counted else "") + ")")
-                _hg_part_set(job_id, i, status="done", path=str(out), size=size, video_frames=frames,
-                             heygen_frames=native)
-
-        last_beat = time.time()
-        while True:
-            for p, asset_id in zip(parts, assets):
-                if p["status"] == "queued":
-                    start_render(p, asset_id)
-            if all(p["status"] in ("done", "failed") for p in parts):
-                break
-            mins = int((time.time() - started) / 60)
-            if time.time() - started > _HG_AUDIO_MAX_WAIT:
-                for p in parts:
-                    if p["status"] not in ("done", "failed"):
-                        _hg_part_set(job_id, p["index"], status="failed",
-                                     error=f"HeyGen was still rendering after {_HG_AUDIO_MAX_WAIT // 3600} hours."
-                                     + (f" The video ({p['video_id']}) will be in your HeyGen account when it "
-                                        "finishes." if p["video_id"] else ""))
-                break
-            saved = sum(p["status"] == "done" for p in parts)
-            _hg_audio_set(job_id, stage="rendering", message=(
-                f"HeyGen is rendering {n} clips ({saved} saved, {mins} min)…" if n > 1 else
-                f"HeyGen is rendering the video ({parts[0]['heygen_status'] or 'waiting'}, {mins} min)…"))
-            time.sleep(_HG_AUDIO_POLL_SECONDS)
-            for p in parts:
-                if p["status"] == "rendering":
-                    poll(p)
-            if time.time() - last_beat >= 300:
-                last_beat = time.time()
-                logger.info(f"🎬 HeyGen ({int((time.time() - started) / 60)} min): " + ", ".join(
-                    f"clip {p['index']} {p['heygen_status'] if p['status'] == 'rendering' else p['status']}"
-                    for p in parts))
-
-        elapsed = time.time() - started
-        failed = [p for p in parts if p["status"] == "failed"]
-        if failed:
-            err = "; ".join((f"Clip {p['index']} of {n}: " if n > 1 else "") + p["error"] for p in failed)
-            saved = n - len(failed)
-            if saved:
-                err += f" ({saved} of {n} clips were saved in {video_dir})"
-            raise RuntimeError(err)
-        logger.info(f"✅ HeyGen: {n} clip{'s' if n > 1 else ''} saved in {video_dir} ({elapsed / 60:.0f} min)")
-        _hg_audio_set(job_id, status="done", stage="done", elapsed=round(elapsed),
-                      message=f"Saved {n} clips" if n > 1 else f"Saved {videos[0].name}")
-    except Exception as e:
-        err = _redact_secret(str(e), key)
-        logger.error(f"❌ HeyGen audio-to-video failed after {(time.time() - started) / 60:.1f} min: {err}")
-        _hg_audio_set(job_id, status="error", error=err, elapsed=round(time.time() - started))
-
-
-@app.route("/api/heygen/audio-video/options", methods=["GET"])
-def heygen_audio_video_options():
-    """Templates to pick an avatar from, the saved choice, and this script's MP3s."""
-    title = (request.args.get("title") or "").strip() or "Voiceover"
-    key = _heygen_key()
-    saved = _load_scriptcraft_settings()
-    out = {"success": True, "voiceovers": _voiceover_files(title),
-           "resolutions": list(HEYGEN_RESOLUTIONS), "templates": [],
-           "template_id": saved.get("heygen_audio_template_id") or "",
-           "resolution": saved.get("heygen_audio_resolution") or "1080p",
-           "max_frames": saved.get("heygen_audio_max_frames") or HEYGEN_DEFAULT_MAX_FRAMES,
-           "max_frames_range": list(HEYGEN_MAX_FRAMES_RANGE), "heygen_fps": HEYGEN_FPS,
-           "count_fps": saved.get("heygen_audio_count_fps") or HEYGEN_DEFAULT_COUNT_FPS,
-           "count_fps_choices": list(HEYGEN_COUNT_FPS_CHOICES)}
-    if not key:
-        out.update(success=False, needs_key=True,
-                   error="Add your HeyGen API key in 🔑 API Keys first.")
-        return jsonify(out), 400
-    try:
-        tpls = _heygen_v3_list_all("/v3/templates", key)
-        out["templates"] = [{"id": t.get("id"), "name": t.get("name") or t.get("id"),
-                             "thumbnail_url": t.get("thumbnail_url") or ""} for t in tpls if t.get("id")]
-        return jsonify(out)
-    except requests.exceptions.HTTPError as e:
-        out.update(success=False, error=_redact_secret(_heygen_error(e.response), key))
-        return jsonify(out), 502
-    except Exception as e:
-        out.update(success=False, error=_redact_secret(str(e), key))
-        return jsonify(out), 500
+    while True:
+        for c, asset_id in zip(clips, assets):
+            if c["status"] == "queued":
+                start_render(c, asset_id)
+        if all(c["status"] in ("done", "failed") for c in clips):
+            break
+        if cancel.is_set():
+            raise _xv.Cancelled()
+        if time.time() - started > _HG_AUDIO_MAX_WAIT:
+            for c in clips:
+                if c["status"] not in ("done", "failed"):
+                    c.update(status="failed", error=f"HeyGen was still rendering after {_HG_AUDIO_MAX_WAIT // 3600} "
+                             "hours." + (f" The video ({c['video_id']}) will be in your HeyGen account when it "
+                                         "finishes." if c["video_id"] else ""))
+            break
+        saved = sum(c["status"] == "done" for c in clips)
+        status("heygen", f"HeyGen is rendering {n} clip(s) ({saved} saved, {int((time.time() - started) / 60)} min)…",
+               0.1 + 0.6 * saved / n)
+        time.sleep(_HG_AUDIO_POLL_SECONDS)
+        for c in clips:
+            if c["status"] == "rendering":
+                poll(c)
+    logger.info(f"🎬 HeyGen: {sum(c['status'] == 'done' for c in clips)} of {n} clip(s) saved "
+                f"({(time.time() - started) / 60:.0f} min)")
 
 
 @app.route("/api/heygen/template-avatar/<template_id>", methods=["GET"])
@@ -10235,146 +10756,6 @@ def heygen_template_avatar(template_id):
         return jsonify({"success": True, **_heygen_template_avatar(key, template_id)})
     except Exception as e:
         return jsonify({"success": False, "error": _redact_secret(str(e), key)}), 502
-
-
-def _hg_clip_args(title: str, data) -> tuple:
-    """(MP3 path, max_frames, fps) from a request; ValueError says what's wrong.
-    The MP3 is named, not given as a path: it must be one of this script's voiceovers."""
-    name = (data.get("voiceover") or "").strip()
-    audio = _voiceover_dir(title) / name
-    if not name or Path(name).name != name or not name.lower().endswith(".mp3") or not audio.is_file():
-        raise ValueError("Pick one of this script's ElevenLabs MP3s.")
-    try:
-        max_frames = int(data.get("max_frames") or HEYGEN_DEFAULT_MAX_FRAMES)
-    except (TypeError, ValueError):
-        max_frames = 0
-    lo, hi = HEYGEN_MAX_FRAMES_RANGE
-    if not lo <= max_frames <= hi:
-        raise ValueError(f"Max frames per clip must be {lo:,}–{hi:,}.")
-    try:
-        fps = float(data.get("fps") or HEYGEN_DEFAULT_COUNT_FPS)
-    except (TypeError, ValueError):
-        fps = 0.0
-    if fps not in HEYGEN_COUNT_FPS_CHOICES:
-        raise ValueError("Count frames at one of " + ", ".join(f"{f:g}" for f in HEYGEN_COUNT_FPS_CHOICES) + " fps.")
-    return audio, max_frames, fps
-
-
-def _hg_clip_plan(audio: Path, max_frames: int, fps: float) -> tuple:
-    """(seconds, clips, in_pauses) for an MP3: each clip's span and the frames its
-    HeyGen video will count at fps. ValueError if the audio can't be split."""
-    import shutil
-    seconds = _audio_seconds(audio)
-    if _hg_clip_count(seconds, max_frames, fps) > 1 and not shutil.which("ffmpeg"):
-        raise ValueError("ffmpeg is needed to split the audio into clips; install it (brew install ffmpeg) "
-                         "and try again.")
-    cuts, in_pauses = _plan_clips(audio, seconds, max_frames, fps)
-    edges = [0.0] + cuts + [seconds]
-    clips = [{"index": i, "start": round(a, 2), "end": round(b, 2), "seconds": round(b - a, 2),
-              "frames": _hg_frames(b - a, fps)} for i, (a, b) in enumerate(zip(edges, edges[1:]), 1)]
-    return seconds, clips, in_pauses
-
-
-@app.route("/api/heygen/audio-video/plan", methods=["GET"])
-def heygen_audio_video_plan():
-    """How an MP3 would be cut: the clips, where they start and end, and their frames."""
-    title = (request.args.get("title") or "").strip() or "Voiceover"
-    try:
-        audio, max_frames, fps = _hg_clip_args(title, request.args)
-        seconds, clips, in_pauses = _hg_clip_plan(audio, max_frames, fps)
-    except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
-    return jsonify({"success": True, "audio_seconds": round(seconds, 2), "max_frames": max_frames,
-                    "fps": fps, "heygen_fps": HEYGEN_FPS, "clips": clips, "in_pauses": in_pauses})
-
-
-@app.route("/api/heygen/audio-video", methods=["POST"])
-def heygen_audio_video_start():
-    """Start HeyGen videos from one of this script's ElevenLabs MP3s with a
-    template's avatar: one clip per max_frames of audio, cut at pauses.
-    Returns job_id; poll /api/heygen/audio-video/<job_id>."""
-    key = _heygen_key()
-    if not key:
-        return jsonify({"success": False, "needs_key": True,
-                        "error": "Add your HeyGen API key in 🔑 API Keys first."}), 400
-    data = request.get_json(silent=True) or {}
-    title = (data.get("title") or "").strip() or "Voiceover"
-    template_id = (data.get("template_id") or "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", template_id):
-        return jsonify({"success": False, "error": "Pick a template first."}), 400
-    resolution = (data.get("resolution") or "1080p").strip()
-    if resolution not in HEYGEN_RESOLUTIONS:
-        return jsonify({"success": False, "error": f"Unknown resolution: {resolution}"}), 400
-    try:
-        audio, max_frames, fps = _hg_clip_args(title, data)
-        seconds, plan, in_pauses = _hg_clip_plan(audio, max_frames, fps)
-    except ValueError as e:
-        return jsonify({"success": False, "error": str(e)}), 400
-    name, clips = audio.name, len(plan)
-    size = audio.stat().st_size
-    if clips == 1 and size > HEYGEN_AUDIO_MAX_BYTES:
-        return jsonify({"success": False, "error": f"The MP3 is {size / 1048576:.0f} MB; HeyGen takes up to "
-                        f"{HEYGEN_AUDIO_MAX_BYTES // 1048576} MB of audio per video."}), 400
-    try:
-        avatar = _heygen_template_avatar(key, template_id)
-    except Exception as e:
-        return jsonify({"success": False, "error": _redact_secret(str(e), key)}), 502
-
-    settings = _load_scriptcraft_settings()
-    settings.update(heygen_audio_template_id=template_id, heygen_audio_resolution=resolution,
-                    heygen_audio_max_frames=max_frames, heygen_audio_count_fps=fps)
-    _save_scriptcraft_settings(settings)
-
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    stem = f"{_safe_title_for_paths(title) or 'Video'}_ElevenLabs_{stamp}"
-    video_dir = _get_run_output_dir(title) / "heygen"
-    job_id = uuid.uuid4().hex
-    with _HG_AUDIO_LOCK:
-        for old in sorted(_HG_AUDIO_JOBS, key=lambda j: _HG_AUDIO_JOBS[j].get("created", 0))[:-20]:
-            _HG_AUDIO_JOBS.pop(old, None)
-    _hg_audio_set(job_id, status="running", stage="starting", created=time.time(), audio=name,
-                  audio_seconds=round(seconds, 2), clips=clips, max_frames=max_frames, fps=fps,
-                  parts=[], avatar=avatar["avatar_name"], template=avatar["template_name"],
-                  engine=avatar.get("engine") or "", resolution=resolution, folder=str(video_dir),
-                  message="Starting…")
-    logger.info(f"🎬 HeyGen video from {name!r} ({_fmt_secs(seconds)}) in {clips} clip{'s' if clips > 1 else ''} "
-                f"of up to {max_frames:,} frames at {fps:g} fps, template {avatar['template_name']!r} → avatar "
-                f"{avatar['avatar_name']!r}, {resolution}")
-    _threading.Thread(target=_hg_audio_run, daemon=True,
-                      args=(job_id, key, audio, seconds, avatar, resolution, title, max_frames,
-                            fps, video_dir, stem)).start()
-    return jsonify({"success": True, "job_id": job_id, "avatar": avatar["avatar_name"],
-                    "template": avatar["template_name"], "audio_seconds": round(seconds, 2),
-                    "clips": clips, "plan": plan, "in_pauses": in_pauses, "max_frames": max_frames,
-                    "fps": fps})
-
-
-@app.route("/api/heygen/audio-video/<job_id>", methods=["GET"])
-def heygen_audio_video_status(job_id):
-    with _HG_AUDIO_LOCK:
-        found = _HG_AUDIO_JOBS.get(job_id)
-        job = dict(found or {})
-        if found:
-            job["parts"] = [dict(p) for p in found.get("parts") or []]   # copied while locked
-    if not job:
-        return jsonify({"success": False, "error": "Unknown job (the app may have restarted)."}), 404
-    job.pop("created", None)
-    return jsonify({"success": True, **job})
-
-
-@app.route("/api/heygen/audio-video/<job_id>/file", methods=["GET"])
-def heygen_audio_video_file(job_id):
-    """A finished clip; ?part=N picks the clip (default 1)."""
-    try:
-        part = int(request.args.get("part") or 1)
-    except ValueError:
-        part = 0
-    with _HG_AUDIO_LOCK:
-        parts = (_HG_AUDIO_JOBS.get(job_id) or {}).get("parts") or []
-        path = parts[part - 1].get("path") if 1 <= part <= len(parts) else ""
-    if not path or not Path(path).is_file():
-        return jsonify({"success": False, "error": "Video not found."}), 404
-    return send_file(path, mimetype="video/mp4", conditional=True)
 
 
 # ---- Explainer video: Claude Opus 5.5 builds slides + scenes on the narration ----
@@ -10457,13 +10838,11 @@ def _xv_state(p) -> dict:
         "versions": d.get("versions") or [], "usage": d.get("usage") or {}, "notes": d.get("notes") or [],
         "values": d.get("values") or {}, "logo_choices": d.get("logo_choices") or {},
         "answers": d.get("answers") or {}, "renders": d.get("renders") or [],
-        "logos": {k: {**{x: v.get(x) for x in ("name", "kind", "aspect", "recolored", "recolor", "source")},
+        "logos": {k: {**{x: v.get(x) for x in ("name", "kind", "aspect", "recolored", "recolor", "source", "updated")},
                       "path": f"logos/{v.get('file')}"}
                   for k, v in (d.get("logos") or {}).items()},
         "job": _xv.job_status(p.id), "chrome": bool(_xv.find_chrome()), "model": _xv.MODEL_LABEL,
         "span": d.get("span"), "host": None,
-        "pip_frame": _xv.pip_frame_key(None, ((d.get("host") or {}).get("pip_frame") or d.get("pip_frame"))),
-        "bubble": _xv.bubble_mode_key(None, d.get("bubble")),
         "visual_style": _xv.visual_style_key(None, d.get("visual_style")),
         "film_look": _xv.film_look_key(None, d.get("film_look")),
         "look_test": d.get("look_test") or None,
@@ -10478,18 +10857,20 @@ def _xv_state(p) -> dict:
         "youtube": _xv.yt_public(p),
     }
     import explainer_articles as _xa
-    host = p.host()
+    host = p.presenter()
     if host:
         out["host"] = {
             "source": host.get("source"), "label": host.get("label"), "focus": host.get("focus"),
-            "share": host.get("share"), "pip_frame": out["pip_frame"], "created": host.get("created"),
+            "share": host.get("share"), "created": host.get("created"),
+            "planned": bool(host.get("planned")),
             "proxy": host.get("proxy") if (p.dir / (host.get("proxy") or "-")).is_file() else "",
             "still": "host/still.jpg" if (p.dir / "host" / "still.jpg").is_file() else "",
             "parts": [{"name": Path(x["file"]).name, "orig": Path(x["orig"]).name, "offset": x["offset"],
                        "seconds": x["seconds"], "w": x["w"], "h": x["h"], "score": x["score"],
-                       "drift": x.get("drift"), "upscaled": x.get("upscaled")} for x in host["parts"]],
+                       "drift": x.get("drift"), "upscaled": x.get("upscaled"),
+                       "topaz": _xv.topaz_model_of(x["file"])} for x in host["parts"]],
             "sections": host.get("sections") or [], "coverage": _xv.host_coverage(host),
-            "refused": host.get("refused") or []}
+            "refused": host.get("refused") or [], "notes": host.get("notes") or []}
     plan = p.plan()
     if plan:
         out["plan"] = {k: plan.get(k) for k in ("summary", "questions", "dropped", "figures", "inserts", "sections")}
@@ -10513,7 +10894,12 @@ def _xv_state(p) -> dict:
             _xb.ensure_brand_logos(p, [s.get("spoken") or "" for s in comp.get("slides") or []])
         except Exception:
             pass
-        out["brands"] = list((p.data.get("brands") or []))
+        out["brands"] = _xv_brand_rows(p)
+        if out["host"]:
+            # Stretches that show the presenter with no clip yet, and the clips that would cover them.
+            out["host"]["missing"] = p.missing(comp)
+            out["host"]["clip_spans"] = _xv.clip_spans(out["host"]["missing"], float(d.get("audio_seconds") or 0),
+                                                       timeline=p.timeline())
         out["articles"] = _xa.public_articles(p, comp.get("slides") or [])
         out["emphasis"] = _xa.public_emphasis(p, comp.get("slides") or [], comp.get("html") or "",
                                               comp.get("clock") or {})
@@ -10522,6 +10908,25 @@ def _xv_state(p) -> dict:
         out["emphasis"] = _xa.public_emphasis(p, [], "")
     out["ocr"] = _xa.ocr_status()
     return out
+
+
+def _xv_avatar_still(project) -> None:
+    """The saved HeyGen template's avatar picture as a planned presenter's
+    still (Claude sees it while planning); skipped quietly without one."""
+    key, tpl = _heygen_key(), _load_scriptcraft_settings().get("heygen_audio_template_id") or ""
+    if not key or not tpl:
+        return
+    try:
+        url = _heygen_template_avatar(key, tpl).get("preview_image_url")
+        r = requests.get(url, timeout=30) if url else None
+        if r is not None and r.status_code == 200 and r.content:
+            from PIL import Image
+            im = Image.open(BytesIO(r.content)).convert("RGB")
+            im.thumbnail((960, 960))
+            (project.dir / "host").mkdir(exist_ok=True)
+            im.save(project.dir / "host" / "still.jpg", quality=88)
+    except Exception as e:  # noqa: BLE001 - the still only helps Claude
+        logger.info(f"ℹ️ No avatar picture for the planned presenter: {_redact_secret(str(e), key)}")
 
 
 def _xv_presenters(title: str, lengths: list) -> list:
@@ -10544,8 +10949,7 @@ def explainer_options():
     return jsonify({"success": True, "voiceovers": voiceovers, "images": _xv_images(title),
                     "images_dir": str(root / "images"), "projects": _xv.list_projects(root, title),
                     "presenters": _xv_presenters(title, [v["seconds"] for v in voiceovers]),
-                    "host_shares": _xv.HOST_SHARES, "pip_frames": list(_xv.PIP_FRAME_MODES),
-                    "bubble_modes": list(_xv.BUBBLE_MODES),
+                    "host_shares": _xv.HOST_SHARES, "pip_devices": list(_xv.PIP_DEVICES), "heygen": bool(_heygen_key()),
                     "visual_styles": list(_xv.VISUAL_STYLES),
                     "film_looks": list(_xv.FILM_LOOKS),
                     "transition_modes": list(_xv.TRANSITION_MODES),
@@ -10625,15 +11029,13 @@ def explainer_start():
                     "minutes": min(10.0, max(0.5, float(data["test"].get("minutes") or 2)))}
         except (TypeError, ValueError):
             return jsonify({"success": False, "error": "The test clip start and length must be numbers."}), 400
-    presenter = None
-    if data.get("presenter"):
+    presenter, planned = None, data.get("presenter") == "heygen"
+    if data.get("presenter") and not planned:
         presenter = next((x for x in _xv_presenters(title, [_audio_seconds(_voiceover_dir(title) / voiceover)])
                           if x["id"] == data["presenter"]), None)
         if presenter is None:
             return jsonify({"success": False, "error": "That presenter video is no longer in the script folder."}), 400
     share = _xv.host_share_key(data.get("share"))
-    pip_frame = _xv.pip_frame_key(data.get("pip_frame"))
-    bubble = _xv.bubble_mode_key(data.get("bubble"))
     visual_style = _xv.visual_style_key(data.get("visual_style"))
     transition_mode = _xv.transition_mode_key(data.get("transition_mode"))
     film_look = _xv.film_look_key(data.get("film_look"))
@@ -10644,24 +11046,28 @@ def explainer_start():
     project.write("script.txt", script)
     project.write("spoken.txt", spoken)
     project.data.update(title=title, created=time.time(), voiceover=voiceover, text_source=source,
-                        model=_xv.MODEL, status="running", pip_frame=pip_frame, bubble=bubble,
+                        model=_xv.MODEL, status="running",
                         visual_style=visual_style, transition_mode=transition_mode,
                         film_look=film_look)
+    if planned:
+        project.data["host"] = _xv.planned_host(share)
     project.save()
     counts = _xv.production_counts(script)
     logger.info(f"🎞️ Explainer video for {title[:60]!r}: {voiceover}, {len(spoken.split()):,} spoken words "
                 f"(from {source}), {counts['scenes']} scene briefs, {counts['verify']} VERIFY notes, "
                 f"{len(logos)} logo(s)"
                 + (f", test clip of {test['minutes']:g} min from {_xv.fmt_secs(test['start'])}" if test else "")
-                + (f", presenter {presenter['label']!r} ({share})" if presenter else "") + f"; {_xv.MODEL_LABEL}")
+                + (f", presenter {presenter['label']!r} ({share})" if presenter else "")
+                + (f", a HeyGen presenter made after the storyboard ({share})" if planned else "") + f"; {_xv.MODEL_LABEL}")
 
     def job(p, cancel, status):
+        if planned:
+            _xv_avatar_still(p)
         return _xv.run_create(p, client, audio_src=audio, spoken_text=spoken, eleven_key=_eleven_key(),
                               pauses=_audio_pauses, logos=logos, images_dir=_xv_images_dir(title),
                               cancel=cancel, status=status, log=_xv_log, test=test, presenter=presenter,
                               root=_get_run_output_dir(title, create=False), share=share,
-                              pip_frame=pip_frame, bubble=bubble, visual_style=visual_style,
-                              transition_mode=transition_mode)
+                              visual_style=visual_style, transition_mode=transition_mode)
 
     _xv.start_job(project, "create", job, _xv_log)
     return jsonify({"success": True, "project": pid, "state": _xv_state(project)})
@@ -10689,12 +11095,11 @@ def explainer_preview(pid):
         n = int(request.args.get("v") or p.data["current"])
     except ValueError:
         n = p.data["current"]
-    host = p.host()
-    frame, bubble = _xv.look_of(p.data, host)
-    if host and host.get("proxy"):
+    comp = p.compile(n)
+    host = p.page_host(comp)
+    if host and p.host() and host.get("proxy"):
         host = {**host, "video": (f"/api/explainer/{pid}/file?title={urllib.parse.quote(p.data.get('title') or '')}"
                                   f"&path={urllib.parse.quote(host['proxy'])}&v={int(host.get('created') or 0)}")}
-    compiled = p.compile(n)
     visual_style = _xv.visual_style_key(None, p.data.get("visual_style"))
     film_look = _xv.film_look_key(None, p.data.get("film_look"))
     quote_title = urllib.parse.quote(p.data.get("title") or "")
@@ -10706,19 +11111,19 @@ def explainer_preview(pid):
     if not origin.startswith(("http://", "https://")):
         origin = ""
     import explainer_articles as _xa
-    article_layer, emphasis_layer = _xa.page_layers(p, compiled)
+    article_layer, emphasis_layer = _xa.page_layers(p, comp)
     books = {}
     for _bk in ("intro", "end"):
         pub = _xv_public_bookend(p, _bk)
         if pub.get("url"):
             books[_bk] = pub["url"]
             books[_bk + "_audio"] = pub.get("audio") or "clip"
-    page = _xv.page_html(compiled, mode="preview", title=p.data.get("title") or "Explainer", host=host,
-                         pip_frame=frame, bubble=bubble, clips=_xv.preview_clip_payloads(p, compiled, _clip_url),
+    page = _xv.page_html(comp, mode="preview", title=p.data.get("title") or "Explainer", host=host,
+                         clips=_xv.preview_clip_payloads(p, comp, _clip_url),
                          media_origin=origin, visual={"style": visual_style},
                          film_look=film_look, words=_xv.load_words(p),
                          articles=article_layer, emphasis=emphasis_layer,
-                         demos=_xv.demo_payloads(compiled, _xv.load_youtube(p.data)["clips"], "preview"),
+                         demos=_xv.demo_payloads(comp, _xv.load_youtube(p.data)["clips"], "preview"),
                          bookends=books)
     resp = Response(page, mimetype="text/html")
     resp.headers["Cache-Control"] = "no-store"
@@ -10732,6 +11137,31 @@ def explainer_audio(pid):
     if path is None or not path.is_file():
         return jsonify({"success": False, "error": "Audio not ready."}), 404
     return send_file(path, mimetype="audio/mp4", conditional=True)
+
+
+def _xv_brand_rows(p) -> list:
+    """The brands named in the script, each with its logo: the project file
+    (an upload or the cached Simple Icons download) or, with none, the drawn
+    monogram the video falls back to."""
+    logos = p.data.get("logos") or {}
+    rows = []
+    for b in (p.data.get("brands") or []):
+        row = dict(b)
+        f = (logos.get(b.get("key")) or {}).get("file") or ""
+        path = p.dir / "logos" / f if f else None
+        if path is not None and path.is_file():
+            row["path"] = "logos/" + f
+            row["v"] = int(path.stat().st_mtime)
+        else:
+            try:
+                import base64 as _b64
+                import explainer_brands as _xb
+                svg = _xb.monogram_svg(b.get("name") or "?", b.get("color") or "#888888")
+                row["mono"] = "data:image/svg+xml;base64," + _b64.b64encode(svg.encode("utf-8")).decode("ascii")
+            except Exception:
+                pass
+        rows.append(row)
+    return rows
 
 
 @app.route("/api/explainer/<pid>/file", methods=["GET"])
@@ -10788,6 +11218,27 @@ def _xv_youtube_download(p, url: str):
     return jsonify({"success": True, **_xv_state(p)})
 
 
+@app.route("/api/explainer/<pid>/video", methods=["POST"])
+def explainer_own_video(pid):
+    """Add your own recording (a demo) as a clip source, next to the
+    downloaded YouTube videos: cut clips from it, or use the whole of it."""
+    title = _xv_title()
+    p = _xv_project(title, pid)
+    if p is None:
+        return jsonify({"success": False, "error": "Project not found."}), 404
+    up = request.files.get("file")
+    if not up or not up.filename:
+        return jsonify({"success": False, "error": "Choose a video file."}), 400
+    try:
+        _xv.require_ffmpeg()
+        rec = _xv.add_own_video(p, up, up.filename)
+    except _xv.YoutubeError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    _xv_log(f"🎬 Your video for the explainer: {rec['title']} ({_xv.fmt_secs(rec['seconds'])}, "
+            f"{rec['width']}x{rec['height']})")
+    return jsonify({"success": True, "video": rec["id"], **_xv_state(p)})
+
+
 @app.route("/api/explainer/<pid>/youtube", methods=["POST"])
 def explainer_youtube(pid):
     """Download a public YouTube video, cut clips, and assign them to slides."""
@@ -10807,6 +11258,8 @@ def explainer_youtube(pid):
                                end=data.get("end"), label=data.get("label"))
         elif action == "audio":
             _xv.yt_set_audio(p, (data.get("id") or "").strip(), (data.get("audio") or "").strip())
+        elif action == "place":
+            _xv.yt_set_place(p, (data.get("id") or "").strip(), (data.get("place") or "").strip())
         elif action == "assign":
             known = None
             if p.data.get("current"):
@@ -10962,7 +11415,9 @@ def explainer_values(pid):
 @app.route("/api/explainer/<pid>/logo", methods=["POST"])
 def explainer_logo(pid):
     """Give a brand key a logo: an uploaded file (saved to images/), a file
-    already in images/, or a new recolor mode for its current file."""
+    already in images/, or a new recolor mode for its current file. A new
+    file replaces the one the logo had. remove=1 takes the file away and
+    shows the brand as a text badge instead."""
     title = _xv_title()
     p = _xv_project(title, pid)
     if p is None:
@@ -10971,6 +11426,13 @@ def explainer_logo(pid):
     recolor = request.form.get("recolor") if request.form.get("recolor") in ("auto", "white", "original") else "auto"
     if not key:
         return jsonify({"success": False, "error": "Which logo?"}), 400
+    if request.form.get("remove") == "1":
+        with p.lock:
+            old = (p.data.get("logos") or {}).pop(key, None)
+            p.data.setdefault("logo_choices", {})[key] = "badge"
+        p.save()
+        logger.info(f"🖼️ Explainer logo {key!r}: text badge instead of {(old or {}).get('source') or 'no file'}")
+        return jsonify({"success": True, **_xv_state(p)})
     images = _get_run_output_dir(title) / "images"
     images.mkdir(parents=True, exist_ok=True)
     up = request.files.get("file")
@@ -11167,12 +11629,27 @@ def explainer_version(pid):
     return jsonify({"success": True, **_xv_state(p)})
 
 
+@app.route("/api/explainer/<pid>/order", methods=["POST"])
+def explainer_order(pid):
+    """Put the slides back in narration order (a new version; no Claude call)."""
+    data = request.get_json(silent=True) or {}
+    p = _xv_project((data.get("title") or "").strip(), pid)
+    if p is None or not p.data.get("current"):
+        return jsonify({"success": False, "error": "Project not found."}), 404
+    if _xv.job_running(p.id):
+        return jsonify({"success": False, "error": "Wait for the running job to finish."}), 409
+    n = _xv.order_slides(p)
+    if n:
+        _xv_log(f"↕️ Explainer version {n}: slides put back in narration order")
+    return jsonify({"success": True, "ordered": n, **_xv_state(p)})
+
+
 @app.route("/api/explainer/<pid>/host", methods=["POST"])
 def explainer_host(pid):
-    """The presenter video: pick or change the HeyGen clips (matched to the
+    """The presenter video: plan a HeyGen presenter (its clips are made later,
+    only where it shows), pick or change the HeyGen clips (matched to the
     narration in the background), rescan for upscaled copies, remove it, or
-    change the side-panel framing, how often the plan uses it, how corner
-    windows are framed, or the guide character."""
+    change the side-panel framing or how often the plan uses it."""
     data = request.get_json(silent=True) or {}
     title = (data.get("title") or "").strip()
     p = _xv_project(title, pid)
@@ -11180,28 +11657,18 @@ def explainer_host(pid):
         return jsonify({"success": False, "error": "Project not found."}), 404
     if _xv.job_running(p.id):
         return jsonify({"success": False, "error": "Wait for the running job to finish."}), 409
-    host = p.host()
-    if "pip_frame" in data or "bubble" in data or "visual_style" in data or "film_look" in data:
-        if "pip_frame" in data and data.get("pip_frame") not in _xv.PIP_FRAME_MODES:
-            return jsonify({"success": False, "error": "Unknown corner frame."}), 400
-        if "bubble" in data and data.get("bubble") not in _xv.BUBBLE_MODES:
-            return jsonify({"success": False, "error": "Unknown guide setting."}), 400
+    host = p.presenter()
+    if "visual_style" in data or "film_look" in data:
         if "visual_style" in data and data.get("visual_style") not in _xv.VISUAL_STYLES:
             return jsonify({"success": False, "error": "Unknown picture style."}), 400
         if "film_look" in data and data.get("film_look") not in _xv.FILM_LOOKS:
             return jsonify({"success": False, "error": "Unknown look."}), 400
         if not any(k in data for k in ("focus", "share", "remove", "source")):
             with p.lock:
-                if "bubble" in data:
-                    p.data["bubble"] = data["bubble"]
                 if "visual_style" in data:
                     p.data["visual_style"] = data["visual_style"]
                 if "film_look" in data:
                     p.data["film_look"] = data["film_look"]
-                if "pip_frame" in data:
-                    p.data["pip_frame"] = data["pip_frame"]
-                    if host:
-                        host["pip_frame"] = data["pip_frame"]
             p.save()
             return jsonify({"success": True, **_xv_state(p)})
     if "focus" in data or "share" in data:
@@ -11217,12 +11684,26 @@ def explainer_host(pid):
                 host["share"] = data["share"]
         p.save()
         return jsonify({"success": True, **_xv_state(p)})
+    if data.get("rescan"):
+        if not p.host():
+            return jsonify({"success": False, "error": "This video has no presenter clips yet."}), 400
+        root = _get_run_output_dir(title, create=False)
+
+        def job(proj, cancel, status):
+            r = _xv.rescan_upscales(proj, root, status, _xv_log)
+            return {"message": (f"{r['changed']} clip(s) switched to a higher-resolution copy; " if r["changed"] else
+                                "No new higher-resolution copies found; ") + f"{r['upscaled']} of {r['clips']} clip(s) use one"}
+
+        if not _xv.start_job(p, "presenter", job, _xv_log):
+            return jsonify({"success": False, "error": "Something is already running for this video."}), 409
+        return jsonify({"success": True, **_xv_state(p)})
     if data.get("remove"):
         name = Path(str(data["remove"])).name
 
         def job(proj, cancel, status):
             h = _xv.remove_clip(proj, name, status)
-            return {"message": f"Removed {name}" + ("" if h else "; no presenter clips left")}
+            return {"message": f"Removed {name}" + ("" if h else "; no presenter clips left"
+                                                    + ("; make them again under Presenter" if proj.presenter() else ""))}
 
         if not _xv.start_job(p, "presenter", job, _xv_log):
             return jsonify({"success": False, "error": "Something is already running for this video."}), 409
@@ -11233,6 +11714,19 @@ def explainer_host(pid):
             p.data["host"] = None
         p.save()
         logger.info(f"🧑‍💼 Explainer {pid}: presenter removed")
+        return jsonify({"success": True, **_xv_state(p)})
+    if source_id == "heygen":
+        # Plan a HeyGen presenter: place it on slides and sections now, make
+        # the clips for just those stretches later (heygen-make).
+        with p.lock:
+            if host:
+                host["planned"] = True
+            else:
+                p.data["host"] = _xv.planned_host(data.get("share_new"))
+        p.save()
+        if not (p.dir / "host" / "still.jpg").is_file():
+            _xv_avatar_still(p)
+        logger.info(f"🧑‍💼 Explainer {pid}: HeyGen presenter planned (clips made after the storyboard)")
         return jsonify({"success": True, **_xv_state(p)})
     source = next((x for x in _xv_presenters(title, [p.data.get("audio_seconds") or 0]) if x["id"] == source_id), None)
     if source is None:
@@ -11368,17 +11862,219 @@ def explainer_heygen_add(pid):
     return jsonify({"success": True, **_xv_state(p)})
 
 
-@app.route("/api/explainer/<pid>/sections", methods=["POST"])
-def explainer_sections(pid):
-    """Save the presenter sections the user placed: [{t0, t1, layout}] on the
-    narration timeline. No Claude call; the approval is cleared."""
+@app.route("/api/explainer/<pid>/topaz", methods=["POST"])
+def explainer_topaz(pid):
+    """Upscale the presenter clips that are not 4K yet (or have a copy from a
+    lesser Topaz model) with the chosen Topaz model. Without "confirm",
+    returns the clips and an estimate only (nothing is sent)."""
     data = request.get_json(silent=True) or {}
-    p = _xv_project((data.get("title") or "").strip(), pid)
+    title = (data.get("title") or "").strip()
+    p = _xv_project(title, pid)
     if p is None:
         return jsonify({"success": False, "error": "Project not found."}), 404
     host = p.host()
     if not host:
         return jsonify({"success": False, "error": "Add presenter clips first."}), 400
+    key = _topaz_key()
+    model = data.get("model") if data.get("model") in _xv.TOPAZ_MODELS else _xv.TOPAZ_MODEL
+    todo = _xv.topaz_todo(host, model)
+    quotes = []
+    for x in todo:
+        info = _xv.probe_video(Path(x["orig"])) or {}
+        quotes.append({"name": Path(x["orig"]).name, "seconds": x["seconds"], "height": x.get("h"),
+                       "redo": _xv.topaz_model_of(x["file"]),
+                       **_xv.topaz_quote(x["seconds"], info.get("fps") or HEYGEN_FPS, model)})
+    quote = {"clips": quotes, "credits": sum(q["credits"] for q in quotes),
+             "dollars": round(sum(q["dollars"] for q in quotes), 2), "has_key": bool(key),
+             "model": model, "label": _xv.TOPAZ_MODELS[model]["label"]}
+    if key and not data.get("confirm"):
+        bal = _xv.topaz_balance(key)
+        if bal:
+            quote["available"] = bal.get("available_credits")
+            quote["reserved"] = bal.get("reserved_credits")
+            # The clips that fit the balance, in order (each with a 10% margin over the estimate).
+            left, fits = quote["available"] or 0, []
+            for q in quotes:
+                if q["credits"] * 1.1 <= left:
+                    fits.append(q["name"])
+                    left -= q["credits"] * 1.1
+            quote["fits"] = fits
+    if not data.get("confirm"):
+        return jsonify({"success": True, "quote": quote})
+    if not key:
+        return jsonify({"success": False, "needs_key": True, "error": "Add your Topaz API key in 🔑 API Keys first."}), 400
+    if not todo:
+        return jsonify({"success": False, "error": "Every presenter clip is already 4K."}), 400
+    if _xv.job_running(p.id):
+        return jsonify({"success": False, "error": "Something is already running for this video."}), 409
+    root = _get_run_output_dir(title, create=False)
+
+    names = [str(n) for n in data.get("names") or [] if isinstance(n, str)][:20] or None
+
+    def job(proj, cancel, status):
+        r = _xv.presenter_topaz(proj, key, root, status, cancel, _xv_log, names=names, model=model)
+        return {"message": r["message"]}
+
+    if not _xv.start_job(p, "topaz", job, _xv_log):
+        return jsonify({"success": False, "error": "Something is already running for this video."}), 409
+    picked = [q for q in quotes if not names or q["name"] in names]
+    logger.info(f"⬆️ Explainer {pid}: upscaling {len(picked)} presenter clip(s) to 4K with Topaz {quote['label']} "
+                f"(about {sum(q['credits'] for q in picked)} credits, ${sum(q['dollars'] for q in picked):.2f})")
+    return jsonify({"success": True, **_xv_state(p)})
+
+
+@app.route("/api/explainer/heygen-options", methods=["GET"])
+def explainer_heygen_options():
+    """Your HeyGen templates (whose avatar speaks the presenter clips), the
+    saved choice, and whether Topaz can upscale the clips."""
+    key = _heygen_key()
+    saved = _load_scriptcraft_settings()
+    out = {"success": True, "templates": [], "resolutions": list(HEYGEN_RESOLUTIONS), "topaz": bool(_topaz_key()),
+           "template_id": saved.get("heygen_audio_template_id") or "",
+           "resolution": saved.get("heygen_audio_resolution") or "1080p"}
+    if not key:
+        out.update(success=False, needs_key=True, error="Add your HeyGen API key in 🔑 API Keys first.")
+        return jsonify(out), 400
+    try:
+        tpls = _heygen_v3_list_all("/v3/templates", key)
+        out["templates"] = [{"id": t.get("id"), "name": t.get("name") or t.get("id"),
+                             "thumbnail_url": t.get("thumbnail_url") or ""} for t in tpls if t.get("id")]
+        return jsonify(out)
+    except requests.exceptions.HTTPError as e:
+        out.update(success=False, error=_redact_secret(_heygen_error(e.response), key))
+        return jsonify(out), 502
+    except Exception as e:
+        out.update(success=False, error=_redact_secret(str(e), key))
+        return jsonify(out), 500
+
+
+def _xv_make_clips(proj, cancel, status, *, key: str, avatar: dict, resolution: str, spans: list, audio: Path,
+                   title: str, root: Path, topaz_key: str = "", model: str = _xv.TOPAZ_MODEL) -> dict:
+    """The heygen-make job: cut each span out of the MP3 (voiceover/clips/),
+    have HeyGen render them (heygen/…_presenter_<stamp>_NN_at<m>m<ss>s.mp4),
+    place each clip where its audio was cut, then upscale the new clips
+    with Topaz when topaz_key is given."""
+    clip_dir = audio.parent / "clips"
+    clip_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"{_safe_title_for_paths(title) or 'Video'}_presenter_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    clips = []
+    status("heygen", f"Cutting {len(spans)} stretch(es) out of the narration…", 0.01)
+    for i, (a, b) in enumerate(spans, 1):
+        name = f"{stem}_{i:02d}_at{int(a // 60)}m{int(a % 60):02d}s"
+        af = clip_dir / f"{name}.mp3"
+        _cut_audio(audio, a, b, af)
+        if af.stat().st_size > HEYGEN_AUDIO_MAX_BYTES:
+            raise RuntimeError(f"{af.name} is {af.stat().st_size / 1048576:.0f} MB; HeyGen takes up to "
+                               f"{HEYGEN_AUDIO_MAX_BYTES // 1048576} MB of audio per video.")
+        clips.append({"audio": af, "video": root / "heygen" / f"{name}.mp4", "start": a, "end": b,
+                      "title": f"{title} (ElevenLabs audio) presenter {_xv.fmt_secs(a)}-{_xv.fmt_secs(b)}",
+                      "label": f"clip {i}/{len(spans)} ({_xv.fmt_secs(a)}-{_xv.fmt_secs(b)})"})
+    _hg_render_clips(key, avatar, resolution, clips, status, cancel)
+    done = [c for c in clips if c["status"] == "done"]
+    failed = [c for c in clips if c["status"] != "done"]
+    for c in failed:
+        _xv_log(f"⚠️ HeyGen {c['label']} failed: {c['error']}", "warning")
+    if not done:
+        raise RuntimeError("; ".join(f"HeyGen {c['label']}: {c['error']}" for c in failed) or "No clips were made")
+    items = []
+    for c in done:
+        it = _xv.clip_item(c["video"])
+        if it:
+            items.append({**it, "at": c["start"]})
+    h = _xv.attach_clips(proj, items, status, _xv_log)
+    msg = f"{len(done)} HeyGen clip(s) made and placed ({_xv.fmt_secs(sum(c['end'] - c['start'] for c in done))})"
+    if failed:
+        msg += f"; {len(failed)} failed: {failed[0]['label']}: {failed[0]['error']}"
+    if h.get("refused"):
+        msg += f"; refused: {h['refused'][0]}"
+    if topaz_key:
+        r = _xv.presenter_topaz(proj, topaz_key, root, status, cancel, _xv_log,
+                                names=[c["video"].name for c in done], model=model)
+        msg += "; " + r["message"]
+    return {"message": msg}
+
+
+@app.route("/api/explainer/<pid>/heygen-make", methods=["POST"])
+def explainer_heygen_make(pid):
+    """Make HeyGen presenter clips for only the stretches of narration where
+    the storyboard shows the presenter and no clip covers it yet: each
+    stretch of the ElevenLabs MP3 (whole sentences, padded and merged, see clip_spans) is
+    spoken by a template's avatar, placed where it was cut, and upscaled
+    with Topaz when asked. Without "confirm", returns what would be made."""
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    p = _xv_project(title, pid)
+    if p is None or not p.data.get("current"):
+        return jsonify({"success": False, "error": "Project not found."}), 404
+    if not p.presenter():
+        return jsonify({"success": False, "error": "Plan the presenter first."}), 400
+    audio = _voiceover_dir(title) / Path(p.data.get("voiceover") or "-").name
+    if not audio.is_file():
+        return jsonify({"success": False, "error": "The ElevenLabs MP3 this video was built on is no longer in "
+                        "the script folder's voiceover/."}), 400
+    gaps = p.missing(p.compile())
+    spans = _xv.clip_spans(gaps, float(p.data.get("audio_seconds") or 0), timeline=p.timeline())
+    model = data.get("model") if data.get("model") in _xv.TOPAZ_MODELS else _xv.TOPAZ_MODEL
+    upscale = bool(data.get("upscale"))
+    tq = [_xv.topaz_quote(b - a, HEYGEN_FPS, model) for a, b in spans]
+    quote = {"gaps": gaps, "spans": spans, "seconds": round(sum(b - a for a, b in spans), 1), "upscale": upscale,
+             "model": model, "label": _xv.TOPAZ_MODELS[model]["label"],
+             "credits": sum(q["credits"] for q in tq), "dollars": round(sum(q["dollars"] for q in tq), 2)}
+    if not data.get("confirm"):
+        return jsonify({"success": True, "quote": quote})
+    if not spans:
+        return jsonify({"success": False, "error": "Every stretch that shows the presenter already has a clip."}), 400
+    key = _heygen_key()
+    if not key:
+        return jsonify({"success": False, "needs_key": True, "error": "Add your HeyGen API key in 🔑 API Keys first."}), 400
+    template_id = (data.get("template_id") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", template_id):
+        return jsonify({"success": False, "error": "Pick a HeyGen template first."}), 400
+    resolution = (data.get("resolution") or "1080p").strip()
+    if resolution not in HEYGEN_RESOLUTIONS:
+        return jsonify({"success": False, "error": f"Unknown resolution: {resolution}"}), 400
+    tkey = _topaz_key() if upscale else ""
+    if upscale and not tkey:
+        return jsonify({"success": False, "needs_key": True,
+                        "error": "Add your Topaz API key in 🔑 API Keys to upscale the clips."}), 400
+    if _xv.job_running(p.id):
+        return jsonify({"success": False, "error": "Something is already running for this video."}), 409
+    try:
+        avatar = _heygen_template_avatar(key, template_id)
+    except Exception as e:
+        return jsonify({"success": False, "error": _redact_secret(str(e), key)}), 502
+    settings = _load_scriptcraft_settings()
+    settings.update(heygen_audio_template_id=template_id, heygen_audio_resolution=resolution)
+    _save_scriptcraft_settings(settings)
+    root = _get_run_output_dir(title)
+
+    def job(proj, cancel, status):
+        return _xv_make_clips(proj, cancel, status, key=key, avatar=avatar, resolution=resolution, spans=spans,
+                              audio=audio, title=title, root=root, topaz_key=tkey, model=model)
+
+    if not _xv.start_job(p, "heygen", job, _xv_log):
+        return jsonify({"success": False, "error": "Something is already running for this video."}), 409
+    logger.info(f"🎬 Explainer {pid}: making {len(spans)} HeyGen presenter clip(s), {_xv.fmt_secs(quote['seconds'])} "
+                f"of the {_xv.fmt_secs(p.data.get('audio_seconds') or 0)} narration ("
+                + ", ".join(f"{_xv.fmt_secs(a)}-{_xv.fmt_secs(b)}" for a, b in spans)
+                + f"), template {avatar['template_name']!r} → avatar {avatar['avatar_name']!r}, {resolution}"
+                + (f"; then Topaz {quote['label']} (about {quote['credits']} credits, ${quote['dollars']:.2f})"
+                   if upscale else ""))
+    return jsonify({"success": True, **_xv_state(p)})
+
+
+@app.route("/api/explainer/<pid>/sections", methods=["POST"])
+def explainer_sections(pid):
+    """Save the presenter sections the user placed: [{t0, t1, layout}] on the
+    narration timeline (before any clip exists for a planned HeyGen
+    presenter). No Claude call; the approval is cleared."""
+    data = request.get_json(silent=True) or {}
+    p = _xv_project((data.get("title") or "").strip(), pid)
+    if p is None:
+        return jsonify({"success": False, "error": "Project not found."}), 404
+    host = p.presenter()
+    if not host:
+        return jsonify({"success": False, "error": "Add the presenter first."}), 400
     if _xv.job_running(p.id):
         return jsonify({"success": False, "error": "Wait for the running job to finish."}), 409
     secs = _xv.clean_sections(data.get("sections") or [], float(p.data.get("audio_seconds") or 0) + _xv.TAIL)
@@ -11390,8 +12086,10 @@ def explainer_sections(pid):
     p.save()
     out = _xv_state(p)
     if bare:
-        out["warning"] = ("No presenter footage for part of " + ", ".join(
-            f"{_xv.fmt_secs(x['t0'])}–{_xv.fmt_secs(x['t1'])}" for x in bare) + ": add the clip that covers it.")
+        out["warning"] = ("No presenter clip yet for " + ", ".join(
+            f"{_xv.fmt_secs(x['t0'])}–{_xv.fmt_secs(x['t1'])}" for x in bare)
+            + (": make the HeyGen clips once the storyboard is set." if host.get("planned")
+               else ": add the clip that covers it."))
     return jsonify({"success": True, **out})
 
 
@@ -11628,16 +12326,19 @@ def explainer_channel_thumb(kind):
 
 @app.route("/api/explainer/<pid>/layout", methods=["POST"])
 def explainer_layout(pid):
-    """Show the presenter on one slide (full, left, right, pip) or not: a new
-    version, no Claude call."""
+    """Show the presenter on one slide (full, left, right, pip, or a corner
+    window on a laptop or a computer screen: pip:laptop, pip:monitor) or not:
+    a new version, no Claude call."""
     data = request.get_json(silent=True) or {}
     p = _xv_project((data.get("title") or "").strip(), pid)
     if p is None or not p.data.get("current"):
         return jsonify({"success": False, "error": "Project not found."}), 404
     if _xv.job_running(p.id):
         return jsonify({"success": False, "error": "Wait for the running job to finish."}), 409
-    layout = data.get("host") or ""
-    if layout and (layout not in _xv.HOST_LAYOUTS or not p.host()):
+    layout = str(data.get("host") or "")
+    if layout and not _xv.split_layout(layout)[0]:
+        return jsonify({"success": False, "error": "Unknown presenter layout."}), 400
+    if layout and not p.presenter():
         return jsonify({"success": False, "error": "Add the presenter video first."}), 400
     try:
         n = _xv.set_slide_host(p, str(data.get("slide") or ""), layout)
@@ -11667,6 +12368,41 @@ def explainer_extend(pid):
     if not _xv.start_job(p, "extend", job, _xv_log):
         return jsonify({"success": False, "error": "Something is already running for this video."}), 409
     logger.info(f"🧩 Explainer {pid}: building the rest of the video around the test clip")
+    return jsonify({"success": True, **_xv_state(p)})
+
+
+@app.route("/api/explainer/<pid>/regenerate", methods=["POST"])
+def explainer_regenerate(pid):
+    """A fresh take on the test clip in the same project (new plan and slides,
+    same or new stretch); logos, images, clips and values stay."""
+    data = request.get_json(silent=True) or {}
+    p = _xv_project((data.get("title") or "").strip(), pid)
+    if p is None or not p.data.get("current"):
+        return jsonify({"success": False, "error": "Project not found."}), 404
+    if not p.span():
+        return jsonify({"success": False, "error": "This video covers the whole narration; use Whole video in "
+                                                   "the notes box to rewrite it."}), 400
+    try:
+        start = float(data.get("start") if data.get("start") is not None else p.span()[0])
+        minutes = float(data.get("minutes") or (p.span()[1] - p.span()[0]) / 60)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "The start and length must be numbers."}), 400
+    total = float(p.data.get("audio_seconds") or 0)
+    if not (0 <= start < max(1.0, total - 5)) or not (0.5 <= minutes <= 10):
+        return jsonify({"success": False, "error": "Start inside the narration, 0.5 to 10 minutes long."}), 400
+    notes = (data.get("notes") or "").strip()[:2000]
+    client = _get_anthropic_client(timeout=900.0)
+    if client is None:
+        return jsonify({"success": False, "needs_key": True,
+                        "error": "Add your Anthropic API key in 🔑 API Keys first."}), 400
+
+    def job(proj, cancel, status):
+        return _xv.regenerate_test(proj, client, cancel, status, _xv_log, start=start, minutes=minutes, notes=notes)
+
+    if not _xv.start_job(p, "rebuild", job, _xv_log):
+        return jsonify({"success": False, "error": "Something is already running for this video."}), 409
+    logger.info(f"🔁 Explainer {pid}: regenerating the test clip from {_xv.fmt_secs(start)} for {minutes:g} min"
+                + (f" with notes: {notes[:120]!r}" if notes else ""))
     return jsonify({"success": True, **_xv_state(p)})
 
 
@@ -12203,6 +12939,7 @@ def api_keys_get():
             "google_api_key": "GOOGLE_API_KEY",
             "heygen_api_key": "HEYGEN_API_KEY",
             "elevenlabs_api_key": "ELEVENLABS_API_KEY",
+            "topaz_api_key": "TOPAZ_API_KEY",
             "grok_api_key": "XAI_API_KEY",
             "anthropic_api_key": "ANTHROPIC_API_KEY",
         }
@@ -12261,6 +12998,7 @@ def api_keys_save():
             "google_api_key": "GOOGLE_API_KEY",
             "heygen_api_key": "HEYGEN_API_KEY",
             "elevenlabs_api_key": "ELEVENLABS_API_KEY",
+            "topaz_api_key": "TOPAZ_API_KEY",
             "grok_api_key": "XAI_API_KEY",
             "anthropic_api_key": "ANTHROPIC_API_KEY",
         }

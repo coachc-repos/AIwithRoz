@@ -59,7 +59,7 @@ def test_each_object_paints_in_a_render():
     comp = {"html": body, "slides": [{"id": "s", "t0": 0, "t1": 4, "kind": "scene"}],
             "duration": 4, "start": 0, "end": 4, "sections": [], "host_windows": [], "host_sections": []}
     page = Path("/tmp/objects_check.html")
-    page.write_text(ev.page_html(comp, mode="render", bubble="off", visual={"style": "cinematic"}), encoding="utf-8")
+    page.write_text(ev.page_html(comp, mode="render", visual={"style": "cinematic"}), encoding="utf-8")
 
     async def shoot():
         async with ev._Chrome(*chrome) as ch:

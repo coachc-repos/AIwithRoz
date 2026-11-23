@@ -100,6 +100,37 @@ chapter's two HeyGen calls ran long. On the same brief the fixed prompt wrote 8
 chapters of 167 to 307 spoken words. The writer logs the chapter count after
 every run.
 
+### Plain speech (ASD-STE100)
+
+Every writer follows `PLAIN_SPEECH_RULES` in `pro_script_writer.py`, so the
+Host sounds like a person and not like AI writing. The rules adapt ASD-STE100
+Simplified Technical English (the controlled English of aircraft manuals) to
+speech, by way of the MIT-licensed
+[SimpleEnglish](https://github.com/AminBlg/SimpleEnglish) skill in its Plain
+mode. They set one new fact per sentence and a limit of 25 words. They require
+the active voice, simple tenses, and the modals "can", "will", and "must"
+(not "should", "would", "may", "might", or "could"). They forbid "-ing"
+clauses after a comma, synonym rotation, noun chains of more than three words,
+filler words such as "seamlessly" and "leverage", and AI patterns such as
+"it is not just X, it is Y". The strict STE dictionary is not used, because
+it flattens a spoken voice. The hook, stakes, open loop, and rhetorical
+questions stay.
+
+- Both Pro writers have the rules in their prompt. The rules win over the
+  golden reference where the two differ. The hosted agent's copy
+  (`scriptcraft-app-v2/agent_instructions/Script-Writer-Pro-Agent.md`) is
+  synced with `maf/agents/pro_writer.py --sync` and takes effect when that
+  agent is redeployed.
+- The agentic chapter writers (Standard, List, Predictions), their Claude
+  fallback, and the chapter Reviewer get the rules at the end of each
+  request. No agent redeploy is needed.
+- After every script, the Progress Log shows a "🗣️ Plain speech (ASD-STE100)"
+  line from `plain_speech_report()`. It counts sentences over 25 words,
+  hedges, perfect tenses, "-ing" clauses, filler words, not-X-it-is-Y lines,
+  self-answered questions, contractions, semicolons, and dashes in the spoken
+  text. It is a drift signal, not a verdict, because a regex cannot see passive
+  voice or synonym rotation.
+
 ## Logs
 
 Every hosted call prints lines tagged `[maf]`. The Progress Log shows them at
@@ -201,7 +232,15 @@ and traces).
   appends the episode link. A post is shown only if Grok's search actually
   returned it (its link is in the search citations). A search takes about a
   minute.
-- **Title Picker.** The last Process Script stage: Claude Opus 5.5 reads the
+- **ElevenLabs Audio and Explainer Video in Process Script.** The two
+  dialogs are also the last Process Script stages, after the Title Picker.
+  Checked with other stages, the Title Picker, ElevenLabs Audio and Explainer
+  Video open one after another once the run finishes; the Explainer waits for
+  the ElevenLabs audio to finish. "Open … now" on either stage opens the
+  dialog over Process Script. Both dialogs (from the stage or the toolbar)
+  have **📂 Open script…** to open another script from a file or the cloud
+  without leaving the dialog.
+- **Title Picker.** A dialog stage of Process Script: Claude Opus 5.5 reads the
   script and suggests 5 titles (under 70 characters, five different angles,
   only facts from the script). Pick one, or type your own, and it replaces the
   `Title:` line and a top `# ...` heading (or adds a `Title:` line when there
@@ -325,39 +364,23 @@ and traces).
   start, each finished part, and the saved file. The key needs the Text to
   Speech and Voices (read) permissions; with User (read) the dialog also
   shows the credit balance.
-- **🎬 HeyGen clips from the ElevenLabs audio.** Under the audio in the same
-  dialog: pick one of the script's MP3s, one of your HeyGen templates, a
-  **Max frames per clip** (default 9,000, the upscaler's limit), and the
-  frame rate the limit is **Counted at** (default 30 fps, the upscaler's
-  rate). HeyGen renders at 25 fps, as long as the audio rounded up to a
-  whole frame, and the upscaler counts that length at its own rate. At
-  30 fps, 9,000 frames is 5:00, so a clip HeyGen made with 7,855 frames
-  (5:14) counts as 9,426. The app cuts the MP3 into the fewest clips whose
-  frames, counted that way, stay under the limit with 3 frames to spare. A
-  14:58 voiceover becomes 3 clips; anything over 15:00 needs 4. Every cut
-  lands in a silence found with ffmpeg `silencedetect` (−40 dB, 0.12 s or
-  longer). When there's room, that's the longest pause within 15 seconds of
-  an even split. When the limit is tight, it can be a short gap between
-  words, as near the gap's middle as the limit allows. If no silences line
-  up, the app adds a clip. The cut clips are measured before anything is
-  uploaded. The frames are copied, not re-encoded. Before you start, the
-  dialog asks the server for the plan and shows each clip's frames. The app reads the
-  template's avatar look, engine (Avatar V), background, and aspect ratio
-  from its composition and uploads every clip's audio as a HeyGen asset. It
-  then starts one audio-to-video render per clip (`POST /v3/videos` with
-  `audio_asset_id`), all at once. If HeyGen holds a render back because too
-  many are running, it starts on a later round. The app polls every 20
-  seconds and streams each finished clip into the script's output folder
-  under `heygen/` as `<title>_ElevenLabs_<time>_part1of3.mp4` and so on, then
-  counts its frames with ffprobe at the upscaler's rate and flags any over
-  the limit. The audio clips are kept in
-  `voiceover/clips/`. The videos stay out of `aRoll/`, which can already hold
-  chapter clips that Create DaVinci Project would put on the same timeline.
-  If one clip fails, the others are still saved and the error names the
-  clip. HeyGen takes up to 32 MB and 30 minutes of audio per video. The
-  dialog lists each clip with its span, frames, status, and a ▶ Play button.
-  The Execution Log shows the split, each clip's HeyGen video ID, a
-  heartbeat every 5 minutes, and each saved file with its frame count.
+- **✂️ Fix a section** (in the ElevenLabs Audio dialog). Pick sentences of a
+  saved voiceover that sound echoey or off; ElevenLabs reads only those
+  again with the voice settings in the dialog (the sentences around them go
+  along as context). The new reading replaces the old one at the same
+  length: its speech is fitted to where the old speech was heard (`atempo`,
+  within 0.8–1.25×), matched to the old stretch's loudness, and cut in at
+  the quietest point of each pause. Before/after clips let you compare;
+  Use this take writes it into the MP3 and keeps the previous MP3 in
+  `voiceover/fixes/<name>/` for Undo. Word times come from an Explainer
+  made from the MP3, or ElevenLabs forced alignment once, kept next to it.
+  Explainer projects made from the MP3 get the new narration copy (their
+  slide timings stay valid); a presenter clip that overlaps the fixed
+  stretch is named, since its lip-sync no longer matches.
+- **🎬 HeyGen presenter clips** are no longer made from the whole MP3 in
+  this dialog. The Explainer Video makes them once its storyboard is set,
+  for only the stretches that show the presenter (see its Presenter tab
+  below), so HeyGen and Topaz credits go only to footage that is on screen.
 - **🎞️ Explainer Video.** A toolbar button. Claude Opus 5.5 at high effort
   turns the open script (its Host: lines and production notes) and one of
   its ElevenLabs MP3s into an explainer: presentation slides plus
@@ -370,7 +393,39 @@ and traces).
   preview and renders stay inside it. Once you like the look, **Build the
   rest of the video** plans and writes everything around it. Claude sees
   the refined test slides as the approved look and your revision notes,
-  and the test slides are kept as they are.
+  and the test slides are kept as they are. **🔁 Regenerate test clip**
+  makes a fresh take in the same project (a new plan and new slides, as a
+  new version), for the same stretch or a new start and length, with
+  optional notes; logos, images, clips, figure values and presenter
+  sections stay, and a clip moves to the new slide playing at its moment.
+  The **Clips** tab takes a public YouTube link or a video you recorded
+  (⬆️ Upload: MP4, MOV, M4V, WebM, MKV). Each video is one group: a player
+  with play / pause, stop and a timeline you drag to scrub, a green
+  **Start** and a red **End** marker (drag their flags or grips; the
+  picture follows, and **🔍 Zoom in** spreads the stretch around them over
+  the whole timeline for exact placement; arrow keys nudge the last marker
+  by 0.1 s, I and O set them at the playhead), and **✂️ Create clip**. The
+  clip appears under its video with its own small player, its sound
+  (🔇 muted so the narration talks over it, 🔉 under the narration, or
+  🔊 clip sound only), **✏️ Trim** (moves the markers to it; **💾 Save
+  clip** cuts it again) and ✕. Cutting shows a spinner and the seconds so
+  far. Where a clip plays is chosen on the **Slides** tab, next to the
+  presenter: each slide row has a 🎞️ Clip menu and, once a clip is on it,
+  a 📐 Clip spot: framed in the **right** half (the default) or the
+  **left** half while its slide plays, shrunk to the same 16:9 size, in
+  the other half; **full screen**; or on the screen of the drawn
+  **computer** or **laptop** in the corner the presenter's devices use
+  (the slide stays full size, and the layout check flags anything under
+  the device so Fix flagged slides can move it). The preview plays the
+  clip in its frame or on the device's screen; the render lays it in with
+  ffmpeg (rounded corners masked). **Video cues:** the Pro writer puts a
+  `[VIDEO CLIP / RESOLVE]` note (inside the production markers, so it is
+  never spoken) before a paragraph that would land better with footage.
+  The explainer finds the words after it in the timed narration and marks
+  that slide "🎬 Needs a clip…", listed at the top of the Clips tab too.
+  The preview's scrub bar can be dragged anywhere (−5s / +5s buttons,
+  arrow keys, and , / . for one frame); the transition dots sit in their
+  own row under it.
   1. *Prepare.* The narration is normalized to -14 LUFS (two-pass
      loudnorm, true peak -1.5 dBTP). Every word is timed with ElevenLabs
      forced alignment against the exact text the MP3 was read from. New MP3s
@@ -379,8 +434,12 @@ and traces).
      The ticked logo files from the folder's `images/` are cropped, and their
      dark neutral marks are recolored off-white for the dark background.
      Files without transparency, often photos, start unticked.
-     *Presenter.* HeyGen clips made from the same MP3 (the `_partNofM` set in
-     `heygen/`, or one long video) are listed when their length matches the
+     *Presenter.* With a HeyGen key, the default is a **HeyGen presenter
+     made after the storyboard**: no clip exists yet, Claude places the
+     presenter in the plan (it sees your saved template's avatar picture),
+     and you adjust where it shows before anything goes to HeyGen. Clips
+     already made from the same MP3 (a `_partNofM` set in `heygen/`, or one
+     long video) are also listed when their length matches the
      narration. A larger copy of the same length anywhere in the script folder
      (a 4K upscale) is used in its place, after a check of its audio, or of
      its frames when it has no audio. Each clip is placed on the narration
@@ -414,21 +473,68 @@ and traces).
   the 4K render: logos with no file (upload one, pick one from `images/`,
   or keep the text badge), figures to confirm or correct, and [insert]
   values to fill or leave out. Values are swapped in without another Claude
-  call.
+  call. It also lists stretches that show the presenter with no clip yet
+  (the preview and renders draw a "HeyGen clip not made yet" stand-in
+  there). Under **Logos in the video**, each logo shows its file and the
+  slides it is on: Replace file (upload), pick another from `images/`, or
+  Use text badge; a brand shown as a text badge can get a file later. A new
+  file keeps the logo's recolor setting and reaches every slide at once,
+  even one saved under the same file name.
   The **Presenter** tab shows the clips, how well each matched and the
   stretches of narration they cover.
+  - **Plan a HeyGen presenter** (when the video has none) places it without
+    any footage, so slides and sections can show it first.
+  - **🎬 HeyGen clips for the presenter** lists the stretches that show the
+    presenter (slides with a presenter layout, and your sections) where no
+    clip covers it yet, and the clips that would cover them: each starts and
+    ends 0.5 s off screen, and stretches under 3 s apart share a clip. Pick
+    the template (its avatar, engine, background and aspect ratio are used)
+    and 1080p or 720p, and tick **Then upscale them to 4K with Topaz** with
+    the model (the credits are shown). Nothing is sent until you confirm.
+    Each stretch is cut out of the ElevenLabs MP3 (frames copied, into
+    `voiceover/clips/`) and uploaded before any render starts, and HeyGen
+    renders them side by side (a render it holds back starts on a later
+    round). Each finished clip is saved in `heygen/` as
+    `<title>_presenter_<time>_01_at0m14s.mp4` (recorded in
+    `heygen/heygen_videos.json`), placed where its audio was cut (checked by
+    its audio), and then upscaled. A failed clip is named and the others are
+    kept. Change the storyboard later and only the new stretches need clips;
+    removing a clip leaves its stretch to make again.
   - **Add clips from HeyGen** lists the videos in your HeyGen account,
     searched by title, with thumbnails. Clips already in the script folder
     are marked; the others are downloaded into `heygen/` (recorded in
     `heygen/heygen_videos.json`) and placed by their audio.
   - **Sections you place**: play or scrub, set In and Out at the playhead,
-    pick full frame, left or right panel, or corner window, and add. A small
-    copy of the presenter follows the playhead. Sections show as gold marks
+    pick full frame, left or right panel, or corner window (plain, or on a
+    drawn laptop or computer screen, which takes a larger corner), and add.
+    A small copy of the presenter follows the playhead. Sections show as gold marks
     under the scrubber (slides with the presenter are blue). They can be
     edited or removed, fade in and out over 0.3 s, and win over a slide's
-    own presenter layout. A section with no footage under it gets a warning.
-  - It also has a framing slider for the side panels, "rescan for upscales"
-    (after your upscaler finishes), and remove.
+    own presenter layout. They can be placed before any clip exists; a
+    section with no clip under it gets a note.
+  - **Upscale to 4K with Topaz** sends the clips that are not 4K yet to the
+    Topaz Video API after showing an estimate, as 10-bit H.265. The model is
+    picked next to the button. **Starlight Precise 2.6** (the default) is
+    generative: it adds skin, lash and hair detail and matches HeyGen's own
+    upscale, at about 126 credits per minute of 25 fps footage (roughly
+    $8.40; Topaz quoted 626–689 credits and ~24 minutes for a 5-minute
+    clip). **Starlight Fast 3** costs the same and runs faster. **Iris**
+    costs about a fifth as much (about 24 credits a minute) but only
+    sharpens, so faces stay soft. Each 4K copy is saved next to its clip as
+    `<clip>_starlight4k.mp4` (`_starlightfast4k`, or `_topaz4k` for Iris)
+    and swapped in once its audio matches. A clip whose 4K copy came from a
+    lesser Topaz model is offered again, and the newer copy wins on Rescan.
+    Topaz charges only for upscales that finish. The key goes in 🔑 API Keys
+    (`TOPAZ_API_KEY`).
+  - **Rescan for upscales** looks through the script folder for
+    higher-resolution copies of the clips in use. Upscalers often rename
+    files (e.g. "Woman speaking into microphone"), so the name only breaks
+    ties. A copy must be within 0.6 s of the clip's length, and is used only
+    after its audio (or, without audio, its frames) matches. Closest pairs
+    are tried first, so clips a few hundredths of a second apart still get
+    the right copy. An upscale added as a clip replaces the original instead
+    of overlapping it.
+  - It also has a framing slider for the side panels, and remove.
 
   Setup's "only where I put it" stops Claude from placing the presenter
   itself. Each slide in the Slides

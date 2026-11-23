@@ -19,6 +19,10 @@ from pathlib import Path
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[2]
+# Never read the real channel intro / end clip (~/.scriptcraft/channel): a test
+# project without its own bookends would pick them up.
+import os  # noqa: E402
+os.environ["SCRIPTCRAFT_CHANNEL_DIR"] = tempfile.mkdtemp(prefix="xv-channel-")
 APPS = ("scriptcraft-app-v3", "scriptcraft-app-v3-container")
 SAMPLES = ROOT / "scriptcraft-app-v3" / "tests" / "samples" / "transitions"
 CORE = ("glitch", "paint", "warp", "pixel", "lightleak")
@@ -56,7 +60,8 @@ def check_rules(xv) -> None:
     assert xv.transition_intensity("full") == 1.0
     assert xv.transition_intensity("subtle") < xv.transition_intensity("full")
     assert xv.transition_intensity("off") == 0.0
-    assert 0.4 <= xv.transition_duration("glitch", "full") <= 0.6
+    assert 0.6 <= xv.transition_duration("glitch", "full") <= 0.85
+    assert xv.transition_duration("shatter", "full") <= 0.65   # the strobe wipe is quick
     assert xv.transition_duration("glitch", "subtle") < xv.transition_duration("glitch", "full")
 
     # Numbered steps are spaced: at most one every 3 slides.
@@ -184,7 +189,7 @@ def check_compile_keeps_text(xv) -> None:
     assert styles["s02"]  # presenter and a step; presenter wins
     assert comp["slides"][1]["fx_reason"] == "presenter"
     assert styles["s03"]  # leaving the presenter is not media; scene type changes, maybe spacing
-    page = xv.page_html(comp, mode="render", bubble="off")
+    page = xv.page_html(comp, mode="render")
     assert "transitions.js" not in page  # the source is inlined
     assert "XVFx" in page and 'id="fx"' in page
     cfg = json.loads(page.split("window.__EXPLAINER = ", 1)[1].split(";</script>", 1)[0])
@@ -281,17 +286,46 @@ def check_ui(app: str) -> None:
     assert "xvTransitionMode" in html and "xvGapOpen" in html and "xvMountScrubber" in html
     assert "transition_mode: transitionMode" in html
     assert "s.transition_mode, s.gap_fx" in html
-    assert "Set start here" in html and "Set end here" in html
+    # One player: Start and End markers (square grips) for clips, no "Set start here" buttons.
+    # One "Exact time" box per clip player, kept open until closed. The intro / end clip
+    # is only played here (play, pause, scrubber), not cut.
+    assert "function xvPlayer(" in html and 'data-mk="a"' in html and 'data-mk="b"' in html
+    assert 'class="grip"' in html and "_XV_ICO.pause" in html
+    assert "Set start here" not in html and html.count("<summary>Exact time</summary>") == 1
+    assert "_xvExactOpen(xt.open)" in html and "xvBookTrim" not in html
+    assert "url: host.dataset.url || '', dur: +host.dataset.dur || 0, state: {} }" in html
+    # A refresh keeps a playing video (the same player is moved into the new markup).
+    assert "function _xvKeepPlayers(" in html and html.count("_xvKeepPlayers(el,") == 2
+    # Intro / end sound plays in the dialog; the preview frame may also start clip sound.
+    assert "function _xvBookSound(" in html and 'allow="autoplay"' in html
+    assert "_xvBookSound(_xv.t, true)" in html and "_xvBookSound(_xv.t, false)" in html
+    # Mute silences everything (narration, intro / end, clip sound). A clip's narration duck
+    # is kept apart, so it ending does not turn the sound back on.
+    assert "function _xvApplyMute(" in html and "_xv.muted || _xv.clipDuck" in html
+    assert "xv: 'mute', on: !!_xv.muted" in html and html.count("muted: !!_xv.muted }") == 2
+    # The preview scrub bar: transition dots sit in their own row, so they do not block dragging.
+    assert 'id="xvSeek"' in html and 'id="xvGapMarks"' in html and "function _xvSeekInit(" in html
+    assert 'type="range" id="xvScrub"' not in html
+    assert "['shatter', 'Strobe wipe']" in html
     assert 'class="xv-gap"' in html or "xv-gap" in html
     for style in ("glitch", "paint", "warp", "pixel", "lightleak", "burn", "shatter"):
         assert style in html, style
     js = (ROOT / app / "static" / "explainer" / "runtime.js").read_text(encoding="utf-8")
     assert "XVFx" in js and "clipTail" in js
     assert "shown.audio === 'clip'" in js
+    assert "if (!strict || userMuted) clipVid.muted = true;" in js and "d.xv === 'mute'" in js
     fx = (ROOT / app / "static" / "explainer" / "transitions.js").read_text(encoding="utf-8")
     for style in ("glitch", "paint", "warp", "pixel", "lightleak", "burn", "shatter"):
         assert f"'{style}'" in fx or f'"{style}"' in fx
     assert "clearRect" in fx
+    # Glitch is a left-to-right swipe with a blocky front; the light leak flashes at the swap.
+    assert "function glitchCells(" in fx and "function glitchFront(" in fx and "glitchBands" not in fx
+    assert "function leakFlash(" in fx
+    # The strobe wipe is quick and steady: no random per-frame strength or whole-frame flashes.
+    strobe = fx[fx.index("function drawStrobe("):fx.index("function roleOf(")]
+    assert "Math.floor(p *" not in strobe and "Math.sin(p *" not in strobe and "fillRect(0, 0, W, H)" not in strobe
+    # Picking a Clip spot reloads the preview (the spot is part of the reload key).
+    assert "c.audio, c.place, c.file" in html
     gui = (ROOT / app / "web_gui.py").read_text(encoding="utf-8")
     assert '"/api/explainer/<pid>/transitions"' in gui
     assert "transition_mode" in gui and "slide_fx_key" in gui
@@ -389,7 +423,7 @@ def check_renders(xv) -> None:
         assert comp["slides"][1]["fx"] == style, comp["slides"][1]
         assert "BEFORE" in comp["html"] and "AFTER" in comp["html"]
         page = work / f"{style}.html"
-        page.write_text(xv.page_html(comp, mode="render", title=style, bubble="off",
+        page.write_text(xv.page_html(comp, mode="render", title=style,
                                      visual={"style": "classic"}), encoding="utf-8")
         dur = comp["slides"][1]["fx_dur"]
         t_mid = 1.05 + dur * 0.5
@@ -456,7 +490,7 @@ def check_renders(xv) -> None:
     used = {m["fx"] for m in comp["slides"] if m["fx"]}
     assert set(CORE) <= used, used
     page = work / "demo.html"
-    page.write_text(xv.page_html(comp, mode="render", title="Transitions demo", bubble="off",
+    page.write_text(xv.page_html(comp, mode="render", title="Transitions demo",
                                  visual={"style": "classic"}), encoding="utf-8")
     demo = SAMPLES / "transitions_demo.mp4"
     print("render demo 30s", flush=True)

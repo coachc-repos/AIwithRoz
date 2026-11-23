@@ -5,9 +5,13 @@
    narration (data-t0/t1, data-t, data-tout, data-camt). Slides with
    data-host leave the presenter's area see-through: the renderer puts the
    footage under the frame, the preview plays a small copy of it there.
-   An assigned YouTube clip covers that slide, fitted inside the frame.
-   A shorter clip holds its last frame until the slide ends (it does not
-   loop). A longer clip stops when the slide ends. */
+   An assigned clip (a YouTube cut or your own video) plays framed in the
+   right or left half while its slide plays, shrunk to the same size, in
+   the other half; or it covers the slide (full screen); or it plays on the
+   screen of a drawn computer or laptop in the corner (the slide stays
+   full size; the layout check flags anything under the device). A shorter clip
+   holds its last frame until the slide ends (it does not loop). A longer
+   clip stops when the slide ends. */
 (function () {
     'use strict';
     var CFG = window.__EXPLAINER || {};
@@ -16,6 +20,20 @@
     var SECTIONS = CFG.sections || [];
     var HOST = CFG.host || { on: false };
     var CLIPS = CFG.clips || [];
+    // Framed clip places: {left: [x, y, w, h], right, left-small, right-small, center-large,
+    // center-medium, radius, ring, slide: {place: the slide's pane, or null: full size, dimmed}}.
+    var PANES = CFG.clip_panes || null;
+    function paneOf(place) { return PANES && Array.isArray(PANES[place]) ? PANES[place] : null; }
+    function slidePaneOf(place) { return PANES && PANES.slide ? PANES.slide[place] || null : null; }
+    var CDEV = CFG.clip_devices || {};    // a clip on a computer or laptop: {x, y, w, h, sx, sy, sw, sh, sr, uri}
+    function deviceOf(c) { return c && CDEV[c.place] ? CDEV[c.place] : null; }
+    var CLIP_BY_SLIDE = {};
+    CLIPS.forEach(function (c) { if (c.slide) CLIP_BY_SLIDE[c.slide] = c; });
+    // The clip framed on slide `id` (null: none, full screen or on a device).
+    function splitOf(id) {
+        var c = CLIP_BY_SLIDE[id];
+        return c && paneOf(c.place) ? c : null;
+    }
     var LAYOUTS = HOST.layouts || {};
     var SECS = HOST.sections || [];      // presenter sections the user placed: {t0, t1, layout}
     var SFADE = +HOST.fade || 0.3;
@@ -39,6 +57,7 @@
     var clipId = '';
     var clipLocal = 0;
     var clipPlaying = false;
+    var userMuted = false;   // the dialog's mute button: the clip's own sound stays off too
     if (MODE === 'preview' && CLIPS.length) {
         clipVid = document.createElement('video');
         clipVid.playsInline = true;
@@ -100,6 +119,16 @@
             return null;
         }
         clipVid.style.visibility = '';
+        var D = deviceOf(c);
+        var P = D ? [D.sx, D.sy, D.sw, D.sh] : paneOf(c.place);
+        var place = P ? c.place : 'full';
+        if (clipVid.__place !== place) {
+            clipVid.__place = place;
+            var vs = clipVid.style;
+            vs.left = (P ? P[0] : 0) + 'px'; vs.top = (P ? P[1] : 0) + 'px';
+            vs.width = (P ? P[2] : 1920) + 'px'; vs.height = (P ? P[3] : 1080) + 'px';
+            vs.borderRadius = D ? (D.sr || 0) + 'px' : P ? PANES.radius + 'px' : '';
+        }
         clipLocal = Math.max(0, t - (+c.t0));
         // The overlap after the slide is picture only. Narration stays on the slide window.
         clipPlaying = !!playing && !!strict;
@@ -107,7 +136,7 @@
             clipId = c.id;
             if (clipVid.getAttribute('src') !== c.src) clipVid.src = c.src;
         }
-        if (!strict) clipVid.muted = true;
+        if (!strict || userMuted) clipVid.muted = true;
         else {
             clipVid.muted = c.audio === 'mute';
             clipVid.volume = c.audio === 'mix' ? 0.2 : 1;
@@ -129,6 +158,7 @@
     // bottom and fading out by mid-screen. Flat colors, no gradients.
     // WAVE_ROWS and WAVE_SPEED come from the page (explainer_imagery.py).
     // The old field was 20 rows at speed 1. Every style uses this field.
+    // Dots are 3 px across at the bottom, about 2 px near the top (were 6 and 4).
     var _waves = (CFG.visual || {}).waves || {};
     var WAVE_ROWS = Math.max(8, Math.round(+_waves.rows || 34));
     var WAVE_SPEED = (+_waves.speed > 0) ? +_waves.speed : 1.4;
@@ -143,7 +173,7 @@
                 amp: 6 + 10 * f, len: 220 + 160 * hash('l' + r),
                 spd: (0.25 + 0.35 * hash('s' + r)) * WAVE_SPEED,
                 drift: (hash('d' + r) - 0.5) * 14 * WAVE_SPEED,
-                gap: 15 + Math.round(f * 9), rad: 1.9 - 0.7 * f,
+                gap: 11 + Math.round(f * 7), rad: 1.55 - 0.6 * f,   // fine dots (the user asked for much smaller ones), a little denser
                 alpha: 0.55 * Math.pow(1 - f, 1.35) + 0.04, phase: hash('p' + r) * 6.283,
                 color: r % 5 === 2 ? '245,184,61' : '118,138,186'
             });
@@ -209,12 +239,37 @@
         hostVid.style.cssText = 'position:absolute; left:0; top:0; width:1920px; height:1080px; object-fit:cover; visibility:hidden;';
         stage.insertBefore(hostVid, canvas);
     }
-    function placeHost(holes, frame) {
-        if (!hostVid) return;
+    // Where the presenter shows but no clip is made yet: a stand-in panel.
+    var MISSING = HOST.on ? (HOST.missing || []) : [];
+    var hostPh = null;
+    if (MISSING.length) {
+        hostPh = document.createElement('div');
+        hostPh.style.cssText = 'position:absolute; visibility:hidden; overflow:hidden; display:flex; flex-direction:column; '
+            + 'align-items:center; justify-content:center; gap:0.4em; background:linear-gradient(160deg, #243044, #121a28); '
+            + 'color:#94a3b8; font-weight:650; letter-spacing:0.04em; text-align:center;';
+        hostPh.innerHTML = '<svg viewBox="0 0 100 80" style="width:28%; max-width:220px; opacity:0.55;">'
+            + '<circle cx="50" cy="26" r="16" fill="#64748b"/><path d="M14 80 C14 56 30 46 50 46 C70 46 86 56 86 80 Z" fill="#64748b"/></svg>'
+            + '<div>Presenter</div><div style="font-size:0.62em; font-weight:500; color:#64748b;">HeyGen clip not made yet</div>';
+        stage.insertBefore(hostPh, canvas);
+    }
+    function missingAt(t) {
+        for (var i = 0; i < MISSING.length; i++) if (t >= MISSING[i][0] && t < MISSING[i][1]) return true;
+        return false;
+    }
+    function placeHost(holes, t, frame) {
+        if (!hostVid && !hostPh) return;
         var best = null, bo = 0;
         for (var n in holes) if (holes[n] > bo) { bo = holes[n]; best = n; }
         var L = best && LAYOUTS[best];
         if (best === 'pip' && frame) L = { x: frame.sx, y: frame.sy, w: frame.sw, h: frame.sh, r: frame.sr || 0 };
+        if (hostPh) {
+            var ps = hostPh.style;
+            if (L && missingAt(t)) {
+                ps.visibility = ''; ps.left = L.x + 'px'; ps.top = L.y + 'px'; ps.width = L.w + 'px'; ps.height = L.h + 'px';
+                ps.borderRadius = (L.r || 0) + 'px'; ps.fontSize = Math.max(16, Math.round(L.h * 0.06)) + 'px';
+            } else ps.visibility = 'hidden';
+        }
+        if (!hostVid) return;
         if (!L) { hostVid.style.visibility = 'hidden'; return; }
         var asp = hostVid.videoWidth && hostVid.videoHeight ? hostVid.videoWidth / hostVid.videoHeight : 16 / 9;
         var sw = Math.max(L.w, L.h * asp), over = sw - L.w;
@@ -240,9 +295,10 @@
         }
     }
 
-    // Device frames and the guide character are images drawn by the server
-    // (local, no extra service). They are in the page from the start so the
-    // renderer has decoded them before the first captured frame.
+    // Device frames (a laptop or a computer screen around a corner window) are
+    // images drawn by the server (local, no extra service). They are in the
+    // page from the start so the renderer has decoded them before the first
+    // captured frame.
     var slidesEl = document.getElementById('slides');
     var frameEls = {};
     Object.keys(HOST.frames || {}).forEach(function (name) {
@@ -255,16 +311,69 @@
         stage.insertBefore(im, slidesEl);
         frameEls[name] = im;
     });
-    var asideEls = (CFG.asides || []).map(function (a) {
-        var im = document.createElement('img');
+    // A split slide: two framed panes, the slide's behind the slides (it gives
+    // the shrunk slide its backing), the clip's above them (the preview plays
+    // the clip inside it; the renderer lays the clip into it with ffmpeg).
+    function paneEl(z) {
+        var d = document.createElement('div');
+        d.style.cssText = 'position:absolute; display:none; pointer-events:none; box-sizing:border-box; z-index:' + z + ';';
+        return d;
+    }
+    var paneSlide = paneEl(0), paneClip = paneEl(799);
+    // A clip in the middle: the slide stays full size, dimmed behind it.
+    var paneDim = paneEl(797);
+    paneDim.style.cssText += 'left:0; top:0; width:1920px; height:1080px; background:rgba(8, 11, 17, 0.78);';
+    if (PANES) { stage.insertBefore(paneSlide, slidesEl); stage.appendChild(paneDim); stage.appendChild(paneClip); }
+    function boxPane(d, P, fill, o) {
+        var r = PANES.ring;
+        d.style.left = (P[0] - r) + 'px'; d.style.top = (P[1] - r) + 'px';
+        d.style.width = (P[2] + 2 * r) + 'px'; d.style.height = (P[3] + 2 * r) + 'px';
+        d.style.border = r + 'px solid #3a4862';
+        d.style.borderRadius = (PANES.radius + r) + 'px';
+        d.style.background = fill;
+        d.style.boxShadow = '8px 10px 0 rgba(0, 0, 0, 0.38)';     // the deck's hard edge of depth
+        d.style.opacity = o >= 1 ? '' : o.toFixed(3);
+        d.style.display = 'block';
+    }
+    // A clip on a computer or laptop: the device shows while the clip plays.
+    var clipDevEls = {};
+    Object.keys(CDEV).forEach(function (name) {
+        var g = CDEV[name], im = document.createElement('img');
         im.alt = '';
-        im.src = a.uri;
-        im.style.cssText = 'position:absolute; pointer-events:none; z-index:900; display:none; left:' + a.x
-            + 'px; top:' + a.y + 'px; width:' + a.w + 'px; height:' + a.h + 'px;';
+        im.src = g.uri;
+        im.style.cssText = 'position:absolute; pointer-events:none; z-index:798; display:none; left:' + g.x
+            + 'px; top:' + g.y + 'px; width:' + g.w + 'px; height:' + g.h + 'px;';
         stage.appendChild(im);
-        a.el = im;
-        return a;
+        clipDevEls[name] = im;
     });
+    // 1 on the clip's slide; after it, fading out across a stylized transition
+    // into the next slide (the renderer's fade=out over the same stretch).
+    function clipFade(c, t) {
+        if (!c || t < +c.t1) return 1;
+        var extra = window.XVFx ? XVFx.clipExtra(c, slides) : 0;
+        return extra > 0.02 ? clamp(1 - (t - +c.t1) / extra, 0, 1) : 0;
+    }
+    function placeClipDevice(t) {
+        var c = clipAt(t) || clipTail(t), on = deviceOf(c) ? c.place : '', o = clipFade(c, t);
+        Object.keys(clipDevEls).forEach(function (name) {
+            var im = clipDevEls[name], show = name === on && o > 0;
+            im.style.display = show ? 'block' : 'none';
+            im.style.opacity = show && o < 1 ? o.toFixed(3) : '';
+        });
+    }
+    function placePanes(c, o, t) {
+        if (!PANES) return;
+        if (!c || o <= 0) { paneSlide.style.display = 'none'; paneClip.style.display = 'none'; paneDim.style.display = 'none'; return; }
+        var SP = slidePaneOf(c.place);
+        if (SP) boxPane(paneSlide, SP, 'var(--bg)', o);
+        else paneSlide.style.display = 'none';
+        var f = t >= +c.t0 ? clipFade(c, t) : 0;
+        if (f > 0) boxPane(paneClip, paneOf(c.place), '#000', f);
+        else paneClip.style.display = 'none';
+        var dim = !SP ? Math.min(o, f) : 0;
+        paneDim.style.display = dim > 0 ? 'block' : 'none';
+        paneDim.style.opacity = dim >= 1 ? '' : dim.toFixed(3);
+    }
     function placeFrame(frame, opacity) {
         Object.keys(frameEls).forEach(function (name) {
             var im = frameEls[name];
@@ -273,20 +382,13 @@
             if (on) im.style.opacity = opacity >= 1 ? '' : (+opacity).toFixed(3);
         });
     }
-    function placeAside(t) {
-        for (var i = 0; i < asideEls.length; i++) {
-            var a = asideEls[i];
-            var on = t >= a.t0 && t < a.t1;
-            a.el.style.display = on ? 'block' : 'none';
-        }
-    }
 
     // ---- slides
     var slides = Array.prototype.map.call(document.querySelectorAll('#slides > section.slide'), function (el, i) {
         return { el: el, i: i, t0: +el.dataset.t0, t1: +el.dataset.t1, kind: el.dataset.kind || 'slide',
                  hud: el.dataset.hud !== 'off', sidx: +el.dataset.sidx, label: el.dataset.slabel || '',
                  tracker: el.dataset.tracker || '', trans: el.dataset.transition || 'push',
-                 host: HOST.on && LAYOUTS[el.dataset.host] ? el.dataset.host : '',
+                 host: HOST.on && LAYOUTS[el.dataset.host] ? el.dataset.host : '', frame: el.dataset.frame || '',
                  items: [], cams: [], prepped: false };
     });
     if (window.XVFx) XVFx.prepare(slides);
@@ -337,10 +439,90 @@
         return it.prefix + s + it.suffix;
     }
 
+    // A slide the user took the presenter off (data-refit) was laid out
+    // around the presenter, all of it in one half. Its content goes in one
+    // box; on the slide's first frame the runtime measures what is drawn
+    // (text, shapes, pictures, cards) and scales that up, centred in the
+    // safe area, so the slide fills the frame. A slide that already fills
+    // the frame is left as it is.
+    var FIT = { x0: 120, y0: 110, x1: 1800, y1: 990, max: 1.7 };
+    var FIT_SKIP = /^(style|script|title|defs|clippath|mask|symbol|pattern|filter|marker|metadata)$|gradient$/i;   // and the SVG gradients
+    function refitWrap(s) {
+        var el = s.el;
+        if (el.getAttribute('data-refit') !== '1' || el.getAttribute('data-host')) return;
+        if (deviceOf(CLIP_BY_SLIDE[el.id])) return;          // keep the corner clear for the device
+        for (var q = 0; q < SECS.length; q++)                  // a presenter section you placed covers it
+            if (SECS[q].t0 < s.t1 && SECS[q].t1 > s.t0 && SECS[q].layout !== 'pip') return;
+        var box = document.createElement('div');
+        box.className = 'xv-refit';
+        box.style.cssText = 'position:absolute;left:0;top:0;width:1920px;height:1080px;transform-origin:0 0;';
+        Array.prototype.slice.call(el.childNodes).forEach(function (n) {
+            if (n.nodeType === 1 && n.tagName === 'STYLE') return;
+            box.appendChild(n);
+        });
+        el.appendChild(box);
+        s.fitBox = box;
+    }
+    function paintedBox(root, r0, k0) {
+        var b = [1e9, 1e9, -1e9, -1e9];
+        function add(r) {
+            if (!r || (r.width < 0.5 && r.height < 0.5)) return;
+            var x = (r.left - r0.left) / k0, y = (r.top - r0.top) / k0, w = r.width / k0, h = r.height / k0;
+            if (w >= 1700 && h >= 900) return;          // a backdrop
+            b[0] = Math.min(b[0], x); b[1] = Math.min(b[1], y);
+            b[2] = Math.max(b[2], x + w); b[3] = Math.max(b[3], y + h);
+        }
+        var walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+            acceptNode: function (n) { return n.nodeType === 1 && FIT_SKIP.test(n.nodeName) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT; }
+        });
+        var range = document.createRange();
+        for (var n = walker.nextNode(); n; n = walker.nextNode()) {
+            if (n.nodeType === 3) {
+                if (!n.nodeValue.trim() || (n.parentNode && n.parentNode.namespaceURI === 'http://www.w3.org/2000/svg')) continue;
+                range.selectNodeContents(n);
+                add(range.getBoundingClientRect());
+                continue;
+            }
+            var tag = n.nodeName.toLowerCase();
+            if (n.namespaceURI === 'http://www.w3.org/2000/svg') {
+                if (tag !== 'svg' && tag !== 'g' && tag !== 'tspan') add(n.getBoundingClientRect());
+                continue;
+            }
+            if (tag === 'img' || tag === 'video' || tag === 'canvas') { add(n.getBoundingClientRect()); continue; }
+            var cs = getComputedStyle(n);
+            if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+            var bg = cs.backgroundColor, painted = (bg && bg !== 'transparent' && !/rgba\([^)]*,\s*0\)$/.test(bg))
+                || (cs.backgroundImage && cs.backgroundImage !== 'none')
+                || parseFloat(cs.borderTopWidth) > 0 || parseFloat(cs.borderLeftWidth) > 0
+                || parseFloat(cs.borderBottomWidth) > 0 || parseFloat(cs.borderRightWidth) > 0
+                || (cs.boxShadow && cs.boxShadow !== 'none');
+            if (painted) add(n.getBoundingClientRect());
+        }
+        return b[2] > b[0] && b[3] > b[1] ? b : null;
+    }
+    function refitMeasure(s) {
+        if (!s.fitBox || s.fitDone) return;
+        var r0 = s.el.getBoundingClientRect(), k0 = r0.width / 1920;
+        if (!(k0 > 0)) return;
+        s.fitDone = true;
+        var b = paintedBox(s.fitBox, r0, k0);
+        if (!b) return;
+        var W = FIT.x1 - FIT.x0, H = FIT.y1 - FIT.y0;
+        var k = Math.min(FIT.max, W / (b[2] - b[0]), H / (b[3] - b[1]));
+        var cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
+        var mx = (FIT.x0 + FIT.x1) / 2, my = (FIT.y0 + FIT.y1) / 2;
+        if (k < 1.08 && Math.abs(mx - cx) < 140) return;   // it already fills the frame
+        var ty;
+        if (k < 1) { k = 1; ty = 0; } else ty = my - cy * k;
+        var tx = mx - cx * k;
+        s.fitBox.style.transform = 'translate(' + tx.toFixed(1) + 'px,' + ty.toFixed(1) + 'px) scale(' + k.toFixed(4) + ')';
+        s.fit = { k: k, tx: tx, ty: ty, box: b };
+    }
     function prep(s) {
         if (s.prepped) return;
         s.prepped = true;
         var el = s.el;
+        refitWrap(s);
         // Staggered containers hand their animation to their children.
         el.querySelectorAll('[data-stagger]').forEach(function (c) {
             var gap = +c.dataset.stagger || 0.12;
@@ -698,8 +880,9 @@
             var remain = (+b.t1 + extra) - t;
             if (b.exit && b.exit.style && remain < +b.exit.dur) o = Math.min(o, Math.max(0, remain) / Math.max(0.05, +b.exit.dur));
             v.style.opacity = o >= 0.999 ? '' : Math.max(0, o).toFixed(3);
-            v.muted = b.audio !== 'clip';
-            v.volume = b.audio === 'mix' ? 0.35 : 1;
+            // The sound plays in the dialog (the page with the Play button): a
+            // browser does not let this frame start a video with sound itself.
+            v.muted = true;
             var hold = v.duration && local >= v.duration - 0.05;
             var want = hold ? Math.max(0, v.duration - 0.04) : local;
             if (bookPlaying && !hold) {
@@ -732,7 +915,7 @@
         active.forEach(function (s) {
             if (vis.indexOf(s) < 0) { s.el.classList.remove('on'); s.el.classList.remove('has-article'); }
         });
-        var hudW = 0, labelS = null, labelW = -1;
+        var hudW = 0, labelS = null, labelW = -1, splitC = null, splitO = 0;
         // A board look moves the camera instead of pushing the slide.
         // A hand-picked transition still plays on the slides themselves.
         var manualBoard = BOARD && !!fx;
@@ -740,6 +923,7 @@
         vis.forEach(function (s) {
             prep(s);
             s.el.classList.add('on');
+            if (s.fitBox && !s.fitDone) refitMeasure(s);
             var o = 1, ty = 0;
             var inFx = fx && (s === fx.inn || s === fx.out);
             if (inFx) {
@@ -759,6 +943,21 @@
                 s.el.style.opacity = o >= 1 ? '' : o.toFixed(3);
                 s.el.style.transform = ty ? 'translateY(' + ty.toFixed(2) + 'px)' : '';
             }
+            var sp = splitOf(s.el.id);
+            var SPn = sp ? slidePaneOf(sp.place) : null;
+            if (sp && !SPn) {   // a clip in the middle: the slide stays as it is, dimmed behind the clip
+                if (o > splitO) { splitO = o; splitC = sp; }
+                if (s.el.style.transformOrigin) { s.el.style.transformOrigin = ''; s.el.style.borderRadius = ''; }
+            } else if (sp) {     // the slide plays shrunk in the pane the clip leaves open (a transition's own move stays inside it)
+                var P = SPn, kk = P[2] / 1920, tf = s.el.style.transform;
+                s.el.style.transform = 'translate(' + P[0] + 'px,' + P[1] + 'px) scale(' + kk.toFixed(5) + ')' + (tf ? ' ' + tf : '');
+                s.el.style.transformOrigin = '0 0';
+                s.el.style.borderRadius = (PANES.radius / kk).toFixed(1) + 'px';
+                if (o > splitO) { splitO = o; splitC = sp; }
+            } else if (s.el.style.transformOrigin) {
+                s.el.style.transformOrigin = '';
+                s.el.style.borderRadius = '';
+            }
             if (s.host) holes[s.host] = Math.max(holes[s.host] || 0, o);
             s.el.style.zIndex = String(s.i + 1);
             for (var j = 0; j < s.items.length; j++) apply(s, s.items[j], t);
@@ -767,6 +966,8 @@
             if (o > labelW) { labelW = o; labelS = s; }
         });
         active = vis;
+        placePanes(splitC, splitO, t);
+        placeClipDevice(t);
         // Sections the user placed win over a slide's own presenter layout
         // (the two cross-fade at the section's edges).
         var sh = {}, smax = 0;
@@ -797,9 +998,8 @@
         if (window.XVFx) XVFx.overlay(fx);
         placeBookends(t);
         drawBg(t, holes, frame);
-        placeHost(holes, frame);
+        placeHost(holes, t, frame);
         placeFrame(frame, frame ? (holes.pip || 0) : 0);
-        placeAside(t);
         // The HUD gets a dark backing where it sits over the presenter.
         hud.classList.toggle('over-left', (holes.full || holes.left || 0) > 0.5);
         hud.classList.toggle('over-right', (holes.full || holes.right || 0) > 0.5);
@@ -1059,11 +1259,64 @@
         return texts.map(function (e) { return { e: e, r: textRect(e, k, sr), text: true }; })
             .concat(imgs.map(function (e) { return { e: e, r: rectOf(e, k, sr), text: false }; }));
     }
+    // Crowding: text that almost touches other text (a stacked line with no
+    // gap, two words run together on one line), and text that is tight
+    // against, or runs out of, the card or pill it sits in.
+    var GAP_STACK = 4, GAP_LINE = 3, CARD_PAD = 6;
+    function alphaOf(c) {
+        var m = (c || '').match(/rgba?\(([^)]+)\)/);
+        if (!m) return 0;
+        var p = m[1].split(',');
+        return p[3] === undefined ? 1 : +p[3];
+    }
+    function cardOf(e, sec) {
+        for (var x = e.parentElement; x && x !== sec; x = x.parentElement) {
+            if (x instanceof SVGElement) continue;
+            var cs = getComputedStyle(x);
+            if (cs.display === 'inline' || cs.display === 'contents') continue;
+            var edged = parseFloat(cs.borderTopWidth) > 0 && parseFloat(cs.borderBottomWidth) > 0
+                && parseFloat(cs.borderLeftWidth) > 0 && parseFloat(cs.borderRightWidth) > 0;
+            if (alphaOf(cs.backgroundColor) > 0.3 || edged) return x;
+        }
+        return null;
+    }
+    function spacingIssues(s, boxes, k, sr, issues) {
+        var T = boxes.filter(function (b) { return b.text && b.r.w >= 2 && b.r.h >= 2; });
+        for (var i = 0; i < T.length; i++) for (var j = i + 1; j < T.length; j++) {
+            var A = T[i], B = T[j];
+            if (A.e.contains(B.e) || B.e.contains(A.e) || label(A.e) === label(B.e)) continue;
+            var area = inter(A.r, B.r), small = Math.min(A.r.w * A.r.h, B.r.w * B.r.h);
+            if (small > 40 && area > 0.15 * small) continue;          // reported as an overlap
+            var ox = Math.min(A.r.x + A.r.w, B.r.x + B.r.w) - Math.max(A.r.x, B.r.x);
+            var oy = Math.min(A.r.y + A.r.h, B.r.y + B.r.h) - Math.max(A.r.y, B.r.y);
+            // Stacked: they share columns and the lines touch, or overlap a little.
+            var stacked = ox > 0.3 * Math.min(A.r.w, B.r.w) && oy > -GAP_STACK && oy < 0.5 * Math.min(A.r.h, B.r.h);
+            // On one line: no space between them.
+            var inline = !stacked && oy > 0.5 * Math.min(A.r.h, B.r.h) && ox > -GAP_LINE && ox < 0.5 * Math.min(A.r.w, B.r.w);
+            if (inline) {        // punctuation that belongs to the word beside it ("down?", "feature,", "$200")
+                var L = A.r.x <= B.r.x ? A : B, R = L === A ? B : A;
+                if (/^[.,;:!?)\]}%…’”'"-]/.test(label(R.e)) || /[(\[{$£€‘“'"-]$/.test(label(L.e))) inline = false;
+            }
+            if (stacked || inline) issues.push('“' + label(A.e) + '” almost touches “' + label(B.e) + '”');
+        }
+        T.forEach(function (b) {
+            var c = cardOf(b.e, s.el);
+            if (!c) return;
+            var cr = rectOf(c, k, sr), r = b.r;
+            if (cr.w >= 1700 && cr.h >= 900) return;
+            var room = Math.min(r.x - cr.x, r.y - cr.y, cr.x + cr.w - (r.x + r.w), cr.y + cr.h - (r.y + r.h));
+            if (room < -2) issues.push('“' + label(b.e) + '” runs outside its box');
+            else if (room < CARD_PAD) issues.push('“' + label(b.e) + '” is tight against the edge of its box');
+        });
+    }
     // Nothing may cover the presenter: text, logos or illustrations in its
-    // area (for full frame, around the face), or an opaque block over it.
-    function presenterIssues(s, layout, boxes, k, sr, issues) {
+    // area (for full frame, around the face; for a corner on a laptop or a
+    // computer screen, the whole device), or an opaque block over it.
+    function presenterIssues(s, layout, frame, boxes, k, sr, issues) {
         var L = LAYOUTS[layout];
         if (!L) return;
+        var dev = layout === 'pip' && frame ? (HOST.frames || {})[frame] : null;
+        if (dev) L = { x: dev.x, y: dev.y, w: dev.w, h: dev.h };
         var zone = layout === 'full' ? { x: (+HOST.focus || 0.5) * 1920 - 330, y: 40, w: 660, h: 760 } : L;
         boxes.forEach(function (b) {
             var r = b.r;
@@ -1103,21 +1356,36 @@
                 else if (s.hud && b.text && ((r.y < 96 && (r.x < 720 || r.x + r.w > 1300)) || r.y + r.h > 1066))
                     issues.push('“' + label(b.e) + '” sits under the HUD');
             });
-            if (s.host) presenterIssues(s, s.host, boxes, k, sr, issues);
+            if (s.host) presenterIssues(s, s.host, s.frame, boxes, k, sr, issues);
+            // A clip on a computer or laptop covers that corner of the slide.
+            var cc = CLIP_BY_SLIDE[s.el.id], cd = deviceOf(cc);
+            if (cd) {
+                var dz = { x: cd.x, y: cd.y, w: cd.w, h: cd.h };
+                boxes.forEach(function (b) {
+                    var r = b.r;
+                    if (r.w >= 2 && r.h >= 2 && inter(r, dz) > 0.2 * Math.min(r.w * r.h, dz.w * dz.h))
+                        issues.push('“' + label(b.e) + '” is under the clip’s ' + (cc.place === 'laptop' ? 'laptop' : 'computer screen')
+                            + ' (keep x ' + dz.x + '–' + (dz.x + dz.w) + ', y ' + dz.y + '–' + (dz.y + dz.h) + ' clear)');
+                });
+            }
             for (var a = 0; a < boxes.length; a++) for (var b = a + 1; b < boxes.length; b++) {
                 var A = boxes[a], B = boxes[b];
                 if (!A.text && !B.text) continue;
                 if (A.e.contains(B.e) || B.e.contains(A.e)) continue;
                 var area = inter(A.r, B.r), small = Math.min(A.r.w * A.r.h, B.r.w * B.r.h);
+                // The same words drawn again in the same place is a highlight
+                // (a lit copy over a dim one), not two things colliding.
+                if (A.text && B.text && label(A.e) === label(B.e) && area > 0.8 * Math.max(A.r.w * A.r.h, B.r.w * B.r.h)) continue;
                 if (small > 40 && area > 0.15 * small)
                     issues.push('“' + label(A.e) + '” overlaps “' + label(B.e) + '”');
             }
+            spacingIssues(s, boxes, k, sr, issues);
             // The user's presenter sections on this slide, checked halfway through each overlap.
             SECS.forEach(function (x) {
                 var a0 = Math.max(s.t0 + 0.45, x.t0), a1 = Math.min(s.t1, x.t1);
                 if (a1 - a0 < 0.2) return;
                 seek((a0 + a1) / 2);
-                presenterIssues(s, x.layout, boxesOf(s, k, sr), k, sr, issues);
+                presenterIssues(s, x.layout, x.frame, boxesOf(s, k, sr), k, sr, issues);
             });
             if (issues.length) out.push({ id: s.el.id, issues: issues.filter(function (v, i, arr) { return arr.indexOf(v) === i; }).slice(0, 8) });
         });
@@ -1153,9 +1421,14 @@
         var lastT = 0;
         window.addEventListener('message', function (ev) {
             var d = ev.data || {};
-            if (d.xv === 'seek') {
+            if (d.xv === 'mute') {
+                userMuted = !!d.on;
+                if (clipVid && userMuted) clipVid.muted = true;   // the next seek sets it back when unmuted
+            }
+            else if (d.xv === 'seek') {
                 lastT = +d.t || 0;
                 bookPlaying = !!d.playing;
+                if (d.muted !== undefined) userMuted = !!d.muted;
                 seek(lastT);
                 syncHost(lastT, !!d.playing);
                 var shown = placeClip(lastT, !!d.playing);

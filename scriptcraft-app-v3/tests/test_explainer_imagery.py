@@ -43,8 +43,6 @@ def test_style_precedence_and_rich_means_cinematic():
     assert im.visual_style_key("nope", None) == "classic"
     assert im.VISUAL_STYLES == ("classic", "cinematic")
     assert ev.host_share_key(None, None) == "brief"
-    assert ev.pip_frame_key(None, None) == "mix"
-    assert ev.bubble_mode_key(None, None) == "some"
 
 
 def test_waves_are_shared_and_denser_than_the_old_field():
@@ -73,8 +71,8 @@ def test_cinematic_objects_have_volume_and_classic_ones_stay_flat():
 def test_text_slide_markup_is_unchanged_and_cards_are_not_restyled():
     slides = _slides()
     compiled = _compiled(slides)
-    classic = ev.page_html(compiled, mode="preview", bubble="off", visual={"style": "classic"})
-    cine = ev.page_html(compiled, mode="render", bubble="off", visual={"style": "cinematic"})
+    classic = ev.page_html(compiled, mode="preview", visual={"style": "classic"})
+    cine = ev.page_html(compiled, mode="render", visual={"style": "cinematic"})
 
     def slide_html(page):
         return page.split('<div id="slides">', 1)[1].split("</div><div id=\"hud\">", 1)[0]

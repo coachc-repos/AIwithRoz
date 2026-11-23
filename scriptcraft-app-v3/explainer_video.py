@@ -29,12 +29,10 @@ Presenter video: HeyGen clips made from the same ElevenLabs audio (or one
 long video, or upscaled copies of either) are matched to the narration by
 their audio. Slides with data-host show the presenter full frame, in a side
 panel or in a corner window: the page leaves that area transparent and the
-renderer puts the footage under it with ffmpeg. About half of the corner
-windows (the default) sit inside a drawn device frame — a monitor, a laptop,
-a phone or a TV, in turn — and the rest stay a plain corner. A small guide
-character can hold a short line taken from that slide's narration, lower
-left, only where it stays clear of the presenter. Both are drawn locally,
-and both can be turned off.
+renderer puts the footage under it with ffmpeg. A corner window can sit
+inside a drawn laptop or computer screen where the user picks one (per slide
+or per placed section); the device fills a larger corner than the plain
+window. The devices are drawn locally.
 
 YouTube clips: a public video URL is saved with yt-dlp as an mp4 (1080p max;
 ffmpeg merges the tracks) under the project's working/media folder. The user
@@ -148,37 +146,44 @@ HOST_MIN_BYTES = 20 * 1048576    # smaller files are not presenter footage
 HOST_SEARCH = 3.0                # seconds either side of where a clip should start
 HOST_MIN_SCORE = 0.6             # audio match below this: made from a different voiceover
 HOST_FOCUS = 0.45                # where the presenter sits across the frame (0 left, 1 right)
-# Corner-window dressing. "mix" frames about half of the corner windows
-# (the 1st, 3rd, 5th…), cycling a monitor, a laptop, a phone and a TV, and
-# leaves the rest as the plain corner. A device name frames every corner
-# window that way. "off" is always the plain corner. An explicit choice
-# wins, then a value already saved, then this default.
-PIP_FRAME_MODES = ("off", "mix", "monitor", "laptop", "phone", "tv")
-PIP_FRAME_DEFAULT = "mix"
-PIP_DEVICES = ("monitor", "laptop", "phone", "tv")
-# The device occupies the reserved corner (the plain pip box). The screen is
-# the see-through opening the presenter is scaled into. Every number is even
-# so a 4K scale stays on whole pixels.
+# Corner-window devices. The user picks, per slide or per section, a corner
+# window inside a laptop or a computer screen ("pip:laptop", "pip:monitor").
+# A corner window nobody picked a device for stays the plain corner.
+PIP_DEVICES = ("laptop", "monitor")
+# The plain corner window. A device needs more room: it fills DEVICE_BOX, a
+# larger corner ending 64 px from the right and 60 px from the bottom of the
+# frame, so the monitor's panel lines up with the plain window's right edge.
+# Parts are (x, y, w, h) inside DEVICE_BOX: the panel (laptop lid or monitor),
+# its glass, and the screen opening the presenter is scaled into. Screen
+# numbers are even so a 4K scale stays on whole pixels.
 _PIP_BOX = (1296, 694, 544, 306)
+DEVICE_BOX = (1204, 604, 652, 416)
+_DEVICE_PARTS = {
+    "monitor": {"panel": (20, 6, 612, 360), "glass": (24, 10, 604, 352), "screen": (38, 24, 576, 324), "corner": 12},
+    "laptop": {"panel": (40, 6, 572, 340), "glass": (43, 9, 566, 334), "screen": (54, 24, 544, 306), "corner": 14},
+}
+SCREEN_RADIUS = 6
+SHEEN_PEAK = 14                  # the glass reflection's strongest alpha (of 255), in the top-left corner only
+
+
+def _on_stage(box: tuple) -> tuple:
+    return (DEVICE_BOX[0] + box[0], DEVICE_BOX[1] + box[1], box[2], box[3])
+
+
 PIP_FRAME_GEOM = {
-    "monitor": {"outer": _PIP_BOX, "screen": (1352, 710, 432, 244), "radius": 8},
-    "laptop": {"outer": _PIP_BOX, "screen": (1368, 710, 400, 224), "radius": 6},
-    "phone": {"outer": _PIP_BOX, "screen": (1344, 720, 448, 252), "radius": 22},
-    "tv": {"outer": _PIP_BOX, "screen": (1328, 706, 480, 270), "radius": 4},
+    name: {"outer": DEVICE_BOX, "panel": _on_stage(part["panel"]), "screen": _on_stage(part["screen"]),
+           "radius": SCREEN_RADIUS}
+    for name, part in _DEVICE_PARTS.items()
 }
 # Light comes from the upper left, the same way a card's shadow falls (down
-# and to the right). A screen panel is only a few pixels thick. A laptop's
-# thickness is the base; a monitor's and a TV's is the stand.
+# and to the right). A laptop lid and a monitor are thin panels: a side wall
+# of PANEL_EDGE pixels. A laptop's thickness is the base; a monitor's is the stand.
 PANEL_EDGE = 3
 LAPTOP_BASE = 16
-# Guide character. "some" shows one on about a third of the slides that have
-# room (including the first). "often" shows one on every such slide. "off"
-# shows none. The graphic sits lower left, clear of the corner window.
-BUBBLE_MODES = ("off", "some", "often")
-BUBBLE_DEFAULT = "some"
-ASIDE_AT = (48, 848)
-ASIDE_SIZE = (440, 176)
-BUBBLE_MAX = 46                  # characters in the bubble, so it stays two short lines
+CLIP_PAD = 0.5                   # a made presenter clip starts and ends this far outside its window
+CLIP_MERGE_GAP = 3.0             # windows closer than this share one clip
+CLIP_SENTENCE_REACH = 10.0       # a clip takes in a sentence its window cuts, up to this far past it
+CLIP_MAX_SECONDS = 29 * 60       # HeyGen renders up to 30 minutes of audio per video
 
 HERE = Path(__file__).resolve().parent
 ASSET_DIR = HERE / "static" / "explainer"
@@ -233,6 +238,7 @@ INPUTS
    - [GROK IMAGINE / RESOLVE]: a description of a symbolic scene. Treat it as a creative brief for an illustrated vector scene, not a literal requirement.
    - [VERIFY BEFORE RENDER]: figures that the user must confirm.
    - [ON SCREEN / RESOLVE]: overlay cards to show without narration.
+   - [VIDEO CLIP / RESOLVE]: the writer marked a spot for a real video clip or screen demo that starts on the spoken words right after that block. Give the slide that starts there data-demo="the note" (see Demo video below).
    - Other RESOLVE notes (for example COLD OPEN): timing and camera directions.
 2. The timed transcript: what the narration actually says, with start times in seconds. Build visuals from what is actually spoken.
 3. The logo files the user has, by key.
@@ -249,7 +255,7 @@ DESIGN SYSTEM
 - Layout in 1920x1080 units; the app renders at 2x for 4K, so everything is vectors and live text.
 - Colors (CSS variables): --bg #090c12 (background), --panel #121824, --panel-2 #1a2232, --line #2a3446, --text #f2f4f8 (off-white), --muted #8a94a6, --gold #f5b83d (emphasis and "own"), --red #f05252 (losses and "rent"), --green #3cc878 (gains), --blue #4c8dff, --amber #f59e0b, --navy #0c1526 and --navy-2 #13213a (scene skies and ground), --sky-3 #1b2c4a. Use these, plus brand colors where a brand is shown.
 - Type: Inter (Inter Display at large sizes, automatic). Classes: kicker (gold caps label), h1 (104px), h2 (72px), h3 (48px), lead (40px, muted), body (34px), small (26px), huge (220px numbers), num (tabular figures); color classes gold, red, green, blue, amber, muted, white.
-- The app draws the particle background (rows of small particles riding a slow wave at the bottom, fading out by mid-screen), the HUD (section label top left, chapter tracker top right, thin progress bar at the bottom) and the slide transitions. Most slides use a 0.4 s push. The app itself may play a short stylized transition when the picture cuts to the presenter, a clip, a numbered step or a new section. Do not draw those transitions yourself. Keep content inside x 120-1800 and y 110-990 so it clears the HUD; full-bleed scenes may fill the frame. The app may briefly show a small guide character with a short line from this slide's narration in the lower left (about x 40-520, y 820-1030). Keep essential type, logos and figures out of that pocket.
+- The app draws the particle background (rows of particles riding gentle waves at the bottom, fading out by mid-screen), the HUD (section label top left, chapter tracker top right, thin progress bar at the bottom) and the slide transitions. Most slides use a 0.4 s push. The app itself may play a short stylized transition when the picture cuts to the presenter, a clip, a numbered step or a new section. Do not draw those transitions yourself. Keep content inside x 120-1800 and y 110-990 so it clears the HUD; full-bleed scenes may fill the frame.
 - The blend: presentation slides for stats, lists, definitions, timelines, comparisons and quotes; illustrated vector scenes for about a third of the runtime, for metaphor and story passages, drawn from the GROK IMAGINE briefs (not every brief needs a scene); a cold-open panorama with camera pans if the script describes one; a chapter card per section; the copyable asset (checklist or cheat sheet) as its own slide of kind asset.
 - Any slide where text alone would sit for more than about 8 seconds gets a supporting icon or small illustration (inline SVG).
 - Motion: headlines rise word by word, cards slide in, numbers count up, key figures pop or stamp (a ring burst on the biggest), charts draw or wipe on, bars grow from the bottom. Every element appears on the spoken words it illustrates and stays until the slide changes unless it is being swapped.
@@ -257,7 +263,7 @@ DESIGN SYSTEM
   <svg class="sc" data-sc="house" data-depth="1" x="200" y="640" width="220" height="170" viewBox="0 0 220 170"><use href="#sc-house"/></svg>
   data-sc is one of: house, building, datacenter, car, tree, factory, server, phone, chart, powerline. Set that symbol's viewBox (house 220x170, building 190x240, datacenter 340x180, car 400x130, tree 140x170, factory 220x170, server 80x160, phone 82x168, chart 200x130, powerline 220x110) and size width/height to match. data-depth is 0.4 for something far, 1 for the middle, 1.6 or more for something close. The hook (before the first chapter card) should put more objects close to the camera. The app draws the flat or the detailed version. Logos inside scenes use <image data-logo>. A few short labels only.
 - Topic pictures, not a generic street: if the script is about agents, bots, apps or AI tools, build the scene from bot characters instead of houses and cars. A bot is <svg class="sc sc-bot" data-sc="bot" data-shape="circle|squircle|blob|drop" width="140" height="140" viewBox="0 0 160 160" style="color:#a78bfa"><use href="#sc-bot-circle"/></svg> (the href matches the shape; color is one pastel: #a78bfa purple, #4c8dff blue, #5dbea3 teal, #6bcb77 green, #a07858 brown). Under it, a <div class="sc-pill">Label from the narration</div>. For a grid ("lots of bots"), several of these with data-anim="pop" and data-t="+0.3", "+0.5", "+0.7"... For a hub ("one rule for every bot"), a <div class="sc-message">the rule</div>, one bot, a <div class="sc-hub">Agent Tracker</div>, dotted <line stroke-dasharray="1 10" data-anim="draw"> connectors, and <svg ... data-anim="pop"><use href="#sc-check"/></svg> badges. Labels are the script's own names, not invented ones. Other topics can use the same idea for a product: a phone or chart object plus a sc-pill with the product name.
-- Demo video: when the narration says it will show something ("let me show you", "here's how", a walkthrough), put data-demo="what the recording should show" on that section. Do not draw a fake screen recording. The app shows a placeholder the user can fill with their own video. Keep the slide's own text in a left column about 620px wide so the placeholder, which sits on the right, does not cover it.
+- Demo video: when a [VIDEO CLIP / RESOLVE] note sits before these words, or the narration says it will show something ("let me show you", "here's how", a walkthrough), put data-demo="what the recording should show" on that section. Do not draw a fake screen recording. The app shows a placeholder the user can fill with their own video. Keep the slide's own text in a left column about 620px wide so the placeholder, which sits on the right, does not cover it.
 - Brands, for any script: when the narration names a company or product (Nvidia, Tesla, ChatGPT, Claude, YouTube, and the rest), give that slide a brand picture instead of a generic street. One brand: a large hero, <svg class="sc sc-brand" data-sc="brand" width="520" height="520" viewBox="0 0 520 520"><image data-logo="nvidia" x="150" y="136" width="220" height="220"/></svg> with a <div class="sc-pill">Nvidia</div>, data-anim="pop". Two brands: the same pair, left and right, with a sc-hub that says vs. Several brands: each in a <div class="sc-orb"> around one sc-hub. data-logo is the brand key (nvidia, chatgpt, claude, gemini, tesla, youtube, grok, heygen). The app supplies the logo file, or a monogram if it has none. You still never draw the logo yourself. A bot can wear the brand color (style="color:#76b900") with the brand name in its sc-pill.
 
 COMPOSITION FORMAT
@@ -278,8 +284,9 @@ Presenter (only when the context lists PRESENTER VIDEO)
 - data-host="full|left|right|pip" on a section shows the presenter, synced to the narration, in a fixed area; the app draws the footage under your content and that area must stay see-through:
   full: the whole frame. Add at most a kicker, a lower-third or one small card in the empty part of the frame (see the presenter still); never over the face or body.
   left / right: an 800x1080 panel at that side (x 0-800, or 1120-1920). Put all content on the other side (x 880-1800, or 120-1040): one stat, a short list, a logo row or a headline.
-  pip: a 544x306 corner window at x 1296-1840, y 694-1000 over a regular slide. Keep that corner clear. The app may draw that window inside a monitor, laptop, phone or TV frame; the corner stays the same either way.
+  pip: a 544x306 corner window at x 1296-1840, y 694-1000 over a regular slide. Keep that corner clear. The user may put that window on a laptop or a computer screen (data-frame="laptop" or "monitor" on the section); that device fills a larger corner, x 1204-1856, y 604-1020, so keep that whole area clear on those slides. Keep data-frame when you rewrite a section.
 - A presenter slide never has a scene, full-bleed background, panel or camera over the presenter area.
+- A presenter the user placed on a slide (the task says so) stays: never remove or change its data-host or data-frame, even where the script's notes say no presenter. Lay the slide out around it; an illustrated scene becomes a slide (data-kind="slide") with its art kept clear of the presenter's area.
 
 Layout
 - A section is a 1920x1080 box. Use the layout classes (fill, pad, center, row, col, gap-s, gap-m, gap-l, grid-2, grid-3, grid-4, wrap, grow) or absolute positioning in px with inline styles (style="position:absolute; left:160px; top:240px; width:720px").
@@ -395,8 +402,8 @@ def media_seconds(path: Path) -> float:
 # ---------------------------------------------------------------------------
 # YouTube clips. Downloads live in <project>/working/media. Assignments and
 # the per-clip audio choice are stored on project.json under "youtube", the
-# same save the presenter share, corner frame and guide bubble use. A project
-# with no "youtube" key is unchanged.
+# same save the presenter share and corner devices use. A project with no
+# "youtube" key is unchanged.
 # ---------------------------------------------------------------------------
 
 # Prefer an mp4 at or under 1080p. ffmpeg merges video+audio when the best
@@ -416,6 +423,62 @@ _DEMO_HINT = re.compile(
     r"walk you through|step by step|on the screen)\b",
     re.I,
 )
+# Where a clip plays on its slide (its own choice, apart from the presenter's):
+# - right / left: framed in that half while the slide (shrunk to the same
+#   size) plays in the other half;
+# - right-small / left-small: a small framed window on that side, the slide
+#   shrunk into the larger pane beside it;
+# - center-large / center-medium: framed in the middle over the slide, which
+#   stays full size and is dimmed behind it;
+# - full: full screen;
+# - monitor / laptop: on the screen of the drawn computer or laptop in the
+#   corner the presenter's devices use (the slide stays full size).
+YT_PLACES = ("right", "left", "right-small", "left-small", "center-large", "center-medium",
+             "full", "monitor", "laptop")
+YT_FRAMED = ("right", "left", "right-small", "left-small", "center-large", "center-medium")
+YT_PLACE_DEFAULT = "right"
+CLIP_PANE_MARGIN = 56            # stage px from the left and right edges to the two panes
+CLIP_PANE_GAP = 40               # between them
+CLIP_PANE_RADIUS = 18            # rounded corners of a pane
+CLIP_PANE_RING = 4               # the frame around a pane
+# Your own recordings (a demo) are added like a downloaded YouTube video.
+OWN_VIDEO_EXTS = (".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi")
+
+
+CLIP_SMALL_W = 640               # a small side window (16:9)
+CLIP_CENTER_W = {"center-large": 1536, "center-medium": 1152}   # 80% and 60% of the stage
+
+
+def _pane16(x: int, w: int) -> list:
+    """A 16:9 pane w wide at x, centred down the stage, on even pixels."""
+    w = w // 2 * 2
+    h = int(round(w * 9 / 16)) // 2 * 2
+    return [x, (STAGE_H - h) // 2 // 2 * 2, w, h]
+
+
+def clip_panes() -> dict:
+    """Each framed clip place: the clip's 16:9 pane, [x, y, w, h] on the
+    1920x1080 stage, and under "slide" the pane the slide is shrunk into
+    (None: the slide stays full size, dimmed behind the clip)."""
+    inner = STAGE_W - 2 * CLIP_PANE_MARGIN - CLIP_PANE_GAP
+    half = inner // 2 // 2 * 2
+    big = inner - CLIP_SMALL_W
+    m, g = CLIP_PANE_MARGIN, CLIP_PANE_GAP
+    out = {
+        "left": _pane16(m, half), "right": _pane16(STAGE_W - m - half, half),
+        "left-small": _pane16(m, CLIP_SMALL_W), "right-small": _pane16(STAGE_W - m - CLIP_SMALL_W, CLIP_SMALL_W),
+        "radius": CLIP_PANE_RADIUS, "ring": CLIP_PANE_RING,
+    }
+    for name, w in CLIP_CENTER_W.items():
+        out[name] = _pane16((STAGE_W - w) // 2 // 2 * 2, w)
+    out["slide"] = {"left": out["right"], "right": out["left"],
+                    "left-small": _pane16(m + CLIP_SMALL_W + g, big), "right-small": _pane16(m, big),
+                    "center-large": None, "center-medium": None}
+    return out
+
+
+def clip_place(rec: dict) -> str:
+    return rec.get("place") if rec.get("place") in YT_PLACES else YT_PLACE_DEFAULT
 # The narration keeps the clock. Documented here and in the clips tab.
 CLIP_TIMING_NOTE = (
     "The narration keeps the timing. A clip shorter than its slide plays once and "
@@ -476,6 +539,45 @@ def validate_clip_range(start: float, end: float, duration: float) -> "tuple[flo
     if duration:
         end = min(end, round(float(duration), 3))
     return start, end
+
+
+_MSS_DOT_RE = re.compile(r"(\d+)\.([0-5]\d)")
+
+
+def _dot_as_mss(text) -> Optional[float]:
+    """'6.41' read as 6 min 41 s (a period typed for the colon), or None."""
+    m = _MSS_DOT_RE.fullmatch("" if text is None else str(text).strip())
+    return float(int(m.group(1)) * 60 + int(m.group(2))) if m else None
+
+
+def parse_clip_range(start_text, end_text, duration: float, *, start: Optional[float] = None,
+                     end: Optional[float] = None) -> "tuple[float, float]":
+    """In and Out as typed (a None text keeps `start` / `end`). A period typed
+    for the colon is read as m:ss: "6.41" next to "6:37" first (a mixed pair
+    is most likely a typo), and "6.37" / "6.41" when reading them as seconds
+    gives no usable clip. The first reading that makes a clip wins; an error
+    says how the times were read."""
+    s = start if start_text is None else parse_timecode(start_text)
+    e = end if end_text is None else parse_timecode(end_text)
+    alt_s = None if start_text is None else _dot_as_mss(start_text)
+    alt_e = None if end_text is None else _dot_as_mss(end_text)
+    mixed_s = alt_s is not None and ":" in str(end_text or "")
+    mixed_e = alt_e is not None and ":" in str(start_text or "")
+    typo = (alt_s if mixed_s else s, alt_e if mixed_e else e)
+    dots = (s if alt_s is None else alt_s, e if alt_e is None else alt_e)
+    tries = [typo, (s, e), dots] if (mixed_s or mixed_e) else [(s, e), dots]
+    first, shown = None, tries[0]
+    for cs, ce in dict.fromkeys(tries):
+        try:
+            return validate_clip_range(cs, ce, duration)
+        except YoutubeError as err:
+            first = first or err
+    hint = ""
+    if shown[1] <= shown[0] + 0.2:
+        fs = lambda t: fmt_secs(t) + ("" if t == int(t) else f" ({t:g} s)")     # noqa: E731
+        hint = f" In reads as {fs(shown[0])}, Out as {fs(shown[1])}." + (
+            " Write minutes with a colon (6:41)." if alt_s is not None or alt_e is not None else "")
+    raise YoutubeError(str(first) + hint)
 
 
 def youtube_url_problem(url: str) -> Optional[str]:
@@ -846,8 +948,7 @@ def yt_add_clip(project: "Project", video_id: str, start_text, end_text, label: 
     with project.lock:
         bundle = load_youtube(project.data)
         video = _video_of(bundle, video_id)
-        start, end = validate_clip_range(parse_timecode(start_text), parse_timecode(end_text),
-                                         float(video.get("seconds") or 0))
+        start, end = parse_clip_range(start_text, end_text, float(video.get("seconds") or 0))
         src = project.dir / (video.get("file") or "")
         if not src.is_file():
             raise YoutubeError("The downloaded video file is missing. Download it again.")
@@ -863,7 +964,7 @@ def yt_add_clip(project: "Project", video_id: str, start_text, end_text, label: 
         has_audio = bool(probed["audio"])
     rec = {"id": cid, "video": video_id, "label": _clip_label(label), "start": start, "end": end,
            "file": rel, "seconds": round(end - start, 3), "width": width, "height": height,
-           "has_audio": has_audio, "audio": YT_AUDIO_DEFAULT, "slide": "", "status": "ready",
+           "has_audio": has_audio, "audio": YT_AUDIO_DEFAULT, "place": YT_PLACE_DEFAULT, "slide": "", "status": "ready",
            "error": "", "created": time.time()}
 
     def add(bundle, _rec=rec, _vid=video_id):
@@ -882,9 +983,8 @@ def yt_update_clip(project: "Project", clip_id: str, *, start=None, end=None, la
         if clip is None:
             raise YoutubeError("That clip is no longer in the list.")
         video = _video_of(bundle, clip.get("video") or "")
-        new_start = clip["start"] if start is None else parse_timecode(start)
-        new_end = clip["end"] if end is None else parse_timecode(end)
-        new_start, new_end = validate_clip_range(new_start, new_end, float(video.get("seconds") or 0))
+        new_start, new_end = parse_clip_range(start, end, float(video.get("seconds") or 0),
+                                              start=float(clip["start"]), end=float(clip["end"]))
         src = project.dir / (video.get("file") or "")
         rel = clip.get("file") or f"working/media/{clip_id}.mp4"
         recut = abs(new_start - float(clip["start"])) > 0.001 or abs(new_end - float(clip["end"])) > 0.001
@@ -929,6 +1029,56 @@ def yt_set_audio(project: "Project", clip_id: str, mode: str) -> dict:
         cur["audio"] = _mode
         return cur
     return _yt_mutate(project, edit)
+
+
+def yt_set_place(project: "Project", clip_id: str, place: str) -> dict:
+    """One of YT_PLACES: framed (a half, a small side window, the middle), full screen or on a device."""
+    if place not in YT_PLACES:
+        raise YoutubeError("Place the clip in the right or left half, small on the right or left, large or medium "
+                           "in the middle, full screen, in a computer or in a laptop.")
+
+    def edit(bundle, _id=clip_id, _place=place):
+        cur = next((c for c in bundle["clips"] if c.get("id") == _id), None)
+        if cur is None:
+            raise YoutubeError("That clip is no longer in the list.")
+        cur["place"] = _place
+        return cur
+    return _yt_mutate(project, edit)
+
+
+def add_own_video(project: "Project", upload, filename: str) -> dict:
+    """Your own recording (a demo) as a clip source, like a downloaded YouTube
+    video: saved in working/media and read with ffprobe. `upload` is a file
+    upload (with .save) or a path to copy."""
+    name = Path(filename or "").name
+    ext = Path(name).suffix.lower()
+    if ext not in OWN_VIDEO_EXTS:
+        raise YoutubeError("Choose a video file: MP4, MOV, M4V, WebM, MKV or AVI.")
+    vid = "up_" + uuid.uuid4().hex[:8]
+    rel = f"working/media/{vid}{ext}"
+    dest = project.dir / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".part")
+    try:
+        if hasattr(upload, "save"):
+            upload.save(str(tmp))
+        else:
+            shutil.copyfile(upload, tmp)
+        info = probe_video(tmp)
+        if not info or not info.get("seconds") or not info.get("w"):
+            raise YoutubeError(f"Can't read {name} as a video.")
+        tmp.replace(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
+    rec = {"id": vid, "url": "", "title": name[:120], "youtube_id": "", "file": rel,
+           "seconds": round(float(info["seconds"]), 3), "width": int(info["w"]), "height": int(info["h"]),
+           "has_audio": bool(info.get("audio")), "status": "ready", "error": "", "progress": 1,
+           "message": "Ready", "source": "upload", "created": time.time()}
+
+    def add(bundle, _rec=rec):
+        bundle["videos"].append(_rec)
+        return _rec
+    return _yt_mutate(project, add)
 
 
 def yt_assign(project: "Project", clip_id: str, slide: str, *, known: Optional[set] = None) -> dict:
@@ -1015,13 +1165,13 @@ def yt_public(project: "Project") -> dict:
                        "width": v.get("width") or 0, "height": v.get("height") or 0,
                        "has_audio": bool(v.get("has_audio", True)), "status": v.get("status") or "",
                        "error": v.get("error") or "", "progress": v.get("progress") or 0,
-                       "message": v.get("message") or "", "file": rel,
+                       "message": v.get("message") or "", "file": rel, "source": v.get("source") or "youtube",
                        "ready": bool(rel) and (project.dir / rel).is_file() and v.get("status") == "ready"})
     for c in bundle["clips"]:
         rel = c.get("file") or ""
         clips.append({"id": c.get("id"), "video": c.get("video") or "", "label": c.get("label") or "",
                       "start": c.get("start") or 0, "end": c.get("end") or 0, "seconds": c.get("seconds") or 0,
-                      "audio": c.get("audio") or YT_AUDIO_DEFAULT, "slide": c.get("slide") or "",
+                      "audio": c.get("audio") or YT_AUDIO_DEFAULT, "place": clip_place(c), "slide": c.get("slide") or "",
                       "has_audio": bool(c.get("has_audio", True)), "status": c.get("status") or "",
                       "error": c.get("error") or "", "file": rel, "note": c.get("note") or "",
                       "source": c.get("source") or "",
@@ -1035,6 +1185,77 @@ def demo_note(spoken: str) -> str:
     if not text or not _DEMO_HINT.search(text):
         return ""
     return text[:180]
+
+
+# A production note the script writers put before the paragraph where a real
+# video clip or screen demo should play. Inside [PRODUCTION BEGIN] ... [PRODUCTION END],
+# so it is never spoken.
+_VIDEO_CUE_RE = re.compile(
+    r"^[ \t]*\[(?:VIDEO CLIP|VIDEO|DEMO|SCREEN DEMO|DEMO VIDEO|SCREEN RECORDING)[ \t]*/[ \t]*RESOLVE\][ \t]*:?[ \t]*(.*)$",
+    re.I | re.M)
+_CUE_STOP_RE = re.compile(r"^(?:={3,}|_{3,}|-{3,}\s*$)")
+_CUE_SKIP_RE = re.compile(r"^(?:#{1,6}\s|\*{0,2}\s*Heading\s*:|\*{0,2}\s*Chapter\s+\d|FINAL HOOK\s*:)", re.I)
+_CUE_CACHE: dict = {}
+
+
+def script_video_cues(script: str) -> list:
+    """Each [VIDEO CLIP / RESOLVE] note with the first spoken words after its
+    production block: where the clip should start."""
+    text = (script or "").replace("\r\n", "\n")
+    out = []
+    for m in _VIDEO_CUE_RE.finditer(text):
+        note = re.sub(r"\s+", " ", m.group(1)).strip()
+        end = text.find("[PRODUCTION END]", m.end())
+        if not note or end < 0:
+            continue
+        rest = re.sub(r"\[PRODUCTION BEGIN\].*?\[PRODUCTION END\]", "\n", text[end + len("[PRODUCTION END]"):], flags=re.S)
+        spoken: list = []
+        for line in rest.split("\n"):
+            line = line.strip()
+            if _CUE_STOP_RE.match(line) or (spoken and _CUE_SKIP_RE.match(line)):
+                break
+            if not line or _CUE_SKIP_RE.match(line):
+                continue
+            line = re.sub(r"^\**\s*Host\s*:\s*\**", "", line, flags=re.I).strip()
+            if line:
+                spoken.extend(line.split())
+            if len(spoken) >= 8:
+                break
+        if spoken:
+            out.append({"note": note[:180], "after": " ".join(spoken[:8])})
+    return out
+
+
+def video_cue_slides(project: "Project", slides: list) -> dict:
+    """{slide id: note} for the script's video cues, found by the spoken words
+    after each cue in the timed narration. Cached per script and slide set."""
+    try:
+        script = project.read("script.txt") or ""
+    except Exception:
+        return {}
+    cues = script_video_cues(script)
+    if not cues or not slides:
+        return {}
+    key = (str(project.dir), hash(script), tuple((s.get("id"), round(float(s.get("t0") or 0), 2)) for s in slides))
+    if key in _CUE_CACHE:
+        return _CUE_CACHE[key]
+    tl = project.timeline()
+    out, floor = {}, 0.0
+    for c in cues:
+        words = c["after"].split()
+        hit = tl.find(" ".join(words), floor) or tl.find(" ".join(words[:5]), floor) or tl.find(" ".join(words), 0.0)
+        if not hit:
+            continue
+        t = float(hit[0])
+        floor = max(floor, t)
+        sid = next((s.get("id") for s in slides
+                    if float(s.get("t0") or 0) - 0.3 <= t < float(s.get("t1") or 0)), None)
+        if sid and sid not in out:
+            out[sid] = c["note"]
+    if len(_CUE_CACHE) > 64:
+        _CUE_CACHE.clear()
+    _CUE_CACHE[key] = out
+    return out
 
 
 def demo_payloads(compiled: dict, clips: list, mode: str) -> list:
@@ -1064,10 +1285,14 @@ def sync_demo_placeholders(project: "Project", slides: list) -> int:
     """
     bundle = load_youtube(project.data)
     taken = {c.get("slide") for c in bundle["clips"] if c.get("slide")}
+    try:
+        cues = video_cue_slides(project, slides)
+    except Exception:
+        cues = {}
     new = []
     for s in slides or []:
         sid = s.get("id") or ""
-        note = (s.get("demo") or "").strip() or demo_note(s.get("spoken") or "")
+        note = (s.get("demo") or "").strip() or cues.get(sid, "") or demo_note(s.get("spoken") or "")
         if not sid or not note or sid in taken:
             continue
         new.append({"id": "yc_" + uuid.uuid4().hex[:8], "video": "", "label": "Demo video",
@@ -1151,7 +1376,8 @@ def preview_clip_payloads(project: "Project", compiled: dict, url_of: Callable[[
             continue
         out.append({"id": c["id"], "slide": sid, "label": c.get("label") or "", "src": url_of(rel),
                     "audio": c.get("audio") if c.get("audio") in YT_AUDIO_MODES else YT_AUDIO_DEFAULT,
-                    "seconds": float(c.get("seconds") or 0), "t0": meta["t0"], "t1": meta["t1"]})
+                    "seconds": float(c.get("seconds") or 0), "t0": meta["t0"], "t1": meta["t1"],
+                    "place": clip_place(c)})
     return out
 
 
@@ -1207,7 +1433,14 @@ def clip_render_plan(project: "Project", start: float, end: float) -> list:
         if nxt and nxt.get("fx"):
             tail = min(float(nxt.get("fx_dur") or 0), max(0.0, float(end) - t1))
             leave_style = nxt.get("fx") or ""
-        out.append({"path": str(path), "audio": audio, "t0": t0, "t1": t1,
+        place = clip_place(c)
+        pane, radius = None, 0
+        if place in YT_FRAMED:
+            pane, radius = clip_panes()[place], CLIP_PANE_RADIUS
+        elif place in PIP_DEVICES:
+            pane, radius = list(PIP_FRAME_GEOM[place]["screen"]), PIP_FRAME_GEOM[place]["radius"]
+        out.append({"path": str(path), "audio": audio, "t0": t0, "t1": t1, "place": place,
+                    "pane": pane, "radius": radius,
                     "offset": round(a - float(start), 3), "show": show,
                     "src_skip": round(src_skip, 3), "seconds": round(remain, 3),
                     "w": int(c.get("width") or 1920) or 1920, "h": int(c.get("height") or 1080) or 1080,
@@ -1226,12 +1459,20 @@ def build_overlay_cmd(base: Path, out: Path, clips: list, width: int, height: in
     inputs: list = ["-i", str(base)]
     chains = ["[0:v]setpts=PTS-STARTPTS[vin]"]
     last = "vin"
+    k = width / STAGE_W
     for i, c in enumerate(clips):
         skip = float(c.get("src_skip") or 0)
         if skip > 0.02:
             inputs += ["-ss", f"{skip:.3f}"]
         inputs += ["-i", str(c["path"])]
-        sw, sh, x, y = fit_contain(int(c.get("w") or width), int(c.get("h") or height), width, height)
+        pane = c.get("pane") if c.get("place") not in (None, "", "full") else None
+        if pane:     # in a half or on a device's screen: the page drew the frame; the clip fills its inside, rounded
+            even = lambda v: int(round(v * k / 2)) * 2      # noqa: E731
+            bx, by, bw, bh = (even(v) for v in pane)
+            r = max(1, int(round(float(c.get("radius", CLIP_PANE_RADIUS)) * k)))
+        else:
+            bx, by, bw, bh, r = 0, 0, width, height, 0
+        sw, sh, x, y = fit_contain(int(c.get("w") or width), int(c.get("h") or height), bw, bh)
         show = max(1.0 / FPS, float(c["show"]))
         head = float(c.get("head_fade") or 0)
         tail = float(c.get("tail") or 0)
@@ -1252,15 +1493,23 @@ def build_overlay_cmd(base: Path, out: Path, clips: list, width: int, height: in
             fx += _clip_fx_filters(c.get("enter_style") or "", float(c.get("fx_amp") or 1), head, 0, show)
         if tail > 0.02 and c.get("leave_style"):
             fx += _clip_fx_filters(c.get("leave_style") or "", float(c.get("fx_amp") or 1), 0, tail, show)
-        fmt = "yuva420p" if (fade or fx) else "yuv420p"
+        fmt = "yuva420p" if (fade or fx or r) else "yuv420p"
         lab, nxt = f"c{i}", f"v{i}"
         off = float(c["offset"])
         chains.append(
             f"[{i + 1}:v]setpts=PTS-STARTPTS,fps={FPS},scale={sw}:{sh}:flags=lanczos,setsar=1,"
-            f"pad={width}:{height}:{x}:{y}:black,format={fmt}{fx}{fade}{pad},"
-            f"trim=duration={vis:.3f},setpts=PTS-STARTPTS+{off:.3f}/TB[{lab}]")
+            f"pad={bw}:{bh}:{x}:{y}:black,format={fmt}{fx}{'' if r else fade}{pad},"
+            f"trim=duration={vis:.3f},setpts=PTS-STARTPTS{'' if r else f'+{off:.3f}/TB'}[{lab}{'r' if r else ''}]")
+        if r:
+            # One frame of rounded-corner alpha (alphamerge repeats it): the
+            # corners outside the radius show the page's frame underneath. The
+            # transition fades come after, so they fade the rounded picture.
+            edge = f"hypot(max(max({r}-X,X-(W-1-{r})),0),max(max({r}-Y,Y-(H-1-{r})),0))"
+            chains.append(f"color=c=black:s={bw}x{bh}:r={FPS}:d={1.0 / FPS:.4f},format=gray,"
+                          f"geq=lum='255*clip({r}+0.5-{edge},0,1)'[m{i}]")
+            chains.append(f"[{lab}r][m{i}]alphamerge{fade},setpts=PTS-STARTPTS+{off:.3f}/TB[{lab}]")
         chains.append(
-            f"[{last}][{lab}]overlay=0:0:eof_action=pass:enable='between(t,{off:.3f},{off + vis:.3f})'[{nxt}]")
+            f"[{last}][{lab}]overlay={bx}:{by}:eof_action=pass:enable='between(t,{off:.3f},{off + vis:.3f})'[{nxt}]")
         last = nxt
     return ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *inputs, "-filter_complex", ";".join(chains),
             "-map", f"[{last}]", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", str(int(crf)),
@@ -1437,10 +1686,17 @@ END_ID = "xv-end"
 BOOKEND_AUDIO = ("clip", "mute", "mix")  # clip = the video's own audio
 _HARD_REASONS = ("presenter", "media-enter", "media-leave")
 _REASON_ORDER = ("presenter", "media-enter", "media-leave", "step", "scene")
+# Seconds per style at full strength. Ink, burn and the strobe wipe ("shatter",
+# the stored key) are detailed effects that need time to read; light leak drifts.
+# The user asked for slower transitions (2026-11-22, about 1.5x the first set),
+# then "a tad faster" (2026-11-23): about 15% shorter than that, ~1.3x the first set.
+# Light leak was then made quicker still, with a flash at the swap (2026-11-23).
+# The strobe wipe was then made faster and steady, with no flicker (2026-11-23).
 TRANSITION_DURS = {
-    "glitch": 0.50, "paint": 0.56, "warp": 0.52, "pixel": 0.48,
-    "lightleak": 0.44, "burn": 0.50, "shatter": 0.46,
+    "glitch": 0.72, "paint": 1.15, "warp": 0.98, "pixel": 0.9,
+    "lightleak": 0.75, "burn": 1.25, "shatter": 0.6,
 }
+TRANSITION_MAX_SHARE = 0.6   # at most this share of the incoming slide
 _STYLE_CYCLE = {
     "presenter": ("lightleak", "glitch", "warp"),
     "media-enter": ("glitch", "pixel", "warp"),
@@ -1763,8 +2019,11 @@ def plan_slide_transitions(slides: list, *, mode: str = "full", overrides: Optio
         amp = 1.0 if reason == "manual" else transition_intensity("full" if mode == "off" else mode)
         try:
             t0 = round(float(slide.get("t0") or 0), 3)
+            span = float(slide.get("t1") or 0) - t0
         except (TypeError, ValueError):
-            t0 = 0.0
+            t0, span = 0.0, 0.0
+        if span > 0:      # a short slide still shows its content after the effect
+            dur = round(min(dur, max(0.35, span * TRANSITION_MAX_SHARE)), 3)
         events.append({"id": slide.get("id") or "", "index": i, "t": t0, "frm": frm, "style": style,
                        "dur": dur, "amp": amp, "dur_key": dur_key, "reason": reason, "reasons": reasons,
                        "blocked": "", "origin": "manual" if reason == "manual" else "auto"})
@@ -2179,20 +2438,28 @@ def _clip_fx_filters(style: str, amp: float, head: float, tail: float, show: flo
         return (f",rgbashift=rh={shift}:bh=-{shift}:edge=wrap:{enable},"
                 f"noise=alls={max(4, int(round(10 * amp)))}:allf=t+u:{enable}")
     if style == "pixel":
-        block = 10 if amp < 0.75 else 18
+        block = 6 if amp < 0.75 else 10
         return f",pixelize=w={block}:h={block}:{enable}"
     if style == "warp":
-        return f",lenscorrection=k1={0.18 * amp:.3f}:k2={0.06 * amp:.3f}:{enable}"
+        return (f",lenscorrection=k1={0.35 * amp:.3f}:k2={0.12 * amp:.3f}:{enable},"
+                f"rgbashift=rh={shift // 2 + 3}:bh=-{shift // 2 + 3}:edge=wrap:{enable}")
     if style == "lightleak":
         return (f",gblur=sigma={1.2 + 5 * amp:.2f}:sigmaV={0.4 + amp:.2f}:{enable},"
                 f"eq=brightness={0.05 * amp:.3f}:saturation={1.15 + 0.35 * amp:.2f}:{enable}")
     if style == "paint":
         return f",eq=saturation={1.15 + 0.45 * amp:.2f}:{enable}"
     if style == "burn":
-        return (f",eq=brightness={0.07 * amp:.3f}:saturation={1.4 + 0.5 * amp:.2f}:{enable},"
-                f"vignette=angle=PI/5:{enable}")
-    if style == "shatter":
-        return f",pixelize=w=32:h=24:{enable}"
+        return (f",colorbalance=rs={0.30 * amp:.2f}:gs={0.08 * amp:.2f}:bs=-{0.30 * amp:.2f}:{enable},"
+                f"eq=brightness={0.08 * amp:.3f}:saturation={1.4 + 0.2 * amp:.2f}:{enable},"
+                f"vignette=angle=PI/4:{enable},noise=alls={max(6, int(round(14 * amp)))}:allf=t+u:{enable}")
+    if style == "shatter":   # the strobe wipe: one smooth exposure rise and fall (no flicker), slight smear
+        bumps = []
+        if head > 0.02:
+            bumps.append(f"sin(PI*clip(t/{head:.3f},0,1))")
+        if tail > 0.02:
+            bumps.append(f"sin(PI*clip((t-{show:.3f})/{tail:.3f},0,1))")
+        return (f",eq=brightness='{0.16 * amp:.3f}*({'+'.join(bumps)})':eval=frame:{enable},"
+                f"gblur=sigma=3:sigmaV=0.3:{enable}")
     return ""
 
 
@@ -2532,10 +2799,13 @@ def probe_video(path: Path) -> Optional[dict]:
     return info
 
 
-def local_videos(root: Path, max_depth: int = 3) -> list:
-    """Video files in the script folder big enough to be presenter footage,
-    with their length, size and audio (ffprobe results are cached)."""
+def local_videos(root: Path, max_depth: int = 3, min_bytes: Optional[int] = None, min_seconds: float = 3.0) -> list:
+    """Video files in the script folder big enough to be presenter footage
+    (HOST_MIN_BYTES unless `min_bytes`; short clips made for one presenter
+    window, and their upscales, can be far smaller), with their length,
+    size and audio (ffprobe results are cached)."""
     root = Path(root)
+    min_bytes = HOST_MIN_BYTES if min_bytes is None else min_bytes
     vids = []
     if not root.is_dir():
         return vids
@@ -2550,41 +2820,65 @@ def local_videos(root: Path, max_depth: int = 3) -> list:
                 st = p.stat()
             except OSError:
                 continue
-            if st.st_size < HOST_MIN_BYTES:
+            if st.st_size < min_bytes:
                 continue
             info = probe_video(p)
-            if info and info["seconds"] >= 3 and info["h"]:
+            if info and info["seconds"] >= min_seconds and info["h"]:
                 vids.append({"path": p, "rel": p.relative_to(root).as_posix(), "mtime": st.st_mtime, **info})
     return vids
 
 
+def _upscale_key(part: dict, v: dict) -> tuple:
+    """Rank of a possible upscale: named after the clip first, then the
+    closest length, then the larger and newer file. The name is only a
+    tiebreaker: upscalers often rename the file ("Woman speaking into
+    microphone")."""
+    return (Path(part["path"]).stem.lower() in v["path"].stem.lower(), -abs(v["seconds"] - part["seconds"]),
+            v["h"], v["mtime"])
+
+
+def upscale_candidates(part: dict, vids: list, skip: set) -> list:
+    """Larger copies of about the same length (within 0.6 s) as this clip,
+    best first. Clips of a set can be within a few hundredths of a second of
+    each other, so the footage is checked before one is used."""
+    out = [v for v in vids if v["path"] not in skip and v["path"] != part["path"]
+           and abs(v["seconds"] - part["seconds"]) <= 0.6 and v["h"] > part["h"]]
+    return sorted(out, key=lambda v: _upscale_key(part, v), reverse=True)
+
+
 def best_upscale(part: dict, vids: list, skip: set) -> Optional[dict]:
-    """A larger copy of about the same length (an upscale); one named after
-    the clip wins, then the closest length. Clips of a set can be within a
-    few hundredths of a second of each other, so attach_clips checks the
-    footage before using it."""
-    stem = Path(part["path"]).stem.lower()
-    best, best_key = None, None
-    for v in vids:
-        gap = abs(v["seconds"] - part["seconds"])
-        if v["path"] in skip or v["path"] == part["path"] or gap > 0.6 or v["h"] <= part["h"]:
-            continue
-        key = (stem in v["path"].stem.lower(), -gap, v["h"], v["mtime"])
-        if best is None or key > best_key:
-            best, best_key = v, key
-    return best
+    found = upscale_candidates(part, vids, skip)
+    return found[0] if found else None
+
+
+def assign_upscales(parts: list, vids: list, skip: set) -> dict:
+    """{clip path: its likeliest upscale} for clips of one source: the
+    closest pairs are matched first and each upscale goes to one clip only,
+    so an upscale of clip 3 is not handed to clip 2 just because clip 2 is
+    within a few hundredths of a second of the same length."""
+    pairs = [(_upscale_key(v, c), v, c) for v in parts for c in upscale_candidates(v, vids, skip)]
+    pairs.sort(key=lambda x: x[0], reverse=True)
+    got, used = {}, set()
+    for _k, v, c in pairs:
+        if v["path"] not in got and c["path"] not in used:
+            got[v["path"]] = c
+            used.add(c["path"])
+    return got
+
+
+def _up_rec(c: dict) -> dict:
+    return {"file": str(Path(c["path"]).resolve()), "seconds": c["seconds"], "w": c["w"], "h": c["h"],
+            "audio": c["audio"]}
 
 
 def clip_item(path: Path, vids: Optional[list] = None, skip: Optional[set] = None) -> Optional[dict]:
     """A presenter clip ready for attach_clips: the file, its probe and the
-    upscale to use in its place (if any)."""
+    possible upscales to use in its place, likeliest first."""
     info = probe_video(Path(path))
     if not info:
         return None
-    up = best_upscale({"path": Path(path), **info}, vids or [], skip or set())
-    return {"orig": str(Path(path).resolve()), **info,
-            "up": ({"file": str(up["path"].resolve()), "seconds": up["seconds"], "w": up["w"], "h": up["h"],
-                    "audio": up["audio"]} if up else None)}
+    ups = [_up_rec(c) for c in upscale_candidates({"path": Path(path), **info}, vids or [], skip or set())]
+    return {"orig": str(Path(path).resolve()), **info, "up": ups[0] if ups else None, "ups": ups}
 
 
 def find_host_sources(root: Path, lengths: Optional[list] = None, max_depth: int = 3) -> list:
@@ -2600,22 +2894,24 @@ def find_host_sources(root: Path, lengths: Optional[list] = None, max_depth: int
         if m:
             sets.setdefault((str(v["path"].parent), m.group("stem"), int(m.group("n"))), {})[int(m.group("i"))] = v
     sources, members, upscales = [], set(), set()
+    rel = lambda c: {"rel": c["rel"], "w": c["w"], "h": c["h"], "seconds": c["seconds"], "audio": c["audio"]}
 
-    def part_rec(v, skip):
-        up = best_upscale(v, vids, skip)
+    def part_rec(v, chosen, skip):
+        up = chosen.get(v["path"])
         if up:
             upscales.add(up["path"])
-            skip.add(up["path"])            # one clip per upscale within a source
+        others = [c for c in upscale_candidates(v, vids, skip) if not up or c["path"] != up["path"]]
         return {"rel": v["rel"], "seconds": v["seconds"], "w": v["w"], "h": v["h"], "fps": v["fps"],
-                "audio": v["audio"], "upscale": ({"rel": up["rel"], "w": up["w"], "h": up["h"],
-                                                  "seconds": up["seconds"], "audio": up["audio"]} if up else None)}
+                "audio": v["audio"], "upscale": rel(up) if up else None,
+                "upscales": ([rel(up)] if up else []) + [rel(c) for c in others]}
 
     for (folder, stem, n), parts in sets.items():
         if sorted(parts) != list(range(1, n + 1)):
             continue
         skip = {v["path"] for v in parts.values()}
         members |= skip
-        recs = [part_rec(parts[i], skip) for i in range(1, n + 1)]
+        chosen = assign_upscales(list(parts.values()), vids, skip)
+        recs = [part_rec(parts[i], chosen, skip) for i in range(1, n + 1)]
         sources.append({"id": "set:" + (Path(parts[1]["rel"]).parent / stem).as_posix(), "kind": "clips",
                         "label": f"HeyGen clips ({n}) · {stem}", "parts": recs,
                         "seconds": round(sum(r["seconds"] for r in recs), 3),
@@ -2624,7 +2920,8 @@ def find_host_sources(root: Path, lengths: Optional[list] = None, max_depth: int
         if v["path"] in members:
             continue
         sources.append({"id": "file:" + v["rel"], "kind": "video", "label": v["path"].name,
-                        "parts": [part_rec(v, {v["path"]})], "seconds": v["seconds"], "mtime": v["mtime"],
+                        "parts": [part_rec(v, assign_upscales([v], vids, {v["path"]}), {v["path"]})],
+                        "seconds": v["seconds"], "mtime": v["mtime"],
                         "_path": v["path"]})
     sources = [s for s in sources if s.pop("_path", None) not in upscales
                and (lengths is None or any(abs(s["seconds"] - float(n)) <= 2.5 for n in lengths))]
@@ -2728,38 +3025,42 @@ def place_clip(narration: Path, clip: Path, seconds: float, expected: Optional[f
 
 
 def attach_host(project: "Project", source: dict, root: Path, status: Callable, log: Callable,
-                share: Optional[str] = None, pip_frame: Optional[str] = None) -> dict:
+                share: Optional[str] = None) -> dict:
     """Use a presenter source found by find_host_sources (a HeyGen clip set
     or one video) as the project's presenter footage."""
     items = []
     for i, p in enumerate(source["parts"], 1):
         orig = (Path(root) / p["rel"]).resolve()
-        up = p.get("upscale")
-        if not orig.is_file() or (up and not (Path(root) / up["rel"]).is_file()):
+        if not orig.is_file():
             raise RuntimeError(f"Presenter clip {i} is missing: {p['rel']}")
+        ups = [{"file": str((Path(root) / u["rel"]).resolve()), **{k: u[k] for k in ("seconds", "w", "h", "audio")}}
+               for u in (p.get("upscales") or ([p["upscale"]] if p.get("upscale") else []))
+               if (Path(root) / u["rel"]).is_file()]
         items.append({"orig": str(orig), "seconds": p["seconds"], "w": p["w"], "h": p["h"], "audio": p["audio"],
-                      "up": ({"file": str((Path(root) / up["rel"]).resolve()), **{k: up[k] for k in ("seconds", "w", "h", "audio")}}
-                             if up else None)})
-    return attach_clips(project, items, status, log, share=share, pip_frame=pip_frame, replace=True, ordered=True,
+                      "up": ups[0] if ups else None, "ups": ups})
+    return attach_clips(project, items, status, log, share=share, replace=True, ordered=True,
                         source=source["id"], label=source["label"])
 
 
 def attach_clips(project: "Project", items: list, status: Callable, log: Callable, *, share: Optional[str] = None,
-                 pip_frame: Optional[str] = None, replace: bool = False, ordered: bool = False, source: str = "",
+                 replace: bool = False, ordered: bool = False, source: str = "",
                  label: str = "") -> dict:
     """Place presenter clips (clip_item dicts) on the narration by their
     audio and add them to the project's presenter footage (or replace it).
-    Clips made from another voiceover are refused. Then remake the preview
-    copy and the still. Placed sections and the framing are kept."""
+    Clips made from another voiceover are refused; a clip this app cut from
+    the narration (item "at": where its audio starts) is matched near there
+    and kept there. Then remake the preview copy and the still. Placed
+    sections, the framing and a planned presenter are kept."""
     narration = project.dir / "narration.wav"
     if not narration.is_file():
         raise RuntimeError("The narration is not prepared yet")
     status("presenter", "Matching the presenter clips to the narration\u2026", None)
     old = project.data.get("host") or {}
     parts = [] if replace else [dict(x) for x in old.get("parts") or []]
-    have = {x["orig"] for x in parts}
+    have = {x["orig"] for x in parts} | {x["file"] for x in parts}
+    taken = {x["file"] for x in parts}
     cache: dict = {}
-    refused = []
+    refused, notes = [], []
     expected = 0.0 if ordered else None
     for i, it in enumerate(items, 1):
         orig = Path(it["orig"])
@@ -2769,32 +3070,45 @@ def attach_clips(project: "Project", items: list, status: Callable, log: Callabl
             refused.append(f"{orig.name} has no audio track to match")
             continue
         status(message=f"Matching presenter clip {i} of {len(items)} to the narration\u2026")
-        off, score = place_clip(narration, orig, it["seconds"], expected, cache)
-        if score < HOST_MIN_SCORE:
+        off, score = place_clip(narration, orig, it["seconds"], it.get("at", expected), cache)
+        if score < HOST_MIN_SCORE and it.get("at") is not None:
+            notes.append(f"{orig.name}: audio match {score:.2f}, kept where its audio was cut ({fmt_secs(it['at'])})")
+            off = it["at"]
+        elif score < HOST_MIN_SCORE:
             refused.append(f"{orig.name} does not match this narration (audio match {score:.2f}): it was made "
                            "from a different voiceover")
             continue
         end_off, end_score = align_clip(narration, orig, off, it["seconds"], at_end=True)
         drift = round(end_off - off, 3) if end_score >= HOST_MIN_SCORE else None
-        up, use, u_off = it.get("up"), orig, None
-        if up:
-            # Make sure the larger copy is this clip: by its audio when it has
-            # some (which also places it, as an upscale can gain or lose a
-            # frame), otherwise by comparing frames.
-            use = Path(up["file"])
-            if up.get("audio"):
-                u_off, u_score = align_clip(narration, use, off, up["seconds"])
-                same = u_score >= HOST_MIN_SCORE and abs(u_off - off) < 0.5
-            else:
-                same = _same_footage(orig, use, it["seconds"])
-            if not same:
-                log(f"\u26a0\ufe0f {use.name} is not an upscale of {orig.name}; using the original", "warning")
-                up, use, u_off = None, orig, None
+        up, use, u_off = None, orig, None
+        for cand in it.get("ups") or ([it["up"]] if it.get("up") else []):
+            if cand["file"] in taken:
+                continue
+            v_off = _verify_upscale(narration, orig, it["seconds"], cand, off)
+            if v_off is not None:
+                up, use, u_off = cand, Path(cand["file"]), v_off
+                taken.add(cand["file"])
+                break
+            log(f"\u26a0\ufe0f {Path(cand['file']).name} is the same length but not an upscale of {orig.name}", "warning")
         rec = {"file": str(use), "orig": str(orig), "offset": u_off if u_off is not None else off, "score": score,
                "drift": drift, "seconds": (up or it)["seconds"], "w": (up or it)["w"], "h": (up or it)["h"],
                "upscaled": bool(up)}
-        parts.append(rec)
         have.add(str(orig))
+        # The same stretch as a clip already in use: a higher-resolution copy
+        # (an upscale under another name) takes its place; anything else is skipped.
+        twin = next((x for x in parts if abs(x["offset"] - rec["offset"]) < 0.5
+                     and abs(x["seconds"] - rec["seconds"]) < 0.6), None)
+        if twin is not None:
+            if rec["h"] > twin["h"]:
+                twin.update(file=rec["file"], w=rec["w"], h=rec["h"], seconds=rec["seconds"], offset=rec["offset"],
+                            upscaled=True)
+                taken.add(rec["file"])
+                notes.append(f"{Path(rec['file']).name} is a {rec['h']}p copy of {Path(twin['orig']).name}: used in its place")
+            else:
+                notes.append(f"{orig.name} covers the same stretch as {Path(twin['orig']).name}: skipped")
+            log(f"\U0001f9d1\u200d\U0001f4bc {notes[-1]}")
+            continue
+        parts.append(rec)
         if ordered:
             expected = off + it["seconds"]
         log(f"\U0001f9d1\u200d\U0001f4bc Presenter clip {orig.name}: {fmt_secs(rec['offset'])}\u2013"
@@ -2810,8 +3124,8 @@ def attach_clips(project: "Project", items: list, status: Callable, log: Callabl
             "parts": sorted(parts, key=lambda x: x["offset"]), "sections": list(old.get("sections") or []),
             "focus": old.get("focus", HOST_FOCUS),
             "share": host_share_key(share, old.get("share")),
-            "pip_frame": pip_frame_key(pip_frame, old.get("pip_frame") or project.data.get("pip_frame")),
-            "refused": refused, "created": time.time()}
+            "planned": bool(old.get("planned")) and not replace,
+            "refused": refused, "notes": notes, "created": time.time()}
     _host_preview(project, host, status)
     with project.lock:
         project.data["host"] = host
@@ -2819,8 +3133,72 @@ def attach_clips(project: "Project", items: list, status: Callable, log: Callabl
     return host
 
 
+def _verify_upscale(narration: Path, orig: Path, orig_seconds: float, cand: dict, offset: float) -> Optional[float]:
+    """The narration offset of `cand` when it is the same footage as the
+    clip at `offset` (by its audio, which also places it, as an upscale can
+    gain or lose a frame; by its frames when it has no audio), else None."""
+    if cand.get("audio"):
+        u_off, u_score = align_clip(narration, Path(cand["file"]), offset, cand["seconds"])
+        return u_off if u_score >= HOST_MIN_SCORE and abs(u_off - offset) < 0.5 else None
+    return offset if _same_footage(orig, Path(cand["file"]), orig_seconds) else None
+
+
+def rescan_upscales(project: "Project", root: Path, status: Callable, log: Callable) -> dict:
+    """Look in the script folder for higher-resolution copies of the
+    presenter clips in use (same length, any file name), check each against
+    the clip, and use the ones that match. Closest pairs are tried first and
+    a copy that fails for one clip is still tried for the others."""
+    host = project.host()
+    if not host:
+        raise RuntimeError("This video has no presenter clips")
+    narration = project.dir / "narration.wav"
+    status("presenter", "Looking for higher-resolution copies of the presenter clips\u2026", None)
+    vids = local_videos(root, min_bytes=0, min_seconds=0.5)
+    parts = [dict(x) for x in host["parts"]]
+    origs = {Path(x["orig"]) for x in parts}
+    pairs = []
+    for i, p in enumerate(parts):
+        info = probe_video(Path(p["orig"]))
+        if info:
+            base = {"path": Path(p["orig"]), **info}
+            pairs += [(_upscale_key(base, c), i, info, c) for c in upscale_candidates(base, vids, origs)]
+    pairs.sort(key=lambda x: x[0], reverse=True)
+    done, used, changed = set(), set(), 0
+    for _k, i, info, c in pairs:
+        cand = _up_rec(c)
+        if i in done or cand["file"] in used:
+            continue
+        status(message=f"Checking {c['path'].name} against {Path(parts[i]['orig']).name}\u2026")
+        v_off = _verify_upscale(narration, Path(parts[i]["orig"]), info["seconds"], cand, parts[i]["offset"])
+        if v_off is None:
+            continue
+        done.add(i)
+        used.add(cand["file"])
+        if parts[i]["file"] != cand["file"]:
+            parts[i].update(file=cand["file"], w=c["w"], h=c["h"], seconds=c["seconds"], offset=v_off, upscaled=True)
+            changed += 1
+            log(f"\U0001f9d1\u200d\U0001f4bc {c['path'].name} ({c['w']}x{c['h']}) is the upscale of "
+                f"{Path(parts[i]['orig']).name}: used for renders")
+    for i, p in enumerate(parts):
+        if p.get("upscaled") and i not in done and not Path(p["file"]).is_file():
+            info = probe_video(Path(p["orig"])) or {}
+            p.update(file=p["orig"], upscaled=False, w=info.get("w", p["w"]), h=info.get("h", p["h"]),
+                     seconds=info.get("seconds", p["seconds"]))
+            changed += 1
+            log(f"\u26a0\ufe0f The upscale of {Path(p['orig']).name} is gone; back to the original", "warning")
+    host = {**host, "parts": parts}
+    if changed:
+        host["created"] = time.time()
+        _host_preview(project, host, status)
+    with project.lock:
+        project.data["host"] = host
+    project.save()
+    return {"changed": changed, "upscaled": sum(1 for p in parts if p.get("upscaled")), "clips": len(parts)}
+
+
 def remove_clip(project: "Project", name: str, status: Callable) -> Optional[dict]:
-    """Take one clip out of the presenter footage (by file name)."""
+    """Take one clip out of the presenter footage (by file name). A planned
+    HeyGen presenter stays (with no clips) when its last clip goes."""
     host = project.host()
     if not host:
         return None
@@ -2828,8 +3206,9 @@ def remove_clip(project: "Project", name: str, status: Callable) -> Optional[dic
     if len(parts) == len(host["parts"]):
         raise RuntimeError(f"No presenter clip {name}")
     if not parts:
+        host = {**host, "parts": [], "proxy": "", "created": time.time()} if host.get("planned") else None
         with project.lock:
-            project.data["host"] = None
+            project.data["host"] = host
         project.save()
         return None
     host = {**host, "parts": parts, "created": time.time()}
@@ -2845,7 +3224,7 @@ def _host_preview(project: "Project", host: dict, status: Callable) -> None:
     status("presenter", "Making the presenter preview copy\u2026", None)
     folder = project.dir / "host"
     folder.mkdir(exist_ok=True)
-    segs = host_segments(host)
+    segs = host_segments(host, originals=True)       # 1080p decodes far faster than a 4K upscale
     _ffmpeg_host_track(segs, folder / "proxy.mp4", 640, 360, crf=30, preset="veryfast")
     t = min(segs[0]["t1"] - 0.5, segs[0]["t0"] + 20.0)
     still = host_frame(segs, t, 960, 540)
@@ -2865,11 +3244,13 @@ def host_coverage(host: dict) -> list:
     return [(round(a, 2), round(b, 2)) for a, b in spans]
 
 
-def host_segments(host: dict) -> list:
+def host_segments(host: dict, originals: bool = False) -> list:
     """Pieces of footage on the narration timeline, in time order:
     [{file, src, t0, t1, w, h}] (src = the file time at t0). Where clips
     overlap, the earlier one plays until it ends; a gap of up to a quarter
-    second between clips is bridged by the previous clip's last frame."""
+    second between clips is bridged by the previous clip's last frame.
+    With `originals`, the clips themselves rather than their upscales (for
+    the preview copy; same timing and shape)."""
     parts = sorted(host.get("parts") or [], key=lambda p: p["offset"])
     out, prev = [], 0.0
     for p in parts:
@@ -2878,29 +3259,114 @@ def host_segments(host: dict) -> list:
         if t1 - t0 > 0.02:
             if out and 0 < t0 - out[-1]["t1"] < 0.25:
                 out[-1]["t1"] = round(t0, 4)
-            out.append({"file": p["file"], "src": round(t0 - p["offset"], 4), "t0": round(t0, 4),
+            out.append({"file": (p.get("orig") or p["file"]) if originals else p["file"],
+                        "src": round(t0 - p["offset"], 4), "t0": round(t0, 4),
                         "t1": round(t1, 4), "w": p["w"], "h": p["h"]})
         prev = max(prev, t1)
     return out
 
 
+def planned_host(share: Optional[str] = None) -> dict:
+    """A HeyGen presenter with no clips yet: the plan and the user place it,
+    then clips are made for only those stretches of the narration."""
+    return {"source": "heygen", "label": "HeyGen presenter", "planned": True, "parts": [], "sections": [],
+            "focus": HOST_FOCUS, "share": host_share_key(share),
+            "refused": [], "notes": [], "created": time.time()}
+
+
+def presenter_gaps(windows: list, coverage: list) -> list:
+    """[(t0, t1)] of the presenter windows that no clip covers."""
+    gaps = []
+    for w in windows or []:
+        pieces = [(w["t0"], w["t1"])]
+        for a, b in coverage or []:
+            pieces = [q for s, e in pieces for q in ([(s, e)] if b <= s or a >= e else
+                                                     [x for x in ((s, a), (b, e)) if x[1] - x[0] > 0])]
+        gaps += [(s, e) for s, e in pieces if e - s >= 0.1]
+    merged = []
+    for s, e in sorted(gaps):
+        if merged and s <= merged[-1][1] + 0.01:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return [(round(s, 2), round(e, 2)) for s, e in merged]
+
+
+def _sentence_span(s0: float, e0: float, timeline: "Timeline", pad: float) -> "tuple[float, float]":
+    """[s0, e0] widened to whole sentences: a window that begins or ends
+    inside a sentence takes in all of it (a presenter window ends with its
+    slide's exit fade, which runs into the next sentence's first words).
+    The pad stays inside the pauses, so a clip never opens on the tail of
+    the sentence before or stops on the first words of the next. A sentence
+    reaching more than CLIP_SENTENCE_REACH past the window stops at the
+    first pause instead."""
+    words, sents = timeline.words, timeline.sentences()
+    start, end = s0, e0
+    for a, b, _txt in sents:
+        if a < s0 < b:
+            start = a
+            if s0 - a > CLIP_SENTENCE_REACH:   # a very long sentence: back to its last pause
+                start = max([w["start"] for pw, w in zip(words, words[1:]) if a < w["start"] <= s0
+                             and w["start"] - pw["end"] >= 0.25] or [a])
+        if a < e0 < b:
+            end = b
+            if b - e0 > CLIP_SENTENCE_REACH:
+                end = min([w["end"] for w, nx in zip(words, words[1:]) if e0 <= w["end"] < b
+                           and nx["start"] - w["end"] >= 0.25] or [b])
+    prev_end = max([w["end"] for w in words if w["end"] <= start + 1e-6] or [0.0])
+    next_start = min([w["start"] for w in words if w["start"] >= end - 1e-6] or [timeline.duration])
+    s = max(start - pad, prev_end + min(0.05, max(0.0, start - prev_end) / 2)) if prev_end < start else start
+    e = min(end + pad, next_start - min(0.05, max(0.0, next_start - end) / 2)) if next_start > end else end
+    return min(s, s0), max(e, e0)
+
+
+def clip_spans(gaps: list, duration: float, pad: float = CLIP_PAD, merge_gap: float = CLIP_MERGE_GAP,
+               timeline: Optional["Timeline"] = None) -> list:
+    """The stretches of narration to make presenter clips for: each gap
+    padded by `pad` (the clip starts and ends off screen), on whole
+    sentences when the timed words are given (see _sentence_span), gaps
+    closer than `merge_gap` made as one clip, and any longer than HeyGen
+    takes split."""
+    spans = []
+    for s, e in sorted(gaps):
+        if timeline is not None and timeline.words:
+            s, e = _sentence_span(s, e, timeline, pad)
+        else:
+            s, e = s - pad, e + pad
+        s, e = max(0.0, s), min(float(duration), e)
+        if e - s < 0.1:
+            continue
+        if spans and s - spans[-1][1] < merge_gap:
+            spans[-1] = (spans[-1][0], max(spans[-1][1], e))
+        else:
+            spans.append((s, e))
+    out = []
+    for s, e in spans:
+        n = max(1, math.ceil((e - s) / CLIP_MAX_SECONDS))
+        out += [(round(s + (e - s) * k / n, 2), round(s + (e - s) * (k + 1) / n, 2)) for k in range(n)]
+    return out
+
+
 def clean_sections(sections: list, duration: float) -> list:
     """The user's presenter sections, checked and in time order:
-    [{t0, t1, layout}] at least half a second long, inside the video,
-    overlapping sections of the same layout merged."""
+    [{t0, t1, layout[, frame]}] at least half a second long, inside the
+    video, overlapping sections of the same layout (and device) merged. The
+    layout may come as "pip:laptop"; that wins over a separate "frame"."""
     out = []
     for x in sections or []:
         try:
             t0, t1 = round(max(0.0, float(x.get("t0"))), 2), round(min(float(duration), float(x.get("t1"))), 2)
         except (TypeError, ValueError, AttributeError):
             continue
-        layout = x.get("layout")
-        if layout in HOST_LAYOUTS and t1 - t0 >= 0.5:
-            out.append({"t0": t0, "t1": t1, "layout": layout})
+        key = str(x.get("layout") or "")
+        layout, frame = split_layout(key if ":" in key else layout_key(key, x.get("frame")))
+        if layout and t1 - t0 >= 0.5:
+            out.append({"t0": t0, "t1": t1, "layout": layout, **({"frame": frame} if frame else {})})
     out.sort(key=lambda x: (x["t0"], x["t1"]))
     merged = []
     for x in out:
-        same = next((m for m in merged if m["layout"] == x["layout"] and x["t0"] <= m["t1"]), None)
+        same = next((m for m in merged if m["layout"] == x["layout"] and m.get("frame") == x.get("frame")
+                     and x["t0"] <= m["t1"]), None)
         if same:
             same["t1"] = max(same["t1"], x["t1"])
         else:
@@ -2937,15 +3403,16 @@ def _window_box(win: dict, k: float) -> dict:
 
 def _ffmpeg_host_track(segs: list, out: Path, w: int, h: int, crf: int = 30, preset: str = "veryfast") -> None:
     """The footage as one w x h, 30 fps video on the narration's timeline
-    (black before the first clip), for the preview player."""
+    (black where no clip covers it), for the preview player."""
     inputs, chains, labels = [], [], []
-    if segs and segs[0]["t0"] > 0.01:
-        chains.append(f"color=c=black:s={w}x{h}:r={FPS}:d={segs[0]['t0']:.4f},format=yuv420p[pre]")
-        labels.append("pre")
     for k, s in enumerate(segs):
+        gap = s["t0"] - (segs[k - 1]["t1"] if k else 0.0)
+        if gap > 0.01:
+            chains.append(f"color=c=black:s={w}x{h}:r={FPS}:d={gap:.4f},format=yuv420p[g{k}]")
+            labels.append(f"g{k}")
         sw, sh, x, y = _cover(s["w"], s["h"], w, h)
         inputs += ["-ss", f"{s['src']:.4f}", "-t", f"{s['t1'] - s['t0'] + 0.5:.4f}", "-i", s["file"]]
-        chains.append(f"[{k}:v]setpts=PTS-STARTPTS,fps={FPS},scale={sw}:{sh}:flags=bicubic,crop={w}:{h}:{x}:{y},"
+        chains.append(f"[{k}:v]setpts=PTS-STARTPTS,fps={FPS},scale={sw}:{sh}:flags=bicubic:out_range=tv,crop={w}:{h}:{x}:{y},"
                       f"setsar=1,format=yuv420p,tpad=stop_mode=clone:stop_duration=0.5,"
                       f"trim=duration={s['t1'] - s['t0']:.4f},setpts=PTS-STARTPTS[s{k}]")
         labels.append(f"s{k}")
@@ -2960,7 +3427,8 @@ def _ffmpeg_host_track(segs: list, out: Path, w: int, h: int, crf: int = 30, pre
 def host_frame(segs: list, t: float, w: int, h: int, layout: str = "full", focus: float = 0.5):
     """The presenter at narration time t, cropped to a w x h box (PIL image), or None."""
     from PIL import Image
-    seg = next((s for s in segs if s["t0"] <= t < s["t1"]), None) or (segs[-1] if segs and t >= segs[-1]["t0"] else None)
+    seg = next((s for s in segs if s["t0"] <= t < s["t1"]), None) or next(
+        (s for s in segs if s["t1"] <= t < s["t1"] + 0.5), None)          # held for half a second, as in renders
     if seg is None:
         return None
     sw, sh, x, y = _cover(seg["w"], seg["h"], w, h, focus if layout in ("left", "right") else 0.5)
@@ -2995,9 +3463,12 @@ def composite_host(png: bytes, t: float, windows: list, segs: list, focus: float
 
 def _host_filter(plan: dict, a_t: float, b_t: float) -> "tuple[list, str]":
     """ffmpeg inputs (after the page pipe, input 0) and filter graph that put
-    the presenter under the page frames of [a_t, b_t): each presenter window
-    decodes only its own stretch of footage, cropped to its layout, and the
-    page (RGBA) goes on top with its bt709 colors kept."""
+    the presenter under the page frames of [a_t, b_t): each piece of footage
+    in a presenter window decodes only its own stretch, cropped to the
+    window's layout, brought to TV range (Topaz's H.265 copies are full
+    range) and laid at its own time (a stretch no clip covers stays black
+    under the page's placeholder); the page (RGBA) goes on top with its
+    bt709 colors kept."""
     k, W, H = plan["k"], plan["W"], plan["H"]
     inputs, chains, n = [], [f"color=c=black:s={W}x{H}:r={FPS}:d={b_t - a_t:.4f},format=yuv420p[b0]"], 1
     base, j = "b0", 0
@@ -3010,33 +3481,424 @@ def _host_filter(plan: dict, a_t: float, b_t: float) -> "tuple[list, str]":
         lag = float(win.get("narr_lag") or 0)
         box = _window_box(win, k)
         focus = plan["focus"] if win["layout"] in ("left", "right") else 0.5
-        pieces = []
         for seg in plan["segments"]:
             s, e = max(a - lag, seg["t0"]), min(b - lag, seg["t1"])
             if e - s < 0.5 / FPS:
                 continue
             sw, sh, x, y = _cover(seg["w"], seg["h"], box["w"], box["h"], focus)
             inputs += ["-ss", f"{seg['src'] + s - seg['t0']:.4f}", "-t", f"{e - s + 0.5:.4f}", "-i", seg["file"]]
-            lab = f"p{j}_{len(pieces)}"
-            chains.append(f"[{n}:v]setpts=PTS-STARTPTS,fps={FPS},scale={sw}:{sh}:flags=lanczos,"
+            chains.append(f"[{n}:v]setpts=PTS-STARTPTS,fps={FPS},scale={sw}:{sh}:flags=lanczos:out_range=tv,"
                           f"crop={box['w']}:{box['h']}:{x}:{y},setsar=1,format=yuv420p,"
-                          f"tpad=stop_mode=clone:stop_duration=0.5,trim=duration={e - s:.4f},setpts=PTS-STARTPTS[{lab}]")
-            pieces.append((lab, s))
-            n += 1
-        if not pieces:
-            continue
-        start = pieces[0][1] + lag
-        if len(pieces) > 1:
-            chains.append("".join(f"[{p}]" for p, _s in pieces) + f"concat=n={len(pieces)}:v=1:a=0[w{j}]")
-        else:
-            chains.append(f"[{pieces[0][0]}]null[w{j}]")
-        chains.append(f"[w{j}]setpts=PTS-STARTPTS+{start - a_t:.4f}/TB[ws{j}]")
-        chains.append(f"[{base}][ws{j}]overlay={box['x']}:{box['y']}:eof_action=pass:"
-                      f"enable='between(t,{a - a_t - 0.001:.4f},{b - a_t:.4f})'[b{j + 1}]")
-        base, j = f"b{j + 1}", j + 1
+                          f"tpad=stop_mode=clone:stop_duration=0.5,trim=duration={e - s:.4f},"
+                          f"setpts=PTS-STARTPTS+{s + lag - a_t:.4f}/TB[p{j}]")
+            chains.append(f"[{base}][p{j}]overlay={box['x']}:{box['y']}:eof_action=pass:"
+                          f"enable='between(t,{s + lag - a_t - 0.001:.4f},{e + lag - a_t:.4f})'[b{j + 1}]")
+            base, j, n = f"b{j + 1}", j + 1, n + 1
     chains.append("[0:v]scale=out_color_matrix=bt709:out_range=tv,format=yuva444p[pg]")
     chains.append(f"[{base}]format=yuv444p[bb];[bb][pg]overlay=0:0:format=yuv444:shortest=1,format=yuv420p[v]")
     return inputs, ";".join(chains)
+
+
+# ---------------------------------------------------------------------------
+# Topaz Video API: 4K upscales of presenter clips over HTTP
+# ---------------------------------------------------------------------------
+# Flow (developer.topazlabs.com, video quickstart): POST /video/ (source +
+# filters + output; returns requestId and a credit estimate, nothing charged),
+# PATCH /{id}/accept (upload URL(s); files over 500 MB in 500 MB parts), PUT
+# each part, PATCH /{id}/complete-upload/ with the parts' ETags, GET
+# /{id}/status until "complete", then download.url. Accepting reserves the
+# credits; they are committed only when the job completes. DELETE /{id}
+# cancels a request (free before processing; it answers 204) and releases the
+# reservation. GET /account/v1/credits/balance gives available/reserved.
+
+TOPAZ_API = "https://api.topazlabs.com/video"
+TOPAZ_BALANCE = "https://api.topazlabs.com/account/v1/credits/balance"
+TOPAZ_MODEL = "slp-2.6"                     # Starlight Precise 2.6: generative, as detailed as HeyGen's own upscale
+# The models offered, best first: 4K output frames per credit (Topaz pricing
+# tables; Iris is about 29 credits a minute at 30 fps) and the tag in the
+# copy's file name (Iris keeps the original "_topaz4k" name).
+TOPAZ_MODELS = {
+    "slp-2.6": {"label": "Starlight Precise 2.6", "frames_per_credit": 11.9179, "tag": "starlight4k"},
+    "slf-3": {"label": "Starlight Fast 3", "frames_per_credit": 11.9179, "tag": "starlightfast4k"},
+    "iris-2": {"label": "Iris", "frames_per_credit": 30 * 60 / 29, "tag": "topaz4k"},
+}
+TOPAZ_DOLLARS_PER_CREDIT = 49.75 / 750      # Topaz's quoted top-up rate
+TOPAZ_PART_BYTES = 500 * 1048576
+TOPAZ_POLL_SECONDS = 10
+TOPAZ_MAX_WAIT = 6 * 3600
+TOPAZ_OFFLINE_MAX = 30 * 60                 # status checks may fail this long before an upscale is given up
+TOPAZ_RETRY_WAITS = (15, 45, 90)            # seconds before each new try when Topaz could not start a clip
+TOPAZ_DOWNLOAD_WAITS = (15, 45)             # ... and before each new download of a finished (paid) upscale
+TOPAZ_RETRY_CODES = (402, 409, 425, 429, 500, 502, 503, 504)
+
+
+class TopazRetry(RuntimeError):
+    """Topaz could not start an upscale (credits being refilled, busy, a
+    network error) before any processing, so nothing was spent and another
+    try may work. `credits` is True when Topaz said there were not enough."""
+
+    def __init__(self, msg: str, credits: bool = False):
+        super().__init__(msg)
+        self.credits = credits
+
+
+def topaz_out_path(src: Path, model: str = TOPAZ_MODEL) -> Path:
+    """Where a clip's Topaz 4K copy is saved: next to it, named after it (so
+    the upscale finder ranks it first) and tagged with the model."""
+    src = Path(src)
+    return src.with_name(f"{src.stem}_{TOPAZ_MODELS[model]['tag']}.mp4")
+
+
+def topaz_model_of(path) -> Optional[str]:
+    """The Topaz model that made this copy (from its file name), or None."""
+    stem = Path(path).stem
+    return next((m for m, d in TOPAZ_MODELS.items() if stem.endswith("_" + d["tag"])), None)
+
+
+def topaz_todo(host: dict, model: str = TOPAZ_MODEL, names: Optional[list] = None) -> list:
+    """The presenter clips to upscale with `model`: those not 4K yet, and
+    those whose 4K copy came from a lesser Topaz model (an upscale made
+    elsewhere, e.g. on HeyGen, is kept)."""
+    order = list(TOPAZ_MODELS)
+
+    def wanted(p):
+        made = topaz_model_of(p["file"])
+        return (p.get("h") or 0) < 2000 or (made is not None and order.index(made) > order.index(model))
+    return [p for p in host["parts"] if wanted(p) and (not names or Path(p["orig"]).name in names)]
+
+
+def topaz_quote(seconds: float, fps: float, model: str = TOPAZ_MODEL) -> dict:
+    """Credits (and dollars at the top-up rate) for a 4K upscale."""
+    frames = seconds * (fps or 30)
+    credits = int(math.ceil(frames / TOPAZ_MODELS[model]["frames_per_credit"]))
+    return {"credits": credits, "dollars": round(credits * TOPAZ_DOLLARS_PER_CREDIT, 2)}
+
+
+def _frame_count(path: Path) -> int:
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries",
+                        "stream=nb_read_packets", "-of", "csv=p=0", str(path)], capture_output=True, text=True, timeout=300)
+    try:
+        return int((r.stdout or "0").strip().split(",")[0])
+    except ValueError:
+        return 0
+
+
+def _numbers(obj, words: tuple, prefix: str = "") -> dict:
+    """Numeric fields whose name mentions one of `words` (e.g. a credit
+    estimate in a response whose exact shape is not documented)."""
+    out = {}
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            path = f"{prefix}{k}"
+            hit = any(w in k.lower() for w in words)
+            if hit and isinstance(v, (int, float)) and not isinstance(v, bool):
+                out[path] = v
+            elif hit and isinstance(v, list) and v and all(isinstance(x, (int, float)) for x in v):
+                out[path] = v                      # a range, e.g. [min, max]
+            elif isinstance(v, (dict, list)):
+                out.update(_numbers(v, words, path + "."))
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj[:10]):
+            out.update(_numbers(v, words, f"{prefix}{i}."))
+    return out
+
+
+def _ok(r) -> bool:
+    """Any 2xx: Topaz answers some calls with 202 Accepted."""
+    return 200 <= r.status_code < 300
+
+
+def _no_links(text) -> str:
+    """Text without links: presigned upload and download links carry credentials."""
+    return re.sub(r"(https?://|url: )\S+", r"\1<link>", str(text))
+
+
+def _topaz_error(r) -> str:
+    try:
+        d = r.json()
+        msg = d.get("message") or d.get("error") or d.get("detail") or json.dumps(d)[:300]
+    except Exception:
+        msg = (r.text or "")[:300]
+    msg = _no_links(msg)
+    if r.status_code in (401, 403):
+        return f"Topaz rejected the API key ({r.status_code}). {msg}".strip()
+    if r.status_code == 402:
+        return f"Topaz: not enough credits ({msg})"
+    return f"Topaz error {r.status_code}: {msg}"
+
+
+def _topaz_fail(r) -> RuntimeError:
+    """The error for a Topaz call that failed before processing: TopazRetry
+    when another try may work (e.g. 425 "Credit refill in progress")."""
+    if r.status_code in TOPAZ_RETRY_CODES:
+        return TopazRetry(_topaz_error(r), credits=r.status_code == 402)
+    return RuntimeError(_topaz_error(r))
+
+
+def topaz_balance(key: str) -> Optional[dict]:
+    """{available_credits, reserved_credits, total_credits}, or None."""
+    import requests
+    try:
+        r = requests.get(TOPAZ_BALANCE, headers={"X-API-Key": key, "accept": "application/json"}, timeout=30)
+        return r.json() if _ok(r) else None
+    except Exception:
+        return None
+
+
+def _topaz_cancel(key: str, rid: str, log: Callable) -> None:
+    """Cancel a request so its credit reservation is released."""
+    import requests
+    try:
+        r = requests.delete(f"{TOPAZ_API}/{rid}", headers={"X-API-Key": key, "accept": "application/json"}, timeout=30)
+        log(f"\u2b06\ufe0f Topaz request {rid} canceled ({r.status_code}); its reserved credits are released")
+    except Exception as e:  # noqa: BLE001 - best effort; the reservation also lapses on its own
+        log(f"\u26a0\ufe0f Could not cancel Topaz request {rid}: {e}", "warning")
+
+
+def topaz_upscale(key: str, src: Path, out: Path, status: Callable, cancel: Optional[threading.Event],
+                  log: Callable, model: str = TOPAZ_MODEL) -> dict:
+    """Upscale one video to 3840x2160 with the Topaz Video API (same frame
+    rate, audio copied so the copy can be matched to the narration) and save
+    it at `out`. Returns {out, request_id, estimate}."""
+    import requests
+    src, out = Path(src), Path(out)
+    info = probe_video(src)
+    if not info:
+        raise RuntimeError(f"Could not read {src.name}")
+    frames = _frame_count(src) or int(round(info["seconds"] * (info["fps"] or 25)))
+    size = src.stat().st_size
+    head = {"X-API-Key": key, "accept": "application/json"}
+    body = {"source": {"container": (src.suffix.lstrip(".") or "mp4").lower(), "size": size,
+                       "duration": info["seconds"], "frameRate": info["fps"] or 25, "frameCount": frames,
+                       "resolution": {"width": info["w"], "height": info["h"]}},
+            # Starlight (generative) models take no "auto" setting.
+            "filters": [{"model": model} if model.startswith("sl") else {"model": model, "auto": "Auto"}],
+            "output": {"resolution": {"width": 3840, "height": 2160}, "frameRate": info["fps"] or 25,
+                       "audioTransfer": "Copy" if info["audio"] else "None", "audioCodec": "AAC",
+                       "videoEncoder": "H265", "videoProfile": "Main10",     # 10-bit, like HeyGen's upscales
+                       "dynamicCompressionLevel": "High", "container": "mp4"}}
+    status(message=f"Sending {src.name} to Topaz\u2026")
+    try:
+        r = requests.post(f"{TOPAZ_API}/", headers={**head, "Content-Type": "application/json"}, json=body, timeout=60)
+    except requests.exceptions.RequestException as e:
+        raise TopazRetry(f"Could not reach Topaz: {_no_links(e)}") from e
+    if not _ok(r):
+        raise _topaz_fail(r)
+    req = r.json() or {}
+    rid = req.get("requestId") or req.get("request_id") or req.get("id")
+    if not rid:
+        raise RuntimeError(f"Topaz did not return a request id (fields: {', '.join(sorted(req))[:200]})")
+    estimate = _numbers(req, ("credit", "cost"))
+    log(f"\u2b06\ufe0f Topaz request {rid} for {src.name} ({info['w']}x{info['h']}, {fmt_secs(info['seconds'])}, "
+        f"{frames:,} frames, {model}); Topaz estimate: {estimate or 'not given'}")
+    try:
+        try:
+            _topaz_send(requests, head, rid, src, size, status, cancel, log)
+        except requests.exceptions.RequestException as e:
+            raise TopazRetry(f"Sending {src.name} to Topaz was cut off: {_no_links(e)}") from e
+        url = _topaz_wait(requests, head, rid, src, status, cancel, log)
+    except BaseException:
+        _topaz_cancel(key, rid, log)     # release the reservation (free before processing)
+        raise
+    return _topaz_download(requests, url, src, out, status, log, rid, estimate)
+
+
+def _topaz_send(requests, head: dict, rid: str, src: Path, size: int, status: Callable, cancel, log: Callable) -> None:
+    """Accept (reserves the credits), upload and complete: nothing is
+    processed (or spent) before this returns."""
+    r = requests.patch(f"{TOPAZ_API}/{rid}/accept", headers=head, timeout=60)
+    if not _ok(r):
+        raise _topaz_fail(r)
+    urls = (r.json() or {}).get("urls") or []
+    if not urls:
+        raise RuntimeError("Topaz did not return an upload URL")
+    n = len(urls)
+    part = TOPAZ_PART_BYTES if math.ceil(size / TOPAZ_PART_BYTES) == n else int(math.ceil(size / n))
+    results = []
+    with open(src, "rb") as f:
+        for k, url in enumerate(urls, 1):
+            if cancel is not None and cancel.is_set():
+                raise Cancelled()
+            status(message=f"Uploading {src.name} to Topaz" + (f" (part {k} of {n})" if n > 1 else "") + "\u2026")
+            chunk = f.read(part) if k < n else f.read()
+            u = requests.put(url, data=chunk, headers={"Content-Type": "video/mp4"}, timeout=3600)
+            if not _ok(u):
+                raise TopazRetry(f"Topaz upload failed ({u.status_code})")
+            results.append({"partNum": k, "eTag": u.headers.get("ETag") or u.headers.get("etag") or ""})
+    r = requests.patch(f"{TOPAZ_API}/{rid}/complete-upload/", headers={**head, "Content-Type": "application/json"},
+                       json={"uploadResults": results}, timeout=60)
+    if not _ok(r) and any(x["eTag"].startswith('"') for x in results):
+        # The docs do not say whether the ETag keeps the quotes storage returns it with.
+        log(f"\u2b06\ufe0f Topaz complete-upload answered {r.status_code}; trying again with the ETags unquoted")
+        r = requests.patch(f"{TOPAZ_API}/{rid}/complete-upload/", headers={**head, "Content-Type": "application/json"},
+                           json={"uploadResults": [{**x, "eTag": x["eTag"].strip('"')} for x in results]}, timeout=60)
+    if not _ok(r):
+        raise _topaz_fail(r)
+
+
+def _topaz_wait(requests, head: dict, rid: str, src: Path, status: Callable, cancel, log: Callable) -> str:
+    """Wait for Topaz to finish. Returns the download link. A status check
+    that times out or errors is tried again (for up to TOPAZ_OFFLINE_MAX):
+    giving up cancels a request Topaz may be minutes into."""
+    started, url, last = time.time(), "", ""
+    answered, down = time.time(), ""
+    while True:
+        if cancel is not None and cancel.wait(0 if not last else TOPAZ_POLL_SECONDS):
+            log(f"\u23f9\ufe0f Stopped: canceling Topaz request {rid} (Topaz charges the part already processed)", "warning")
+            raise Cancelled()
+        if cancel is None and last:
+            time.sleep(TOPAZ_POLL_SECONDS)
+        try:
+            r = requests.get(f"{TOPAZ_API}/{rid}/status", headers=head, timeout=60)
+            err = "" if _ok(r) or r.status_code not in (429, 500, 502, 503, 504) else f"error {r.status_code}"
+        except requests.exceptions.RequestException as e:
+            r, err = None, _no_links(e)
+        if err:
+            if time.time() - answered > TOPAZ_OFFLINE_MAX:
+                raise RuntimeError(f"Topaz did not answer for {TOPAZ_OFFLINE_MAX // 60} minutes while upscaling "
+                                   f"{src.name} (request {rid}): {err}")
+            if not down:
+                log(f"\u26a0\ufe0f Topaz status check for {src.name} failed ({err}); still waiting", "warning")
+            down, last = err, last or "waiting"
+            continue
+        if not _ok(r):
+            raise RuntimeError(_topaz_error(r))
+        if down:
+            log(f"\u2b06\ufe0f Topaz {rid}: answering again")
+        answered, down = time.time(), ""
+        d = r.json() or {}
+        st = (d.get("status") or "").lower()
+        if st in ("complete", "completed", "done", "succeeded"):
+            url = (d.get("download") or {}).get("url") or d.get("downloadUrl") or ""
+            if not url:
+                raise RuntimeError("Topaz finished but returned no download link")
+            break
+        if st in ("failed", "canceled", "cancelled", "error"):
+            raise RuntimeError(f"Topaz {st} the upscale of {src.name}: "
+                               f"{d.get('message') or d.get('error') or d.get('errorCode') or 'no reason given'}")
+        pct = d.get("progress")
+        status(message=f"Topaz is upscaling {src.name} ({st or 'queued'}"
+                       + (f", {float(pct):.0f}%" if isinstance(pct, (int, float)) else "")
+                       + f", {int((time.time() - started) / 60)} min)\u2026")
+        if st != last:
+            log(f"\u2b06\ufe0f Topaz {rid}: {st or 'queued'}")
+        last = st or "queued"
+        if time.time() - started > TOPAZ_MAX_WAIT:
+            raise RuntimeError(f"Topaz was still working on {src.name} after {TOPAZ_MAX_WAIT // 3600} hours "
+                               f"(request {rid})")
+    return url
+
+
+def apple_hevc_tag(path: Path, log: Callable = lambda *a: None) -> bool:
+    """Mark an H.265 MP4 as "hvc1" so QuickTime, Finder and Safari open it.
+    Topaz returns "hev1", which those refuse ("cannot be opened") although
+    ffmpeg reads it. The streams are copied, not encoded again, and the file
+    keeps its modified time (newer copies win when upscales are matched).
+    Returns True when the file was changed; on any error the file is kept."""
+    path = Path(path)
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                            "stream=codec_name,codec_tag_string", "-of", "csv=p=0", str(path)],
+                           capture_output=True, text=True, timeout=60)
+        codec, _, tag = (r.stdout.strip().splitlines() or [""])[0].partition(",")
+        if codec != "hevc" or tag == "hvc1":
+            return False
+        tmp = path.with_name(path.name + ".hvc1")
+        st = path.stat()
+        _run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(path), "-map", "0", "-c", "copy",
+              "-tag:v", "hvc1", "-movflags", "+faststart", "-f", "mp4", str(tmp)], timeout=600)
+        os.utime(tmp, (st.st_atime, st.st_mtime))
+        tmp.replace(path)
+        return True
+    except Exception as e:  # noqa: BLE001 - renders read either tag; only players care
+        log(f"⚠️ Could not mark {path.name} as hvc1 for QuickTime ({e}); renders still work", "warning")
+        path.with_name(path.name + ".hvc1").unlink(missing_ok=True)
+        return False
+
+
+def _topaz_download(requests, url: str, src: Path, out: Path, status: Callable, log: Callable,
+                    rid: str, estimate: dict) -> dict:
+    status(message=f"Downloading the 4K copy of {src.name}\u2026")
+    tmp = out.with_suffix(".part")
+    for k, wait in enumerate(TOPAZ_DOWNLOAD_WAITS + (None,), 1):     # the upscale is paid for: try hard to get it
+        try:
+            with requests.get(url, stream=True, timeout=600) as dl:
+                dl.raise_for_status()
+                with open(tmp, "wb") as f:
+                    for block in dl.iter_content(chunk_size=1 << 20):
+                        f.write(block)
+            break
+        except requests.exceptions.RequestException as e:
+            if wait is None:
+                raise RuntimeError(f"Could not download the 4K copy of {src.name} (Topaz request {rid}): "
+                                   f"{_no_links(e)}") from e
+            log(f"\u26a0\ufe0f Download {k} of the 4K copy of {src.name} failed ({_no_links(e)}); "
+                f"trying again in {wait} s", "warning")
+            time.sleep(wait)
+    apple_hevc_tag(tmp, log)
+    tmp.replace(out)
+    got = probe_video(out) or {}
+    log(f"\u2705 Topaz 4K copy saved: {out} ({got.get('w')}x{got.get('h')}, {out.stat().st_size / 1048576:.0f} MB)")
+    return {"out": str(out), "request_id": rid, "estimate": estimate}
+
+
+def _topaz_tries(key: str, src: Path, out: Path, status: Callable, cancel, log: Callable, model: str,
+                 credit_retry: bool = True) -> dict:
+    """topaz_upscale, tried again after a wait (TOPAZ_RETRY_WAITS) when Topaz
+    could not start it: "Credit refill in progress", busy, a network error.
+    "Not enough credits" gets one more try (an automatic top-up may be under
+    way) unless `credit_retry` is off."""
+    for k, wait in enumerate(TOPAZ_RETRY_WAITS + (None,)):
+        try:
+            return topaz_upscale(key, src, out, status, cancel, log, model=model)
+        except TopazRetry as e:
+            if wait is None or (e.credits and (k or not credit_retry)):
+                raise
+            log(f"⬆️ Topaz could not start {src.name} ({e}); trying again in {wait} s")
+            status(message=f"Topaz could not start {src.name}; trying again in {wait} s…")
+            if cancel is not None and cancel.wait(wait):
+                raise Cancelled()
+            if cancel is None:
+                time.sleep(wait)
+
+
+def presenter_topaz(project: "Project", key: str, root: Path, status: Callable, cancel, log: Callable,
+                    names: Optional[list] = None, model: str = TOPAZ_MODEL) -> dict:
+    """Upscale the presenter clips that are not 4K yet, or have a copy from a
+    lesser Topaz model (or the named ones), with Topaz, then swap each 4K
+    copy in after checking it by its audio (a newer copy of the same
+    resolution wins)."""
+    host = project.host()
+    if not host:
+        raise RuntimeError("This video has no presenter clips")
+    todo = topaz_todo(host, model, names)
+    if not todo:
+        return {"upscaled": 0, "message": "Every presenter clip is already 4K"}
+    done, failed, broke = 0, [], False
+    for k, p in enumerate(todo, 1):
+        src = Path(p["orig"])
+        out = topaz_out_path(src, model)
+        status("topaz", f"Topaz: clip {k} of {len(todo)} ({src.name})\u2026", (k - 1) / len(todo))
+        if out.is_file():
+            log(f"\u2b06\ufe0f {out.name} is already there; using it")
+            done += 1
+            continue
+        try:
+            _topaz_tries(key, src, out, status, cancel, log, model, credit_retry=not broke)
+            done += 1
+        except Cancelled:
+            raise
+        except Exception as e:  # noqa: BLE001 - keep going with the other clips
+            broke = broke or getattr(e, "credits", False)     # out of credits: don't wait on the next clips
+            failed.append(f"{src.name}: {e}")
+            log(f"\u274c Topaz upscale of {src.name} failed: {e}", "error")
+    if failed and not done:
+        raise RuntimeError(f"Topaz upscale failed for {len(failed)} clip(s): {failed[0]}")
+    r = rescan_upscales(project, root, status, log)
+    msg = f"{done} clip(s) upscaled with Topaz {TOPAZ_MODELS[model]['label']}; {r['upscaled']} of {r['clips']} clip(s) now 4K"
+    if failed:
+        msg += f"; {len(failed)} failed: {failed[0]}"
+    return {"upscaled": done, "failed": failed, "message": msg}
 
 
 # ---------------------------------------------------------------------------
@@ -3397,6 +4259,11 @@ def compile_composition(raw: str, timeline: Timeline, *, duration: float, plan: 
         hit = timeline.find(phrase, floor=floor, limit=floor + 240) if phrase else None
         if hit is None and phrase:
             hit = timeline.find(phrase, floor=first)
+            if hit is not None and k and hit[0] < floor - 1.0:
+                # Spoken before the slide above it: every slide after this one gets squeezed.
+                warnings.append({"slide": s["id"], "order": True,
+                                 "msg": f"out of order: its start words come at {fmt_secs(hit[0])}, before the "
+                                        f"slide above it ({fmt_secs(floor)})"})
         if hit is None:
             starts.append(None)
             if k:
@@ -3439,6 +4306,7 @@ def compile_composition(raw: str, timeline: Timeline, *, duration: float, plan: 
             kind = "slide"
         host = (a.get("data-host") or "").strip().lower() if host_on else ""
         host = host if host in HOST_LAYOUTS else ""
+        frame = split_layout(layout_key(host, a.get("data-frame") or (plan_slides.get(sid) or {}).get("frame")))[1]
         skey = a.get("data-section") or (plan_slides.get(sid) or {}).get("section") or ""
         label = sec_labels.get(skey) or skey
         slide_warn: list = []
@@ -3551,7 +4419,7 @@ def compile_composition(raw: str, timeline: Timeline, *, duration: float, plan: 
         if t1 - t0 > LONG_SLIDE + 3:
             warn(f"long slide ({t1 - t0:.0f} s): consider splitting it", minor=True)
         if host and kind == "scene":
-            warn("an illustrated scene hides the presenter behind it: use a slide, or drop data-host")
+            warn("an illustrated scene hides the presenter behind it: make it a slide with the presenter's area clear")
         if host and "data-cam" in inner:
             warn("camera moves on a presenter slide drift over the presenter", minor=True)
         sec_idx = order.index(skey) if skey in order else -1
@@ -3564,22 +4432,26 @@ def compile_composition(raw: str, timeline: Timeline, *, duration: float, plan: 
             f'data-kind="{kind}" data-t0="{t0:.3f}" data-t1="{t1:.3f}" data-sidx="{sec_idx}" '
             f'data-slabel="{_html.escape(label or "", quote=True)}" data-hud="{hud}" '
             f'data-transition="{trans}" data-tracker="{_html.escape(tracker, quote=True)}"'
-            + (f' data-host="{host}"' if host else "") + f">{body}</section>")
+            + (f' data-host="{host}"' if host else "") + (f' data-frame="{frame}"' if frame else "")
+            + (' data-refit="1"' if a.get("data-refit") == "1" and not host and kind != "scene" else "")
+            + f">{body}</section>")
         if host:
             # The presenter shows from the slide start until its exit transition ends.
             cut = k + 1 >= len(sections) or sections[k + 1]["attrs"].get("data-transition") == "cut"
             end = t1 + (0.0 if cut else 0.45)
-            if windows and windows[-1]["layout"] == host and windows[-1]["t1"] >= t0 - 0.01:
+            if (windows and windows[-1]["layout"] == host and windows[-1].get("frame", "") == frame
+                    and windows[-1]["t1"] >= t0 - 0.01):
                 windows[-1]["t1"] = round(max(windows[-1]["t1"], end), 3)
             else:
-                windows.append({"t0": round(max(first, t0 - 0.05), 3), "t1": round(end, 3), "layout": host})
+                windows.append({"t0": round(max(first, t0 - 0.05), 3), "t1": round(end, 3), "layout": host,
+                                **({"frame": frame} if frame else {})})
         idea = (plan_slides.get(sid) or {}).get("idea") or ""
         if not idea:
             idea = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body)).strip()[:140]
         plain = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body)).strip()
         slides_meta.append({"id": sid, "t0": t0, "t1": t1, "kind": kind, "section": label or "",
                             "section_key": skey, "idea": idea, "at": a.get("data-at") or "", "host": host,
-                            "warnings": slide_warn, "spoken": timeline.window_text(t0, t1)[:500],
+                            "frame": frame, "warnings": slide_warn, "spoken": timeline.window_text(t0, t1)[:500],
                             "demo": (a.get("data-demo") or "")[:180],
                             "scene_type": _scene_type_of(body),
                             "text": plain[:400],
@@ -3593,7 +4465,8 @@ def compile_composition(raw: str, timeline: Timeline, *, duration: float, plan: 
     for x in (host_sections or []) if host_on else []:
         a0, a1 = max(first, x["t0"]), min(last, x["t1"])
         if a1 - a0 >= 0.3:
-            placed.append({"t0": round(a0, 3), "t1": round(a1, 3), "layout": x["layout"]})
+            placed.append({"t0": round(a0, 3), "t1": round(a1, 3), "layout": x["layout"],
+                           **({"frame": x["frame"]} if x.get("frame") else {})})
     for x in placed:
         c0, c1 = x["t0"] + HOST_SECTION_FADE, x["t1"] - HOST_SECTION_FADE
         if c1 - c0 > 0.05:
@@ -3612,7 +4485,8 @@ def compile_composition(raw: str, timeline: Timeline, *, duration: float, plan: 
         m["sections"] = [x for x in placed if x["t0"] < m["t1"] and x["t1"] > m["t0"]]
     merged_w = []
     for w in sorted(windows, key=lambda w: w["t0"]):
-        same = next((m for m in merged_w if m["layout"] == w["layout"] and w["t0"] <= m["t1"] + 0.01), None)
+        same = next((m for m in merged_w if m["layout"] == w["layout"] and m.get("frame", "") == w.get("frame", "")
+                     and w["t0"] <= m["t1"] + 0.01), None)
         if same:
             same["t1"] = max(same["t1"], w["t1"])
         else:
@@ -3667,8 +4541,7 @@ def _kalam_face() -> str:
 
 
 def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer",
-              host: Optional[dict] = None, pip_frame: Optional[str] = None,
-              bubble: Optional[str] = None, clips: Optional[list] = None,
+              host: Optional[dict] = None, clips: Optional[list] = None,
               media_origin: str = "", visual: Optional[dict] = None,
               demos: Optional[list] = None, articles: Optional[list] = None,
               emphasis: Optional[dict] = None, bookends: Optional[dict] = None,
@@ -3678,9 +4551,11 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
     in preview mode it answers postMessage seeks from the dialog. With a
     presenter (`host`: focus, and in preview the proxy video's URL) the
     presenter areas are see-through; the preview plays the proxy under them.
-    Corner windows carry their device frame, and guide-character cues carry
-    a drawn bubble, both as local images. Assigned YouTube clips (`clips`)
-    play in preview as each slide's picture; the renderer lays the same
+    A corner window the user put on a laptop or a computer screen carries
+    that device as a local image. Where `host["missing"]` says no clip is
+    made yet, the page draws a placeholder there instead. Assigned YouTube
+    clips (`clips`) play in preview as each slide's picture (in a half, full
+    screen, or on a corner device's screen); the renderer lays the same
     files on with ffmpeg, holding the last frame when the clip is shorter.
     `visual` picks classic or cinematic. Both keep the wave background.
     Cinematic adds the object entrance. The slide HTML is not changed.
@@ -3694,9 +4569,8 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
     boardjs = (ASSET_DIR / "board.js").read_text(encoding="utf-8")
     host_on = bool(host) and compiled.get("host_on")
     video = (host or {}).get("video") if host_on and mode == "preview" else None
-    frame_mode = pip_frame_key(pip_frame, None if pip_frame is not None else (host or {}).get("pip_frame"))
-    windows = framed_windows(compiled.get("host_windows") or [], frame_mode) if host_on else []
-    clip_cfg = [{k: c.get(k) for k in ("id", "slide", "src", "audio", "seconds", "t0", "t1", "label")}
+    windows = framed_windows(compiled.get("host_windows") or []) if host_on else []
+    clip_cfg = [{k: c.get(k) for k in ("id", "slide", "src", "audio", "seconds", "t0", "t1", "label", "place")}
                 for c in (clips or [])]
     style = visual_style_key((visual or {}).get("style"))
     visual_cfg = page_visual(style, compiled.get("slides"))
@@ -3705,8 +4579,10 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
     cfg = json.dumps({"duration": compiled["duration"], "fps": FPS, "mode": mode,
                       "start": compiled.get("start", 0.0), "end": compiled.get("end", compiled["duration"]),
                       "sections": compiled.get("sections") or [],
-                      "asides": _aside_payloads(compiled.get("slides") or [], bubble),
-                      "clips": clip_cfg, "visual": visual_cfg, "film": film_cfg,
+                      "clips": clip_cfg, "clip_panes": clip_panes(),
+                      "clip_devices": _frame_payloads([{"frame": c.get("place")} for c in clip_cfg
+                                                       if c.get("place") in PIP_DEVICES]),
+                      "visual": visual_cfg, "film": film_cfg,
                       "articles": articles or [], "emphasis": emphasis or {"marks": []},
                       "demos": demos or [],
                       "bookends": _page_bookends(compiled, bookends, mode),
@@ -3714,7 +4590,8 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
                       "host": {"on": True, "layouts": HOST_LAYOUTS, "focus": float(host.get("focus", HOST_FOCUS)),
                                "video": video, "sections": compiled.get("host_sections") or [],
                                "fade": HOST_SECTION_FADE, "windows": windows,
-                               "frames": _frame_payloads(windows)} if host_on else {"on": False}}).replace("</", "<\\/")
+                               "frames": _frame_payloads(windows), "missing": host.get("missing") or []}
+                      if host_on else {"on": False}}).replace("</", "<\\/")
     media = bool(video) or any(c.get("src") for c in clip_cfg) or any(
         (bookends or {}).get(k) for k in ("intro", "end"))
     origin = media_origin if str(media_origin).startswith(("http://", "https://")) else ""
@@ -3822,16 +4699,22 @@ def _context_blocks(project: "Project", timeline: Timeline) -> list:
         "<transcript>\n" + timeline.transcript() + "\n</transcript>\n\n"
         "LOGO FILES THE USER HAS (data-logo key: brand, shape)\n" + ("\n".join(rows) or "- none yet") + "\n")
     blocks = []
-    host = project.host()
-    if host:
+    host = project.presenter()
+    still = project.dir / "host" / "still.jpg"
+    if host and not host.get("parts"):
+        text += ("\nPRESENTER VIDEO\nThe user's HeyGen presenter (an avatar talking to camera, 16:9, lip-synced to this "
+                 "narration) is made after this storyboard, only for the stretches that show it"
+                 + (" (the still above is the avatar)" if still.is_file() else "") + ". Mark the slides that show "
+                 "the presenter with data-host, following the Presenter rules.\n")
+    elif host:
         text += ("\nPRESENTER VIDEO\nThe user's HeyGen presenter, lip-synced to this narration, is available for the "
                  "whole video as 16:9 footage (the still above is a frame of it). Mark the slides that show the "
                  "presenter with data-host, following the Presenter rules.\n")
-        still = project.dir / "host" / "still.jpg"
-        if still.is_file():
-            blocks.append({"type": "text", "text": "Presenter footage, one frame:"})
-            blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                                       "data": base64.b64encode(still.read_bytes()).decode("ascii")}})
+    if host and still.is_file():
+        blocks.append({"type": "text", "text": "Presenter footage, one frame:" if host.get("parts") else
+                       "The presenter avatar:"})
+        blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                                   "data": base64.b64encode(still.read_bytes()).decode("ascii")}})
     blocks.append({"type": "text", "text": text, "cache_control": {"type": "ephemeral"}})
     return blocks
 
@@ -3867,132 +4750,29 @@ def host_share_pct(share: Optional[str] = None, saved: Optional[str] = None) -> 
     return HOST_SHARES[host_share_key(share, saved)]
 
 
-def pip_frame_key(choice: Optional[str] = None, saved: Optional[str] = None) -> str:
-    """Which corner-frame mode to draw with.
+def split_layout(key: Optional[str]) -> "tuple[str, str]":
+    """A presenter layout choice as (layout, device).
 
-    An explicit choice wins, then a mode already saved on the project, then
-    PIP_FRAME_DEFAULT (about half of the corner windows, cycling devices).
-    An unknown value is not a choice.
+    "pip:laptop" is a corner window inside a laptop, "pip:monitor" one inside
+    a computer screen, and plain "pip" the plain corner. The device is "" for
+    every other layout and for an unknown device. An unknown layout is ("", "").
     """
-    if choice in PIP_FRAME_MODES:
-        return choice
-    if saved in PIP_FRAME_MODES:
-        return saved
-    return PIP_FRAME_DEFAULT
+    layout, _, device = str(key or "").strip().lower().partition(":")
+    if layout not in HOST_LAYOUTS:
+        return "", ""
+    return layout, (device if layout == "pip" and device in PIP_DEVICES else "")
 
 
-def bubble_mode_key(choice: Optional[str] = None, saved: Optional[str] = None) -> str:
-    """Which guide-character mode to draw with. Same precedence as pip_frame_key."""
-    if choice in BUBBLE_MODES:
-        return choice
-    if saved in BUBBLE_MODES:
-        return saved
-    return BUBBLE_DEFAULT
+def layout_key(layout: str, frame: str = "") -> str:
+    """The inverse of split_layout: "pip:laptop", "pip", "full", or ""."""
+    layout, frame = split_layout(f"{layout or ''}:{frame or ''}")
+    return f"{layout}:{frame}" if frame else layout
 
 
-def look_of(data: Optional[dict], host: Optional[dict] = None) -> "tuple[str, str]":
-    """(corner-frame mode, guide mode) saved on a project, with the defaults filled in."""
-    data, host = data or {}, host or {}
-    return (pip_frame_key(None, host.get("pip_frame") or data.get("pip_frame")),
-            bubble_mode_key(None, data.get("bubble")))
-
-
-def pip_device_for(mode: str, index: int) -> str:
-    """The device for the `index`th corner window (0-based), or "" for a plain corner.
-
-    "mix" frames the 1st, 3rd, 5th… window — about half — and cycles monitor,
-    laptop, phone, TV. A device name frames every window. "off" frames none.
-    """
-    mode = pip_frame_key(mode)
-    if mode == "off":
-        return ""
-    if mode in PIP_DEVICES:
-        return mode
-    if index % 2 == 1:
-        return ""
-    return PIP_DEVICES[(index // 2) % len(PIP_DEVICES)]
-
-
-def framed_windows(windows: list, mode: Optional[str] = None) -> list:
-    """Copy presenter windows, tagging each corner window with its device (or "")."""
-    out, i = [], 0
-    for w in windows or []:
-        w = dict(w)
-        if w.get("layout") == "pip":
-            w["frame"] = pip_device_for(mode or PIP_FRAME_DEFAULT, i)
-            i += 1
-        else:
-            w["frame"] = ""
-        out.append(w)
-    return out
-
-
-_BUBBLE_FILLER = re.compile(r"^(?:and|but|so|well|now|then|okay|ok|yeah|right)\b[, ]*", re.I)
-
-
-def bubble_text(spoken: str, idea: str = "") -> str:
-    """A short bubble line from the narration, or from the slide idea if the
-    narration has nothing readable. The words are the source's own words."""
-    for src in (spoken, idea):
-        line = _bubble_clip(src)
-        if line:
-            return line
-    return ""
-
-
-def _bubble_clip(text: str) -> str:
-    text = re.sub(r"\s+", " ", text or "").strip()
-    if not text:
-        return ""
-    sentence = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0].strip(" \"'`")
-    sentence = _BUBBLE_FILLER.sub("", sentence).strip()
-    sentence = sentence.rstrip(".!?…").strip(" \"'`")
-    if len(sentence) <= BUBBLE_MAX and len(sentence) >= 12:
-        return sentence
-    if len(sentence) < 12:
-        return ""
-    cut = sentence[:BUBBLE_MAX - 1].rsplit(" ", 1)[0].rstrip(",;:")
-    if len(cut) < 12:
-        return ""
-    return cut + "…"
-
-
-def aside_cues(slides: list, mode: Optional[str] = None) -> list:
-    """Where the guide character shows: a few seconds on a slide that has room.
-
-    Skips chapter cards, the asset slide, short slides, and any slide whose
-    presenter is full frame or a side panel (those cover the lower left, or
-    the whole frame). "some" keeps about one in three of the slides that
-    qualify, including the first. "often" keeps all of them. "off" keeps none.
-    """
-    mode = bubble_mode_key(mode)
-    if mode == "off":
-        return []
-    eligible = []
-    for s in slides or []:
-        if s.get("kind") not in ("slide", "scene"):
-            continue
-        if s.get("host") in ("full", "left", "right"):
-            continue
-        if any(x.get("layout") in ("full", "left", "right") for x in s.get("sections") or []):
-            continue
-        if float(s.get("t1") or 0) - float(s.get("t0") or 0) < 6.5:
-            continue
-        text = bubble_text(s.get("spoken") or "", s.get("idea") or "")
-        if not text:
-            continue
-        eligible.append((s, text))
-    step = 1 if mode == "often" else 3
-    cues = []
-    for i, (s, text) in enumerate(eligible):
-        if i % step:
-            continue
-        t0 = round(float(s["t0"]) + 1.0, 3)
-        t1 = round(min(float(s["t1"]) - 0.35, t0 + 3.4), 3)
-        if t1 - t0 < 2.0:
-            continue
-        cues.append({"t0": t0, "t1": t1, "text": text, "slide": s.get("id") or ""})
-    return cues
+def framed_windows(windows: list) -> list:
+    """Copy presenter windows with a checked "frame": the device picked for
+    that corner window, or "" (a plain corner, or not a corner window)."""
+    return [{**w, "frame": split_layout(layout_key(w.get("layout"), w.get("frame")))[1]} for w in windows or []]
 
 
 def _font(size: int, bold: bool = False):
@@ -4010,240 +4790,275 @@ def _font(size: int, bold: bool = False):
     return ImageFont.load_default()
 
 
-def _punch_round(im, box: "tuple[int, int, int, int]", radius: int):
-    """Clear a rounded rectangle (box is x0, y0, x1, y1) out of an RGBA image."""
+def _stop_color(stops, t: float) -> tuple:
+    """The color at t (0..1) along gradient stops [(at, rgb or rgba), ...]."""
+    rgba = lambda c: tuple(c) if len(c) == 4 else (*c, 255)
+    t = min(1.0, max(0.0, t))
+    if t <= stops[0][0]:
+        return rgba(stops[0][1])
+    for (a, ca), (b, cb) in zip(stops, stops[1:]):
+        if t <= b:
+            k = (t - a) / (b - a) if b > a else 1.0
+            ca, cb = rgba(ca), rgba(cb)
+            return tuple(int(round(ca[i] + (cb[i] - ca[i]) * k)) for i in range(4))
+    return rgba(stops[-1][1])
+
+
+class _Paint:
+    """Draws in output pixels on a canvas SS times larger, so edges are smooth
+    once it is scaled down. A fill is a color, or a gradient across the
+    shape: ("v" or "h", [(at, color), ...]). Rectangles are half-open:
+    (x0, y0, x1, y1) covers x0..x1-1, so whole numbers stay on whole pixels."""
+    SS = 4
+
+    def __init__(self, w: int, h: int):
+        from PIL import Image
+        self.w, self.h = w, h
+        self.im = Image.new("RGBA", (w * self.SS, h * self.SS), (0, 0, 0, 0))
+
+    def _mask(self, kind, xy, radius=0.0, corners=None, width=1.0, blur=0.0):
+        from PIL import Image, ImageDraw, ImageFilter
+        S = self.SS
+        pts = [(x * S, y * S) for x, y in (xy if kind in ("poly", "line") else ((xy[0], xy[1]), (xy[2], xy[3])))]
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        pad = int(blur * S * 3 + width * S) + 2
+        x0, y0 = max(0, int(min(xs)) - pad), max(0, int(min(ys)) - pad)
+        x1, y1 = min(self.im.width, int(max(xs)) + pad + 1), min(self.im.height, int(max(ys)) + pad + 1)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        mask = Image.new("L", (x1 - x0, y1 - y0), 0)
+        d = ImageDraw.Draw(mask)
+        local = [(x - x0, y - y0) for x, y in pts]
+        if kind == "poly":
+            d.polygon(local, fill=255)
+        elif kind == "line":
+            d.line(local, fill=255, width=max(1, int(round(width * S))))
+        elif kind == "ellipse":
+            d.ellipse((local[0][0], local[0][1], local[1][0] - 1, local[1][1] - 1), fill=255)
+        else:
+            d.rounded_rectangle((local[0][0], local[0][1], local[1][0] - 1, local[1][1] - 1),
+                                radius=radius * S, fill=255, corners=corners)
+        if blur:
+            mask = mask.filter(ImageFilter.GaussianBlur(blur * S))
+        return mask, x0, y0, (min(xs) - x0, min(ys) - y0, max(xs) - min(xs), max(ys) - min(ys))
+
+    def _fill(self, size, fill, span):
+        from PIL import Image
+        w, h = size
+        if not isinstance(fill[0], str):
+            return Image.new("RGBA", (w, h), _stop_color([(0, fill)], 0))
+        axis, stops = fill
+        ox, oy, sw, sh = span
+        n, off, length = (h, oy, sh) if axis == "v" else (w, ox, sw)
+        line = Image.new("RGBA", (1, n) if axis == "v" else (n, 1))
+        line.putdata([_stop_color(stops, (i + 0.5 - off) / max(1.0, length)) for i in range(n)])
+        return line.resize((w, h), Image.NEAREST)
+
+    def shape(self, kind, xy, fill, radius=0.0, corners=None, width=1.0, blur=0.0):
+        """kind: rect or ellipse (x0, y0, x1, y1), poly or line ([(x, y), ...])."""
+        from PIL import ImageChops
+        got = self._mask(kind, xy, radius, corners, width, blur)
+        if not got:
+            return
+        mask, x0, y0, span = got
+        layer = self._fill(mask.size, fill, span)
+        layer.putalpha(ImageChops.multiply(layer.getchannel("A"), mask))
+        self.im.alpha_composite(layer, (x0, y0))
+
+    def erase(self, xy, radius=0.0):
+        """Make a rounded rectangle fully see-through."""
+        from PIL import ImageChops
+        mask, x0, y0, _ = self._mask("rect", xy, radius)
+        region = self.im.crop((x0, y0, x0 + mask.width, y0 + mask.height))
+        region.putalpha(ImageChops.multiply(region.getchannel("A"), ImageChops.invert(mask)))
+        self.im.paste(region, (x0, y0))
+
+    def result(self):
+        from PIL import Image
+        return self.im.convert("RGBa").resize((self.w, self.h), Image.BOX).convert("RGBA")
+
+
+def _glass_sheen(im, glass, radius: int):
+    """A faint, smooth reflection across the glass, brightest in the top-left
+    corner and gone well before the middle, so the presenter's face is never
+    fogged. One soft gradient, no bands or streaks."""
     from PIL import Image, ImageChops, ImageDraw
-    mask = Image.new("L", im.size, 255)
-    ImageDraw.Draw(mask).rounded_rectangle(box, radius=radius, fill=0)
-    r, g, b, a = im.split()
-    return Image.merge("RGBA", (r, g, b, ImageChops.multiply(a, mask)))
+    x, y, w, h = glass
+    peak, reach = SHEEN_PEAK, 0.5
+    alpha = []
+    for j in range(h):
+        v = 1.6 * (j + 0.5) / h
+        for i in range(w):
+            t = min(1.0, ((i + 0.5) / w + v) / 2.6 / reach)
+            alpha.append(int(round(peak * (1 - t * t * (3 - 2 * t)))))
+    a = Image.new("L", (w, h))
+    a.putdata(alpha)
+    shape = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(shape).rounded_rectangle((0, 0, w - 1, h - 1), radius=radius, fill=255)
+    layer = Image.new("RGBA", (w, h), (226, 236, 255, 0))
+    layer.putalpha(ImageChops.multiply(a, shape))
+    im.alpha_composite(layer, (x, y))
+    return im
 
 
-def _soft_shadow(size, box, radius: int, blur: int = 7, alpha: int = 120, dx: int = 0, dy: int = 8):
-    """A blurred contact shadow. Drawn once per device, then cached with the PNG."""
-    from PIL import Image, ImageDraw, ImageFilter
-    x0, y0, x1, y1 = box
-    layer = Image.new("RGBA", size, (0, 0, 0, 0))
-    ImageDraw.Draw(layer).rounded_rectangle((x0 + dx, y0 + dy, x1 + dx, y1 + dy), radius=radius, fill=(0, 0, 0, alpha))
-    return layer.filter(ImageFilter.GaussianBlur(blur))
+# Space-gray aluminum, a touch blue so it sits on the navy slides, and black glass.
+_AL_HI, _AL_LIT, _AL_MID, _AL_DIM = (184, 192, 206), (116, 123, 137), (84, 90, 103), (52, 56, 66)
+_AL_DEEP, _GLASS_TOP, _GLASS_LOW, _KEY = (26, 28, 34), (16, 18, 23), (6, 7, 9), (19, 21, 26)
 
 
-def _glass_sheen(im, screen, radius: int):
-    """A short reflection across the top of the screen. The middle stays clear
-    so the presenter footage is not fogged."""
-    from PIL import Image, ImageChops, ImageDraw
-    x0, y0, x1, y1 = screen
-    h = max(1, y1 - y0)
-    overlay = Image.new("RGBA", im.size, (0, 0, 0, 0))
-    d = ImageDraw.Draw(overlay)
-    for start, end, alpha in ((0.0, 0.07, 58), (0.07, 0.14, 30), (0.14, 0.22, 12)):
-        d.rectangle((x0, y0 + int(h * start), x1, y0 + int(h * end)), fill=(236, 244, 255, alpha))
-    streak = x0 + int((x1 - x0) * 0.34)
-    d.polygon([(x0 + 16, y0 + 8), (streak, y0 + 6), (streak - 18, y0 + 20), (x0 + 10, y0 + 22)],
-              fill=(255, 255, 255, 46))
-    mask = Image.new("L", im.size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle(screen, radius=radius, fill=255)
-    r, g, b, a = overlay.split()
-    return Image.alpha_composite(im, Image.merge("RGBA", (r, g, b, ImageChops.multiply(a, mask))))
+def _glass_radius(part: dict) -> int:
+    return max(2, part["corner"] - (part["glass"][0] - part["panel"][0]))
 
 
-def _local_box(outer, box) -> "tuple[int, int, int, int]":
-    ox, oy = outer[0], outer[1]
-    x, y, w, h = box
-    return (x - ox, y - oy, x - ox + w, y - oy + h)
+def _bezel(p: "_Paint", part: dict, all_corners: bool) -> None:
+    """The thin panel both devices share: an aluminum frame with a PANEL_EDGE
+    side wall on the right (light comes from the upper left), a black glass
+    bezel, a camera, and the screen opening."""
+    x, y, w, h = part["panel"]
+    gx, gy, gw, gh = part["glass"]
+    sx, sy, sw, sh = part["screen"]
+    top_radius = part["corner"]
+    corners = None if all_corners else (True, True, False, False)
+    e = PANEL_EDGE
+    p.shape("rect", (x + e, y + 1, x + w + e, y + h), _AL_DEEP, top_radius, corners)
+    p.shape("rect", (x, y, x + w, y + h), ("v", [(0, _AL_LIT), (0.55, _AL_MID), (1, _AL_DIM)]), top_radius, corners)
+    p.shape("rect", (x + top_radius * 0.7, y, x + w - top_radius * 0.7, y + 1.2), (*_AL_HI, 235))
+    p.shape("rect", (x, y + top_radius, x + 1, y + h - (top_radius if all_corners else 2)), (*_AL_HI, 120))
+    p.shape("rect", (x + top_radius * 0.6, y + h - 1, x + w - top_radius * 0.6, y + h), (24, 26, 31))
+    inner = _glass_radius(part)
+    p.shape("rect", (gx, gy, gx + gw, gy + gh), ("v", [(0, _GLASS_TOP), (1, _GLASS_LOW)]), inner,
+            None if all_corners else (True, True, False, False))
+    p.shape("rect", (gx + inner, gy, gx + gw - inner, gy + 0.6), (58, 64, 76, 200))
+    p.shape("rect", (sx - 1, sy - 1, sx + sw + 1, sy + sh + 1), (1, 2, 3), SCREEN_RADIUS + 1)
+    cx, cy = x + w / 2, (gy + sy) / 2
+    p.shape("ellipse", (cx - 2.6, cy - 2.6, cx + 2.6, cy + 2.6), (24, 27, 34))
+    p.shape("ellipse", (cx - 1.3, cy - 1.3, cx + 1.3, cy + 1.3), (30, 44, 78))
+    p.shape("ellipse", (cx - 0.9, cy - 1.0, cx - 0.1, cy - 0.2), (120, 140, 190, 200))
+    p.erase((sx, sy, sx + sw, sy + sh), SCREEN_RADIUS)
+
+
+def _keyboard(p: "_Paint", far: tuple, near: tuple) -> None:
+    """The keyboard deck seen from just above: keys in perspective, speaker
+    grilles either side, a trackpad. far/near are (y, x_left, x_right)."""
+    def at(u, v):
+        y = far[0] + (near[0] - far[0]) * v
+        xl = far[1] + (near[1] - far[1]) * v
+        xr = far[2] + (near[2] - far[2]) * v
+        return (xl + (xr - xl) * u, y)
+
+    def quad(u0, u1, v0, v1):
+        return [at(u0, v0), at(u1, v0), at(u1, v1), at(u0, v1)]
+
+    k0, k1 = 0.16, 0.84
+    p.shape("poly", quad(k0 - 0.008, k1 + 0.008, 0.19, 0.70), (40, 44, 52))
+    rows = (
+        (0.05, [1.5] + [1] * 12 + [1.5]),
+        (0.075, [1] * 13 + [1.6]),
+        (0.075, [1.6] + [1] * 12 + [1]),
+        (0.075, [1.9] + [1] * 11 + [1.9]),
+        (0.075, [2.4] + [1] * 10 + [2.4]),
+        (0.075, [1, 1, 1, 1.3, 5.2, 1.3, 1, 1, 1, 1]),
+    )
+    v, gap = 0.205, 0.012
+    for height, widths in rows:
+        total = sum(widths) + 0.16 * (len(widths) - 1)
+        u = k0
+        for kw in widths:
+            u1 = u + (k1 - k0) * kw / total
+            p.shape("poly", quad(u, u1, v, v + height), _KEY)
+            p.shape("poly", quad(u + 0.001, u1 - 0.001, v, v + height * 0.3), (46, 50, 60))
+            u = u1 + (k1 - k0) * 0.16 / total
+        v += height + gap
+    for g0, g1 in ((0.045, 0.14), (0.86, 0.955)):
+        for j in range(8):
+            vv = 0.23 + j * 0.06
+            for i in range(18):
+                cx, cy = at(g0 + (g1 - g0) * (i + 0.5) / 18, vv)
+                p.shape("ellipse", (cx - 0.45, cy - 0.45, cx + 0.45, cy + 0.45), (38, 42, 50))
+    pad = quad(0.375, 0.625, 0.74, 0.97)
+    p.shape("poly", pad, ("v", [(0, (92, 98, 111)), (1, (112, 119, 132))]))
+    p.shape("line", pad + [pad[0]], (66, 72, 84, 200), width=0.8)
+
+
+def _laptop(p: "_Paint", part: dict) -> None:
+    x, y, w, h = part["panel"]
+    lid_bottom = y + h
+    base_l, base_r = 14, DEVICE_BOX[2] - 14
+    deck_far, deck_near = lid_bottom, lid_bottom + 34
+    front_low = deck_near + LAPTOP_BASE
+    # Shadow on the slide: wide and soft, then a tighter contact line; light from the upper left.
+    p.shape("ellipse", (base_l + 2, front_low - 10, base_r + 6, front_low + 7), (0, 0, 0, 90), blur=4)
+    p.shape("rect", (base_l + 10, front_low - 6, base_r + 4, front_low + 4), (0, 0, 0, 150), 5, blur=3)
+    # Deck: the top of the base, lit from above, narrower toward the hinge.
+    far = (deck_far, base_l + 16, base_r - 16)
+    near = (deck_near, base_l, base_r)
+    p.shape("poly", [(far[1], far[0]), (far[2], far[0]), (near[2], near[0]), (near[1], near[0])],
+            ("v", [(0, (74, 80, 92)), (0.25, (96, 102, 115)), (1, (126, 133, 147))]))
+    _keyboard(p, far, near)
+    p.shape("line", [(near[1] + 2, near[0] - 0.6), (near[2] - 2, near[0] - 0.6)], (206, 214, 228), width=1.2)
+    # Base front: the thick part. LAPTOP_BASE tall, with the thumb notch.
+    p.shape("poly", [(base_r, deck_near), (base_r + 3, deck_near - 2), (base_r + 3, front_low - 3), (base_r, front_low)],
+            _AL_DEEP)
+    p.shape("rect", (base_l, deck_near, base_r, front_low), ("v", [(0, (88, 94, 107)), (0.5, (60, 65, 76)), (1, (34, 37, 44))]),
+            7, (False, False, True, True))
+    cx, nw, nd = (base_l + base_r) / 2, 52, 6
+    arc = [(cx + nw * math.cos(a), deck_near + nd * math.sin(a))
+           for a in [math.pi * k / 24 for k in range(25)]]
+    p.shape("poly", arc, ("v", [(0, (40, 44, 52)), (1, (70, 76, 88))]))
+    p.shape("line", arc[3:-3], (150, 158, 172, 150), width=0.8)
+    for fx in (base_l + 40, base_r - 68):
+        p.shape("ellipse", (fx, front_low - 2, fx + 28, front_low + 2.5), (14, 15, 18))
+    # Lid, then the hinge where it meets the deck.
+    _bezel(p, part, all_corners=False)
+    p.shape("rect", (x + 34, lid_bottom - 1, x + w - 34, lid_bottom + 7),
+            ("v", [(0, (20, 22, 27)), (0.45, (58, 63, 74)), (1, (30, 33, 39))]), 3)
+
+
+def _monitor(p: "_Paint", part: dict) -> None:
+    x, y, w, h = part["panel"]
+    cx = x + w / 2
+    foot_far, foot_near, foot_low = 388, 396, 402
+    p.shape("ellipse", (cx - 160, foot_low - 8, cx + 170, foot_low + 6), (0, 0, 0, 95), blur=3.5)
+    p.shape("rect", (cx - 100, foot_low - 4, cx + 110, foot_low + 3), (0, 0, 0, 150), 4, blur=2.5)
+    # Foot: a flat plate. Its top plane is lit; the front edge is the thick part.
+    p.shape("poly", [(cx - 92, foot_far), (cx + 92, foot_far), (cx + 104, foot_near), (cx - 104, foot_near)],
+            ("v", [(0, (92, 98, 111)), (1, (134, 141, 155))]))
+    p.shape("poly", [(cx + 104, foot_near), (cx + 107, foot_near - 2), (cx + 107, foot_low - 2), (cx + 104, foot_low)],
+            _AL_DEEP)
+    p.shape("rect", (cx - 104, foot_near, cx + 104, foot_low), ("v", [(0, (70, 76, 88)), (1, (32, 35, 42))]),
+            3, (False, False, True, True))
+    p.shape("line", [(cx - 102, foot_near - 0.5), (cx + 102, foot_near - 0.5)], (200, 208, 222), width=1.0)
+    # Neck: lit on the left, a PANEL_EDGE wall on the right, shaded under the panel.
+    nl, nr, ntop, nbot = cx - 54, cx + 54, y + h - 30, foot_far + 4
+    p.shape("rect", (nl, nbot - 3, nr + 6, nbot + 1), (0, 0, 0, 120), 2, blur=1.5)
+    p.shape("rect", (nr, ntop, nr + PANEL_EDGE, nbot - 1), _AL_DEEP)
+    p.shape("rect", (nl, ntop, nr, nbot), ("h", [(0, (122, 129, 143)), (0.18, (104, 111, 124)), (1, (62, 67, 78))]))
+    p.shape("rect", (nl, y + h, nr + PANEL_EDGE, y + h + 14), ("v", [(0, (0, 0, 0, 170)), (1, (0, 0, 0, 0))]))
+    _bezel(p, part, all_corners=True)
 
 
 def device_png(name: str) -> bytes:
-    """The device frame for a corner window.
+    """The device frame for a corner window, as a PNG the size of DEVICE_BOX.
 
-    Light comes from the upper left. A lid, a phone and a TV are a thin panel:
-    the side wall is only PANEL_EDGE pixels. The laptop's thickness is the
-    keyboard base, and a monitor's is the neck and the foot. The screen stays
-    an axis-aligned rounded rectangle so the presenter footage sits in that
-    hole. The middle of the screen is fully clear.
+    Light comes from the upper left. A laptop lid and a monitor are thin
+    panels: the side wall is only PANEL_EDGE pixels. The laptop's thickness
+    is the base (keyboard deck and a LAPTOP_BASE front edge); the monitor's is
+    its stand. The screen is an axis-aligned rounded rectangle cut fully
+    through, so the presenter footage shows in it, under a faint reflection
+    that stays off the middle.
     """
     cache = device_png.__dict__.setdefault("cache", {})
     if name in cache:
         return cache[name]
-    from PIL import Image, ImageDraw
     import io as _io
-    g = PIP_FRAME_GEOM[name]
-    _, _, ow, oh = g["outer"]
-    screen = _local_box(g["outer"], g["screen"])
-    navy, deep, side, top = (12, 21, 38, 255), (5, 8, 16, 255), (8, 13, 24, 255), (62, 80, 110, 255)
-    gold, gold_lit, gold_dim = (245, 184, 61, 255), (255, 220, 140, 255), (150, 96, 24, 255)
-    rim = (150, 168, 196, 255)
-    im = Image.new("RGBA", (ow, oh), (0, 0, 0, 0))
-    sx0, sy0, sx1, sy1 = screen
-    e = PANEL_EDGE
-
-    def chassis(front, radius):
-        """Thin panel: lit top and left, a PANEL_EDGE wall on the right."""
-        x0, y0, x1, y1 = front
-        d.polygon([(x1 + 1, y0 + 2), (x1 + e, y0), (x1 + e, y1 - 1), (x1 + 1, y1)], fill=side)
-        d.polygon([(x1 + 1, y0 + 2), (x1 + e, y0), (x1 + e, y0 + 2), (x1 + 1, y0 + 3)], fill=top)
-        d.rounded_rectangle((x0, y0, x1, y1), radius=radius, fill=navy)
-        d.rectangle((x0 + 10, y0, x1 - 8, y0 + 2), fill=top)
-        d.line((x0 + 2, y0 + 4, x0 + 2, y1 - 6), fill=rim, width=2)
-
-    if name == "monitor":
-        front = (48, 6, 496, 268)
-        im = Image.alpha_composite(im, _soft_shadow((ow, oh), (ow // 2 - 100, 286, ow // 2 + 90, 302), 8, blur=6, alpha=110, dx=6, dy=6))
-        d = ImageDraw.Draw(im)
-        cx = ow // 2
-        # The foot is the thick part: a lit top plane and a dark front face.
-        d.polygon([(cx - 96, 292), (cx + 70, 286), (cx + 86, 300), (cx - 84, 304)], fill=(32, 44, 64, 255))
-        d.line((cx - 90, 294, cx + 64, 288), fill=top, width=2)
-        d.polygon([(cx - 78, 300), (cx + 88, 296), (cx + 96, oh - 1), (cx - 70, oh - 1)], fill=deep)
-        # Neck, with its own narrow side, under the thin panel.
-        d.polygon([(cx + 8, 270), (cx + 16, 266), (cx + 18, 296), (cx + 8, 300)], fill=side)
-        d.polygon([(cx - 22, 268), (cx + 8, 266), (cx + 8, 300), (cx - 22, 302)], fill=(34, 46, 68, 255))
-        chassis(front, 12)
-        d.rectangle((cx - 16, 262, cx + 4, 265), fill=gold_dim)
-        d.rectangle((cx - 16, 260, cx + 4, 263), fill=gold)
-        d.rounded_rectangle((sx0 - 3, sy0 - 2, sx1 + 3, sy1 + 3), radius=g["radius"] + 2, fill=deep)
-        d.line((sx0, sy0 - 1, sx1, sy0 - 1), fill=rim, width=1)
-    elif name == "laptop":
-        im = Image.alpha_composite(im, _soft_shadow((ow, oh), (16, 286, 528, 304), 6, blur=5, alpha=120, dx=6, dy=4))
-        d = ImageDraw.Draw(im)
-        # The base is the thick part. Its top plane recedes; the near face is LAPTOP_BASE tall.
-        d.polygon([(18, 288), (526, 280), (534, 304), (10, 304)], fill=deep)
-        d.polygon([(36, 254), (492, 250), (520, 286), (22, 292)], fill=(22, 32, 48, 255))
-        d.line((42, 256, 486, 252), fill=top, width=2)
-        for row in range(3):
-            for col in range(12):
-                x, y = 54 + col * 36, 258 + row * 9
-                d.rectangle((x, y + 4, x + 28, y + 7), fill=side)
-                d.rectangle((x, y, x + 28, y + 4), fill=(52, 66, 90, 255))
-        d.polygon([(214, 276), (330, 274), (334, 286), (210, 288)], fill=deep)
-        d.line((218, 277, 326, 275), fill=top, width=1)
-        # Lid: a thin panel, only PANEL_EDGE of side wall. No thick extrusion.
-        chassis((64, 10, 480, 246), 8)
-        d.rectangle((ow // 2 - 22, 246, ow // 2 + 22, 250), fill=(28, 38, 54, 255))
-        d.rounded_rectangle((sx0 - 3, sy0 - 2, sx1 + 3, sy1 + 3), radius=g["radius"] + 2, fill=deep)
-        d.line((sx0, sy0 - 1, sx1, sy0 - 1), fill=rim, width=1)
-    elif name == "phone":
-        front = (10, 16, 504, 288)
-        im = Image.alpha_composite(im, _soft_shadow((ow, oh), front, 30, blur=6, alpha=110, dx=6, dy=8))
-        d = ImageDraw.Draw(im)
-        chassis(front, 34)
-        # A slim side button, a couple of pixels proud of the body.
-        d.rounded_rectangle((6, oh // 2 - 6, 12, oh // 2 + 28), radius=2, fill=gold_dim)
-        d.rounded_rectangle((6, oh // 2 - 16, 12, oh // 2 + 16), radius=2, fill=gold)
-        d.line((8, oh // 2 - 12, 8, oh // 2 + 10), fill=gold_lit, width=1)
-        # Camera island on the left bezel, only a few pixels proud of the glass.
-        d.rounded_rectangle((18, oh // 2 - 22, 36, oh // 2 + 28), radius=6, fill=deep)
-        d.rounded_rectangle((18, oh // 2 - 26, 34, oh // 2 + 22), radius=6, fill=(24, 32, 48, 255))
-        d.ellipse((21, oh // 2 - 16, 31, oh // 2 - 6), fill=(4, 6, 12, 255))
-        d.ellipse((23, oh // 2 - 14, 27, oh // 2 - 10), fill=(180, 200, 230, 180))
-        d.rounded_rectangle((sx0 - 3, sy0 - 2, sx1 + 3, sy1 + 3), radius=g["radius"] + 2, fill=deep)
-        d.line((sx0 + 6, sy0 - 1, sx1 - 6, sy0 - 1), fill=rim, width=1)
-    else:
-        front = (20, 8, 520, 284)
-        im = Image.alpha_composite(im, _soft_shadow((ow, oh), (140, 286, 400, 304), 4, blur=4, alpha=100, dx=6, dy=4))
-        d = ImageDraw.Draw(im)
-        for cx in (150, 330):
-            d.polygon([(cx - 8, 298), (cx + 52, 296), (cx + 58, 305), (cx, 305)], fill=deep)
-            d.polygon([(cx - 36, 286), (cx + 28, 282), (cx + 48, 298), (cx - 16, 302)], fill=(78, 98, 128, 255))
-            d.line((cx - 30, 288, cx + 24, 284), fill=top, width=2)
-        chassis(front, 6)
-        d.rounded_rectangle((sx0 - 2, sy0 - 1, sx1 + 2, sy1 + 2), radius=g["radius"] + 2, fill=deep)
-        d.line((sx0, sy0 - 1, sx1, sy0 - 1), fill=rim, width=1)
-        d.ellipse((514, 148, 520, 154), fill=gold_dim)
-        d.ellipse((514, 146, 520, 152), fill=gold)
-    im = _punch_round(im, screen, g["radius"])
-    im = _glass_sheen(im, screen, g["radius"])
+    part = _DEVICE_PARTS[name]
+    p = _Paint(DEVICE_BOX[2], DEVICE_BOX[3])
+    (_monitor if name == "monitor" else _laptop)(p, part)
+    im = _glass_sheen(p.result(), part["glass"], _glass_radius(part))
     buf = _io.BytesIO()
     im.save(buf, "PNG")
     cache[name] = buf.getvalue()
     return cache[name]
-
-
-def bubble_png(text: str) -> "tuple[bytes, int, int]":
-    """The guide character and a speech bubble, with a shaded face and a
-    contact shadow. Returns PNG bytes and its size. The words stay on the
-    light face of the bubble."""
-    from PIL import Image, ImageDraw, ImageFilter
-    import io as _io
-    w, h = ASIDE_SIZE
-    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    shadow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(shadow)
-    sd.ellipse((24, 150, 108, 172), fill=(0, 0, 0, 90))
-    sd.rounded_rectangle((136, 28, w - 2, h - 4), radius=20, fill=(0, 0, 0, 80))
-    im = Image.alpha_composite(im, shadow.filter(ImageFilter.GaussianBlur(4)))
-    d = ImageDraw.Draw(im)
-    navy, navy_lit, gold, gold_lit, gold_dim = (12, 21, 38, 255), (36, 52, 78, 255), (245, 184, 61, 255), (255, 224, 150, 255), (176, 112, 28, 255)
-    ink, paper, paper_shade = (12, 21, 38, 255), (242, 244, 248, 255), (214, 220, 230, 255)
-    # Body, darker on the right where it turns away from the light.
-    d.rounded_rectangle((34, 90, 102, 166), radius=28, fill=gold_dim)
-    d.rounded_rectangle((30, 84, 94, 160), radius=28, fill=navy)
-    d.rounded_rectangle((32, 86, 70, 156), radius=22, fill=navy_lit)
-    # Head: a lit cap over a warmer underside.
-    d.ellipse((28, 26, 100, 98), fill=gold_dim)
-    d.ellipse((26, 18, 98, 90), fill=gold)
-    d.ellipse((32, 20, 78, 58), fill=gold_lit)
-    d.ellipse((48, 48, 58, 58), fill=navy)
-    d.ellipse((70, 48, 80, 58), fill=navy)
-    d.ellipse((50, 49, 55, 54), fill=paper)
-    d.arc((50, 56, 78, 80), 20, 160, fill=navy, width=3)
-    d.rounded_rectangle((10, 112, 36, 132), radius=8, fill=gold_dim)
-    d.rounded_rectangle((8, 106, 32, 124), radius=8, fill=gold)
-    # Bubble: a thicker underside, then the paper face, then a top highlight.
-    d.polygon([(132, 84), (108, 102), (132, 120)], fill=(150, 158, 172, 255))
-    d.rounded_rectangle((126, 22, w - 6, h - 8), radius=20, fill=(176, 184, 196, 255))
-    d.polygon([(130, 78), (110, 94), (130, 110)], fill=paper)
-    d.rounded_rectangle((124, 16, w - 12, h - 16), radius=18, fill=paper)
-    d.rounded_rectangle((136, 22, w - 24, 34), radius=6, fill=(255, 255, 255, 255))
-    d.polygon([(128, 24), (168, 20), (160, 32), (126, 34)], fill=paper_shade)
-    font = _font(22, bold=True)
-    lines = _bubble_lines(text, font, w - 128 - 40)
-    gap, block = 28, 28 * len(lines)
-    y = 28 + max(6, ((h - 52) - block) // 2)
-    for line in lines:
-        d.text((148, y), line, font=font, fill=ink)
-        y += gap
-    buf = _io.BytesIO()
-    im.save(buf, "PNG")
-    return buf.getvalue(), w, h
-
-
-def _bubble_lines(text: str, font, width: int) -> list:
-    def width_of(s: str) -> float:
-        return font.getlength(s) if hasattr(font, "getlength") else len(s) * 12
-    words = (text or "").split()
-    if not words:
-        return []
-    lines, cur = [], ""
-    overflow = False
-    for word in words:
-        trial = (cur + " " + word).strip()
-        if not cur or width_of(trial) <= width:
-            cur = trial
-            continue
-        lines.append(cur)
-        cur = word
-        if len(lines) == 2:
-            overflow = True
-            break
-    if len(lines) < 2 and cur:
-        lines.append(cur)
-    if overflow and len(lines) == 2:
-        last = lines[1]
-        while last and width_of(last + "…") > width:
-            last = last.rsplit(" ", 1)[0] if " " in last else last[:-1]
-        lines[1] = (last or lines[1][:1]).rstrip(",;:") + "…"
-    return lines[:2]
-
-
-def _aside_payloads(slides: list, mode: Optional[str]) -> list:
-    """Cues plus the drawn graphic, for the page config."""
-    out = []
-    for cue in aside_cues(slides, mode):
-        png, w, h = bubble_png(cue["text"])
-        out.append({**cue, "x": ASIDE_AT[0], "y": ASIDE_AT[1], "w": w, "h": h,
-                    "uri": "data:image/png;base64," + base64.b64encode(png).decode()})
-    return out
 
 
 def _frame_payloads(windows: list) -> dict:
@@ -4276,11 +5091,10 @@ def _stand_in(w: int, h: int):
 
 
 def look_still(kind: str) -> bytes:
-    """One 1920x1080 still of the corner treatment and the guide character.
+    """One 1920x1080 still of the corner treatment.
 
-    `kind` is plain, monitor, laptop, phone, tv, bubble, or both (a monitor
-    plus the guide). The presenter is the drawn stand-in, so this needs no
-    footage and no network.
+    `kind` is plain, laptop or monitor. The presenter is the drawn stand-in,
+    so this needs no footage and no network.
     """
     from PIL import Image, ImageDraw
     import io as _io
@@ -4296,7 +5110,7 @@ def look_still(kind: str) -> bytes:
     d.line((184, 322, 976, 322), fill=(120, 142, 176, 255), width=3)
     d.text((200, 360), "AI stocks", font=_font(40, bold=True), fill=(242, 244, 248, 255))
     d.text((200, 430), "A slide, with the corner kept clear.", font=_font(28), fill=(138, 148, 166, 255))
-    show_frame = kind if kind in PIP_FRAME_GEOM else ("monitor" if kind == "both" else "")
+    show_frame = kind if kind in PIP_FRAME_GEOM else ""
     if kind == "plain" or show_frame:
         if show_frame:
             box = PIP_FRAME_GEOM[show_frame]["screen"]
@@ -4314,21 +5128,16 @@ def look_still(kind: str) -> bytes:
             im.paste(stand, (x, y), stand)
             frame = Image.open(_io.BytesIO(device_png(show_frame))).convert("RGBA")
             im.alpha_composite(frame, (outer[0], outer[1]))
-    if kind in ("bubble", "both"):
-        png, bw, bh = bubble_png("AI stocks lost about two trillion")
-        im.alpha_composite(Image.open(_io.BytesIO(png)).convert("RGBA"), ASIDE_AT)
     buf = _io.BytesIO()
     im.convert("RGB").save(buf, "PNG")
     return buf.getvalue()
 
 
 def write_look_samples(folder: Path) -> list:
-    """Write the sample stills (plain corner, each device, the guide, both)."""
+    """Write the sample stills (the plain corner and each device)."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    names = {"plain": "plain_corner.png", "monitor": "frame_monitor.png", "laptop": "frame_laptop.png",
-             "phone": "frame_phone.png", "tv": "frame_tv.png", "bubble": "guide_bubble.png",
-             "both": "monitor_and_bubble.png"}
+    names = {"plain": "plain_corner.png", "monitor": "frame_monitor.png", "laptop": "frame_laptop.png"}
     out = []
     for kind, name in names.items():
         p = folder / name
@@ -4449,8 +5258,31 @@ class Project:
         return (float(s[0]), float(s[1])) if s else None
 
     def host(self) -> Optional[dict]:
+        """The presenter footage (None until a clip is placed)."""
         h = self.data.get("host")
         return h if h and h.get("parts") else None
+
+    def presenter(self) -> Optional[dict]:
+        """The presenter: footage, or a HeyGen presenter planned before any
+        clip is made (the slides and sections place it; clips follow)."""
+        h = self.data.get("host")
+        return h if h and (h.get("parts") or h.get("planned")) else None
+
+    def missing(self, compiled: dict) -> list:
+        """[(t0, t1)] of the narration where the presenter shows but no clip
+        covers it yet."""
+        end = float(self.data.get("audio_seconds") or 0)
+        wins = [{**w, "t1": min(w["t1"], end)} for w in compiled.get("host_windows") or [] if w["t0"] < end]
+        host = self.host()
+        return presenter_gaps(wins, host_coverage(host) if host else [])
+
+    def page_host(self, compiled: dict) -> Optional[dict]:
+        """The presenter as page_html takes it: where clips are missing, the
+        page draws a placeholder in the presenter's area."""
+        pres = self.presenter()
+        if not pres:
+            return None
+        return {**pres, "missing": [[0.0, 1e9]] if not self.host() else self.missing(compiled)}
 
     def host_plan(self, compiled: dict, scale: float) -> Optional[dict]:
         """What a render worker needs to put the presenter under the page."""
@@ -4459,7 +5291,7 @@ class Project:
             return None
         return {"k": scale, "W": int(round(1920 * scale)), "H": int(round(1080 * scale)),
                 "focus": float(host.get("focus", HOST_FOCUS)), "segments": host_segments(host),
-                "windows": framed_windows(compiled["host_windows"], look_of(self.data, host)[0])}
+                "windows": framed_windows(compiled["host_windows"])}
 
     def version_name(self, n: int) -> str:
         return f"versions/v{int(n):03d}.html"
@@ -4491,7 +5323,7 @@ class Project:
         """The compiled current (or given) version, cached until the version,
         values, logos or timing change."""
         n = n or self.data.get("current") or 0
-        host = self.host()
+        host = self.presenter()
         media_key = sorted((c.get("id"), c.get("slide"), c.get("status"))
                            for c in load_youtube(self.data).get("clips") or [])
         arts = self.data.get("articles") or []
@@ -4504,7 +5336,8 @@ class Project:
                           bool(host), (host or {}).get("sections"),
                           transition_mode_key(None, self.data.get("transition_mode")),
                           self.data.get("slide_fx") or {}, self.data.get("gap_fx") or {},
-                          books, media_key, article_key], sort_keys=True, default=str)
+                          books, media_key, article_key, self.data.get("host_picks") or {}],
+                         sort_keys=True, default=str)
         with self.lock:
             if self._compiled and self._compiled[0] == key:
                 return self._compiled[1]
@@ -4513,7 +5346,8 @@ class Project:
             path = self.dir / "logos" / v["file"] if v.get("file") else None
             logos[k] = {**v, "path": str(path) if path and path.is_file() else ""}
         out = compile_composition(
-            self.composition(n), self.timeline(), duration=float(self.data.get("audio_seconds") or 0),
+            mark_refit(self.composition(n), self.data.get("host_picks") or {}), self.timeline(),
+            duration=float(self.data.get("audio_seconds") or 0),
             plan=self.plan(), logos=logos, values=self.data.get("values") or {},
             logo_choices=self.data.get("logo_choices") or {}, span=self.span(), host_on=bool(host),
             host_sections=(host or {}).get("sections") or [])
@@ -4558,6 +5392,15 @@ class Project:
                 items.append({"type": "figure", "key": key, "label": f.get("label") or key,
                               "value": f.get("value") or rec.get("default", ""), "note": f.get("note", ""),
                               "slides": rec["slides"]})
+        moved = [w["slide"] for w in compiled.get("warnings") or [] if w.get("order")]
+        if moved:
+            items.append({"type": "order", "key": "order", "label": "Slides out of order", "slides": moved})
+        gaps = self.missing(compiled) if self.presenter() else []
+        if gaps:
+            items.append({"type": "presenter", "key": "presenter", "label": "Presenter clips", "spans": gaps,
+                          "seconds": round(sum(b - a for a, b in gaps), 1),
+                          "slides": [m["id"] for m in compiled["slides"] if any(       # not just a transition's edge
+                              min(b, m["t1"]) - max(a, m["t0"]) > 0.5 for a, b in gaps)]})
         return items
 
 
@@ -4756,7 +5599,10 @@ def add_logo(project: Project, src: Path, name: str, recolor: str = "auto",
              key: Optional[str] = None, source_name: str = "") -> dict:
     key = key or slug(name) or slug(src.stem) or "logo"
     info = process_logo(src, project.dir / "logos", key, recolor)
-    rec = {"name": name.strip()[:40] or key, "source": source_name or src.name, "recolor": recolor, **info}
+    # "updated" changes with every new file, even one under the same name, so
+    # the compiled slides (cached by the logo records) and the page pick it up.
+    rec = {"name": name.strip()[:40] or key, "source": source_name or src.name, "recolor": recolor, **info,
+           "updated": round(time.time(), 3)}
     with project.lock:
         project.data.setdefault("logos", {})[key] = rec
         project.data.setdefault("logo_choices", {}).pop(key, None)
@@ -4802,16 +5648,16 @@ def plan_video(project: Project, client, cancel, status, log) -> dict:
     t0 = time.time()
     span = project.span()
     plan, usage = _plan_call(project, client, cancel, status, _context_blocks(project, timeline) + [
-        {"type": "text", "text": _plan_task(timeline.duration, counts, project.host(), span)}],
+        {"type": "text", "text": _plan_task(timeline.duration, counts, project.presenter(), span)}],
         "planning the test clip" if span else "planning the slides")
     if not plan.get("slides"):
         raise RuntimeError("Claude's plan has no slides")
-    _clean_plan(plan, bool(project.host()))
+    _clean_plan(plan, bool(project.presenter()))
     project.write("plan.json", json.dumps(plan, indent=1, ensure_ascii=False))
     hosted = sum(1 for s in plan["slides"] if s.get("host") in HOST_LAYOUTS)
     log(f"\U0001f5fa\ufe0f Plan ready in {time.time() - t0:.0f}s: {len(plan['slides'])} slides, "
         f"{sum(1 for s in plan['slides'] if s.get('kind') == 'scene')} scenes, "
-        + (f"{hosted} with the presenter, " if project.host() else "")
+        + (f"{hosted} with the presenter, " if project.presenter() else "")
         + f"{len(plan.get('figures') or [])} figures to confirm, {len(plan.get('inserts') or [])} inserts "
         f"(${usage_cost(usage):.2f})")
     return plan
@@ -4880,8 +5726,8 @@ def build_slides(project: Project, client, cancel, status, log, feedback: str = 
         raise RuntimeError("There are no slides to write")
     ctx = _context_blocks(project, timeline)
     plan_blk = _plan_block(project, extra)
-    host_on = bool(project.host())
-    sections = (project.host() or {}).get("sections") or []
+    host_on = bool(project.presenter())
+    sections = (project.presenter() or {}).get("sections") or []
     total = sum(len(b) for b in batches)
     done = {"n": 0}
     lock = threading.Lock()
@@ -4977,6 +5823,7 @@ def revise(project: Project, client, cancel, status, log, *, feedback: str, slid
     targets = [s for s in current if s["id"] in slide_ids]
     if not targets:
         raise RuntimeError("Pick at least one slide to revise")
+    picks = project.data.get("host_picks") or {}
     index = "\n".join(f"- {m['id']} {m['t0']:.1f}-{m['t1']:.1f}s {m['kind']} [{m['section']}]: {m['idea'][:160]}"
                       for m in compiled["slides"])
     blocks = _context_blocks(project, timeline) + [_plan_block(project, "CURRENT SLIDES\n" + index)]
@@ -4993,9 +5840,13 @@ def revise(project: Project, client, cancel, status, log, *, feedback: str, slid
         t0, t1 = m.get("t0", 0), m.get("t1", 0)
         parts.append(f"=== {s['id']} {t0:.1f}-{t1:.1f} s ({t1 - t0:.1f} s), {m.get('kind', '')}")
         parts.append(f"Spoken: {timeline.window_text(t0, t1)}" + _sections_note(m.get("sections") or []))
-        found = [w["msg"] for w in m.get("warnings") or [] if not w.get("minor")] + list(warnings.get(s["id"]) or [])
+        found = ([w["msg"] for w in m.get("warnings") or [] if not w.get("minor") and not w.get("order")]
+                 + list(warnings.get(s["id"]) or []))
         if found:
             parts.append("Problems found: " + "; ".join(found))
+        note = _pick_note(picks.get(s["id"]))
+        if note:
+            parts.append(note)
         parts.append("Current markup:\n" + s["raw"])
         parts.append("")
     content = []
@@ -5018,8 +5869,12 @@ def revise(project: Project, client, cancel, status, log, *, feedback: str, slid
     if not returned:
         raise RuntimeError("Claude returned no slides for this revision")
     merged, changed = merge_sections(current, returned)
+    merged, kept = keep_host_picks(project, merged)
     m = re.search(r"CHANGES:\s*(.+)", res["text"].split("<section", 1)[0])
     summary = m.group(1).strip()[:400] if m else ""
+    if kept:
+        log(f"\U0001f9d1\u200d\U0001f4bc Explainer: Claude changed the presenter you placed on {', '.join(kept)}; put back")
+        summary = (summary + " " if summary else "") + f"(Presenter kept where you placed it: {', '.join(kept)}.)"
     n = project.add_version(merged, "revise", (feedback or "Layout fixes") + (f" → {summary}" if summary else ""))
     log(f"✏️ Version {n}: {len(changed)} slide(s) changed ({', '.join(changed[:12])}) "
         f"(${usage_cost(res['usage']):.2f})" + (f": {summary}" if summary else ""))
@@ -5030,15 +5885,12 @@ def run_create(project: Project, client, *, audio_src: Path, spoken_text: str, e
                pauses: Callable, logos: list, images_dir: Path, cancel, status, log,
                test: Optional[dict] = None, presenter: Optional[dict] = None,
                root: Optional[Path] = None, share: Optional[str] = None,
-               pip_frame: Optional[str] = None, bubble: Optional[str] = None,
                visual_style: Optional[str] = None, transition_mode: Optional[str] = None) -> dict:
     """The whole first pass: prepare, (match the presenter clips,) plan,
     build. Returns the job result."""
     prepare(project, audio_src=audio_src, spoken_text=spoken_text, eleven_key=eleven_key, pauses=pauses,
             logos=logos, images_dir=images_dir, status=status, log=log, test=test)
     with project.lock:
-        project.data["pip_frame"] = pip_frame_key(pip_frame, project.data.get("pip_frame"))
-        project.data["bubble"] = bubble_mode_key(bubble, project.data.get("bubble"))
         project.data["visual_style"] = visual_style_key(visual_style, project.data.get("visual_style"))
         project.data["transition_mode"] = transition_mode_key(
             transition_mode, project.data.get("transition_mode"))
@@ -5046,7 +5898,7 @@ def run_create(project: Project, client, *, audio_src: Path, spoken_text: str, e
     if cancel.is_set():
         raise Cancelled()
     if presenter:
-        attach_host(project, presenter, root or project.dir, status, log, share, project.data.get("pip_frame"))
+        attach_host(project, presenter, root or project.dir, status, log, share)
     plan_video(project, client, cancel, status, log)
     sections = build_slides(project, client, cancel, status, log)
     n = project.add_version(sections, "build", "Test clip" if project.span() else "First build")
@@ -5078,6 +5930,36 @@ def _test_notes(project: Project) -> list:
     return out
 
 
+def place_around(slides: list, timeline: Timeline, a: float, b: float) -> tuple:
+    """Where the slides planned around a test clip (a-b s) start:
+    ([(t, slide)] before it, [(t, slide)] after it, ids left out), each list in
+    time order. Claude lists the slides in time order, so each one's words are
+    searched after the slide before it: a phrase spoken twice (an intro that
+    names the chapters) lands where Claude meant it, not on its first mention."""
+
+    def place(at, floor):
+        tries = [(floor, a)] if a > 1 and floor < a else []
+        tries += [(max(floor, b - 1.0), None), (max(0.0, b - 1.0), None)] + ([(0.0, a)] if a > 1 else [])
+        for lo, hi in tries:
+            hit = timeline.find(at, floor=lo, limit=hi)
+            if hit and (hit[0] < a if hi is not None else hit[0] >= b - 0.5):
+                return hit[0]
+        return None
+
+    before, after, skipped = [], [], []
+    floor = 0.0
+    for s in slides:
+        t = place(s.get("at") or "", floor)
+        if t is None:
+            skipped.append(s["id"])
+            continue
+        (before if t < a else after).append((t, s))
+        floor = max(floor, t + 0.01)
+    before.sort(key=lambda x: x[0])
+    after.sort(key=lambda x: x[0])
+    return before, after, skipped
+
+
 def extend(project: Project, client, cancel, status, log) -> dict:
     """Plan and write the rest of the video around the refined test clip,
     following its slides (as the approved look) and the user's notes."""
@@ -5091,7 +5973,7 @@ def extend(project: Project, client, cancel, status, log) -> dict:
     timeline = project.timeline()
     plan = project.plan()
     counts = production_counts(project.read("script.txt"))
-    host = project.host()
+    host = project.presenter()
     taken = {s["id"] for s in current} | {s["id"] for s in plan.get("slides") or []}
     next_n = max([int(m.group(1)) for m in (re.match(r"^s(\d+)", i) for i in taken) if m] or [0]) + 1
     rest = max(0.0, a) + max(0.0, timeline.duration - b)
@@ -5120,24 +6002,12 @@ The script has {counts.get('scenes', 0)} GROK IMAGINE briefs, {counts.get('verif
     new_plan, usage = _plan_call(project, client, cancel, status, _context_blocks(project, timeline) + [
         _plan_block(project, extra), {"type": "text", "text": task}], "planning the rest of the video")
     _clean_plan(new_plan, bool(host), taken)
-    before, after, skipped = [], [], []
-    for s in new_plan.get("slides") or []:
-        hit = timeline.find(s.get("at") or "", floor=0.0, limit=a) if a > 1 else None
-        if hit and hit[0] < a:
-            before.append((hit[0], s))
-            continue
-        hit = timeline.find(s.get("at") or "", floor=max(0.0, b - 1.0))
-        if hit and hit[0] >= b - 0.5:
-            after.append((hit[0], s))
-        else:
-            skipped.append(s["id"])
+    before, after, skipped = place_around(new_plan.get("slides") or [], timeline, a, b)
     if not before and not after:
         raise RuntimeError("Claude's plan for the rest had no slides outside the test clip. Try again.")
     if skipped:
         log(f"\u26a0\ufe0f Left out {len(skipped)} planned slide(s) whose start words fall inside the test clip "
             f"or were not found: {', '.join(skipped)}", "warning")
-    before.sort(key=lambda x: x[0])
-    after.sort(key=lambda x: x[0])
     merged = dict(plan)
     merged["slides"] = [s for _t, s in before] + list(plan.get("slides") or []) + [s for _t, s in after]
     labels = {x.get("key"): x for x in plan.get("sections") or []}
@@ -5181,26 +6051,153 @@ The script has {counts.get('scenes', 0)} GROK IMAGINE briefs, {counts.get('verif
     return {"message": f"Version {n} ready: the whole video ({len(new) + len(current)} slides)", "version": n}
 
 
+def narration_order(sections: list, timeline: Timeline, plan: dict, first: float = 0.0) -> list:
+    """The slides sorted by where their start words are spoken. A phrase can be
+    spoken more than once (an intro that names the chapters), so each slide is
+    searched after the one before it, taking the plan's sections in order, and
+    only then sorted by time. Slides whose words are not found stay after the
+    slide they follow."""
+    plan_slides = {s.get("id"): s for s in plan.get("slides") or []}
+    sec_rank = {x.get("key"): k for k, x in enumerate(plan.get("sections") or [])}
+
+    def info(s):
+        p = plan_slides.get(s["id"]) or plan_slides.get(_base_id(s["id"])) or {}
+        return s["attrs"].get("data-at") or p.get("at") or "", s["attrs"].get("data-section") or p.get("section") or ""
+
+    prior = sorted(range(len(sections)), key=lambda k: (sec_rank.get(info(sections[k])[1], len(sec_rank)), k))
+    when, floor = {}, first
+    for k in prior:
+        phrase = info(sections[k])[0]
+        hit = (timeline.find(phrase, floor=floor) or timeline.find(phrase, floor=first)) if phrase else None
+        if hit is not None:
+            when[k] = hit[0]
+            floor = max(floor, hit[0] + 0.01)
+    keyed, last = [], first
+    for k in prior:
+        last = when.get(k, last)
+        keyed.append((last, len(keyed), k))
+    return [sections[k] for _t, _n, k in sorted(keyed)]
+
+
+def order_slides(project: Project) -> Optional[int]:
+    """Put the slides back in narration order without asking Claude: a new
+    version (and the plan in the same order), or None when they already are."""
+    sections = split_sections(project.composition())
+    plan = project.plan()
+    span = project.span()
+    ordered = narration_order(sections, project.timeline(), plan, first=span[0] if span else 0.0)
+    if [s["id"] for s in ordered] == [s["id"] for s in sections]:
+        return None
+    moved = sum(1 for x, y in zip(ordered, sections) if x["id"] != y["id"])
+    rank: dict = {}
+    for k, s in enumerate(ordered):
+        rank.setdefault(s["id"], k)
+        rank.setdefault(_base_id(s["id"]), k)
+    if plan.get("slides"):
+        plan["slides"].sort(key=lambda s: rank.get(s.get("id"), len(rank)))
+        project.write("plan.json", json.dumps(plan, indent=1, ensure_ascii=False))
+    return project.add_version(ordered, "order", f"Slides put back in narration order ({moved} moved)")
+
+
+def _host_tag(sec: dict, layout: str, frame: str = "") -> dict:
+    """The section with its data-host and data-frame set; layout "" takes the presenter off."""
+    tag = re.match(r"<section\b[^>]*>", sec["raw"], re.I).group(0)
+    new_tag = re.sub(r"\sdata-(?:host|frame)\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)", "", tag, flags=re.I)
+    if layout:
+        new_tag = new_tag[:-1].rstrip() + f' data-host="{layout}"' + (f' data-frame="{frame}"' if frame else "") + ">"
+    return {**sec, "raw": new_tag + sec["raw"][len(tag):], "attrs": _first_tag_attrs(new_tag)}
+
+
+def mark_refit(raw: str, picks: Optional[dict]) -> str:
+    """Slides the user took the presenter off get data-refit="1".
+
+    Claude laid such a slide out around the presenter (all of it in one
+    half). The runtime then measures what is on the slide and scales it up
+    to fill the frame; a slide that already fills the frame stays as it is.
+    """
+    off = {sid for sid, pick in (picks or {}).items() if not split_layout((pick or {}).get("host"))[0]}
+    if not off or not raw:
+        return raw
+
+    def tag(m):
+        t = m.group(0)
+        sid = re.search(r'\sid\s*=\s*["\']([^"\']+)["\']', t)
+        if not sid or sid.group(1) not in off or re.search(r"\sdata-(?:host|refit)\s*=", t, re.I):
+            return t
+        return t[:-1].rstrip() + ' data-refit="1">'
+
+    return re.sub(r"<section\b[^>]*>", tag, raw, flags=re.I)
+
+
+def _words_key(text: Optional[str]) -> str:
+    return " ".join(re.findall(r"[a-z0-9']+", (text or "").lower()))
+
+
+def keep_host_picks(project: Project, sections: list, same_slides: bool = True) -> "tuple[list, list]":
+    """Sections Claude wrote, with the presenter put back where the user
+    placed it on a slide (or kept off where the user took it off).
+
+    The picks are the user's own choices from a slide's presenter menu, by
+    slide id. With `same_slides` False (a new plan, so an id may name another
+    moment) a pick holds only where that slide still starts on the same words.
+    Returns (sections, ids put back)."""
+    picks = project.data.get("host_picks") or {}
+    out, fixed = [], []
+    for sec in sections:
+        pick = picks.get(sec["id"])
+        if pick and (same_slides or _words_key(sec["attrs"].get("data-at")) == _words_key(pick.get("at"))):
+            want = split_layout(pick.get("host"))
+            have = split_layout(layout_key(sec["attrs"].get("data-host"), sec["attrs"].get("data-frame")))
+            if want != have:
+                sec = _host_tag(sec, *want)
+                fixed.append(sec["id"])
+        out.append(sec)
+    return out, fixed
+
+
+def _pick_note(pick: Optional[dict]) -> str:
+    """The user's presenter pick on a slide, for Claude's revision brief."""
+    if not pick:
+        return ""
+    layout, frame = split_layout(pick.get("host"))
+    if not layout:
+        return "PRESENTER: the user took the presenter off this slide. No data-host."
+    where = _WHERE[layout] + {"laptop": " on a laptop", "monitor": " on a computer screen"}.get(frame, "")
+    return (f"PRESENTER: the user placed the presenter on this slide ({where}). Keep data-host=\"{layout}\""
+            + (f" data-frame=\"{frame}\"" if frame else "") + " on the section and lay the slide out around it, "
+            + (f"keeping x {DEVICE_BOX[0]}-{DEVICE_BOX[0] + DEVICE_BOX[2]}, y {DEVICE_BOX[1]}-{DEVICE_BOX[1] + DEVICE_BOX[3]} "
+               "clear for the device, " if frame else "")
+            + "following the Presenter rules. Never remove it, even where the script's notes say no presenter. "
+            "If this is an illustrated scene, make it a slide (data-kind=\"slide\") with the art clear of the "
+            "presenter's area.")
+
+
 def set_slide_host(project: Project, sid: str, layout: str) -> int:
     """Show the presenter on a slide (or not) without asking Claude: a new
-    version with that slide's data-host changed."""
-    layout = layout if layout in HOST_LAYOUTS else ""
+    version with that slide's data-host changed. "pip:laptop" and
+    "pip:monitor" put the corner window inside that device (data-frame).
+    The choice is saved as the user's pick, so a revision or a rebuild puts
+    it back if Claude drops it."""
+    layout, frame = split_layout(layout)
     sections = split_sections(project.composition())
     target = next((s for s in sections if s["id"] == sid), None)
     if target is None:
         raise RuntimeError(f"No slide {sid}")
-    tag = re.match(r"<section\b[^>]*>", target["raw"], re.I).group(0)
-    new_tag = re.sub(r"\sdata-host\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)", "", tag, flags=re.I)
-    if layout:
-        new_tag = new_tag[:-1].rstrip() + f' data-host="{layout}">'
-    target["raw"] = new_tag + target["raw"][len(tag):]
-    target["attrs"] = _first_tag_attrs(new_tag)
+    target.update(_host_tag(target, layout, frame))
+    with project.lock:
+        # The user's own choice: revisions and rebuilds keep it (keep_host_picks).
+        project.data.setdefault("host_picks", {})[sid] = {"host": layout_key(layout, frame) or "none",
+                                                          "at": target["attrs"].get("data-at") or ""}
     plan = project.plan()
     for s in plan.get("slides") or []:
         if s.get("id") == sid:
             s["host"] = layout or "none"
+            if frame:
+                s["frame"] = frame
+            else:
+                s.pop("frame", None)
             project.write("plan.json", json.dumps(plan, indent=1, ensure_ascii=False))
-    return project.add_version(sections, "layout", f"{sid}: presenter {layout or 'off'}")
+    return project.add_version(sections, "layout", f"{sid}: presenter {layout_key(layout, frame) or 'off'}")
 
 
 def rebuild(project: Project, client, cancel, status, log, *, feedback: str, replan: bool) -> dict:
@@ -5211,9 +6208,63 @@ def rebuild(project: Project, client, cancel, status, log, *, feedback: str, rep
             notes.append(feedback)
         plan_video(project, client, cancel, status, log)
     sections = build_slides(project, client, cancel, status, log, feedback=feedback, kind="rebuild")
+    sections, kept = keep_host_picks(project, sections, same_slides=not replan)
+    if kept:
+        log(f"\U0001f9d1\u200d\U0001f4bc Explainer: presenter put back where you placed it: {', '.join(kept)}")
     n = project.add_version(sections, "rebuild", feedback or "Rebuilt")
     log(f"\u267b\ufe0f Explainer version {n}: every slide rewritten ({len(sections)} slides)")
     return {"message": f"Version {n} ready: {len(sections)} slides", "version": n}
+
+
+def regenerate_test(project: Project, client, cancel, status, log, *, start: float, minutes: float,
+                    notes: str = "") -> dict:
+    """A fresh take on the test clip in the same project: a new plan and new
+    slides (a new version), for the same stretch of narration or a new one.
+    Logos, images, clips, figure values and presenter sections stay; a clip
+    that was on a slide moves to the new slide playing at the same moment."""
+    span = pick_span(project.timeline(), float(start), float(minutes) * 60)
+    if span is None:
+        raise RuntimeError("That test clip would cover the whole narration. Pick a shorter one, "
+                           "or build the rest of the video instead.")
+    placed = {}
+    try:
+        old = {m["id"]: m for m in project.compile().get("slides") or []}
+        for c in load_youtube(project.data)["clips"]:
+            m = old.get(c.get("slide") or "")
+            if m:
+                placed[c["id"]] = (float(m["t0"]) + float(m["t1"])) / 2
+    except Exception:  # noqa: BLE001 - nothing to carry over
+        placed = {}
+    was = project.span()
+    with project.lock:
+        project.data["span"] = list(span)
+        if notes:
+            kept = project.data.setdefault("notes", [])
+            if notes not in kept:
+                kept.append(notes)
+    project.save()
+    moved = "" if was and abs(was[0] - span[0]) < 0.5 and abs(was[1] - span[1]) < 0.5 \
+        else f" (was {fmt_secs(was[0])}\u2013{fmt_secs(was[1])})" if was else ""
+    log(f"\U0001f501 Explainer: regenerating the test clip {fmt_secs(span[0])}\u2013{fmt_secs(span[1])}{moved}")
+    plan_video(project, client, cancel, status, log)
+    sections = build_slides(project, client, cancel, status, log, feedback=notes, kind="rebuild")
+    sections, kept_host = keep_host_picks(project, sections, same_slides=False)
+    if kept_host:
+        log(f"\U0001f9d1\u200d\U0001f4bc Explainer: presenter put back where you placed it: {', '.join(kept_host)}")
+    n = project.add_version(sections, "rebuild", f"Test clip regenerated, {fmt_secs(span[0])}\u2013{fmt_secs(span[1])}"
+                            + (f": {notes}" if notes else ""))
+    if placed:
+        new = project.compile().get("slides") or []
+
+        def move(bundle):
+            for c in bundle["clips"]:
+                if c["id"] in placed:
+                    at = placed[c["id"]]
+                    hit = next((m["id"] for m in new if m["t0"] <= at < m["t1"]), "")
+                    c["slide"] = hit
+        _yt_mutate(project, move)
+    log(f"\U0001f501 Explainer version {n}: test clip regenerated ({len(sections)} slides)")
+    return {"message": f"Version {n} ready: the test clip regenerated, {len(sections)} slides", "version": n}
 
 
 def _safe_name(text: str) -> str:
@@ -5863,14 +6914,15 @@ def phone_copy(src: Path, out: Path) -> Path:
 def write_page(project: Project, compiled: dict, mode: str, name: str) -> Path:
     page = project.dir / "pages" / name
     page.parent.mkdir(parents=True, exist_ok=True)
-    host = project.host()
-    frame, bubble = look_of(project.data, host)
     style = visual_style_key(None, project.data.get("visual_style"))
     look = film_look_key(None, project.data.get("film_look"))
     import explainer_articles as _articles
     article_layer, emphasis_layer = _articles.page_layers(project, compiled)
+    # Clips are laid on by ffmpeg after the frames are drawn; the page only
+    # needs where they sit (a split slide shrinks into the other half).
+    clips = preview_clip_payloads(project, compiled, lambda rel: "")
     page.write_text(page_html(compiled, mode=mode, title=project.data.get("title") or "Explainer",
-                              host=host, pip_frame=frame, bubble=bubble,
+                              host=project.page_host(compiled), clips=clips,
                               visual={"style": style}, film_look=look, words=load_words(project),
                               articles=article_layer, emphasis=emphasis_layer,
                               demos=demo_payloads(compiled, load_youtube(project.data)["clips"], mode)),

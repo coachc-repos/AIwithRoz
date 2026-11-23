@@ -16,6 +16,10 @@ import types
 
 APP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, APP)
+# Never read the real channel intro / end clip (~/.scriptcraft/channel): a test
+# explainer project without its own bookends would pick them up.
+import tempfile as _tempfile  # noqa: E402
+os.environ["SCRIPTCRAFT_CHANNEL_DIR"] = _tempfile.mkdtemp(prefix="xv-channel-")
 os.environ.setdefault("SCRIPTCRAFT_AGENT_BACKEND", "maf")
 
 RESULTS: list[tuple[str, bool, str]] = []
@@ -28,6 +32,9 @@ def check(name: str):
                 detail = fn() or ""
             RESULTS.append((name, True, detail))
         except Exception as e:  # noqa: BLE001
+            if os.environ.get("OFFLINE_TB"):
+                import traceback
+                traceback.print_exc()
             RESULTS.append((name, False, f"{type(e).__name__}: {e}"))
         return fn
     return deco
@@ -88,6 +95,51 @@ def _():
     wf = open(os.path.join(APP, "linedrive_azure", "agents", "enhanced_autogen_system.py"), encoding="utf-8").read()
     assert 'if pro_writer == "agent":' in wf and "write_pro_script_agent(" in wf
     return "shared builder; agent branch present"
+
+
+@check("Plain speech (ASD-STE100): every writer and the chapter reviewer get the rules; the checker counts what slips")
+def _():
+    from linedrive_azure.agents import pro_script_writer as pw  # noqa: PLC0415
+    rules = pw.PLAIN_SPEECH_RULES
+    for rule in ("No sentence has more than 25 words", 'Do not use "should", "would", "may", "might", or "could"',
+                 '", making it"', "One name for one thing", "noun chains of three words or fewer",
+                 "it is not just X, it is Y", "no contractions"):
+        assert rule.lower() in rules.lower(), rule
+    assert "PLAIN SPEECH RULES (ASD-STE100" in pw.SCRIPT_WRITER_PRO_SYSTEM and rules in pw.SCRIPT_WRITER_PRO_SYSTEM
+    assert "Short sentences mixed with longer ones" not in pw.SCRIPT_WRITER_PRO_SYSTEM
+    assert "breaks the PLAIN SPEECH RULES" in pw.build_pro_user_message("T", "B"), "rules beat the golden reference"
+    # The hosted Pro agent serves the synced copy (maf/agents/pro_writer.py --sync).
+    hosted = open(os.path.join(os.path.dirname(APP), "scriptcraft-app-v2", "agent_instructions",
+                               "Script-Writer-Pro-Agent.md"), encoding="utf-8").read()
+    assert pw.SCRIPT_WRITER_PRO_SYSTEM.strip() in hosted, "run maf/agents/pro_writer.py --sync"
+    wf = open(os.path.join(APP, "linedrive_azure", "agents", "enhanced_autogen_system.py"), encoding="utf-8").read()
+    assert "from .pro_script_writer import PLAIN_SPEECH_RULES" in wf
+    assert wf.count("script_request += (") == 1 and wf.count("chapter_review_request += (") == 1
+    assert wf.index("script_request += (") < wf.index("def _fallback_or_fail"), "hosted writer and fallback share it"
+    gui = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    assert "plain_speech_summary(raw_script_content)" in gui
+
+    sloppy = ("Host:\nWe should simply leverage this robust tool, making it seamless. It is not just a tool; "
+              "it is a whole new landscape that has been reshaping how teams, partners, vendors, and customers "
+              "across every industry and region work together every single day of the week. "
+              "The result? Chaos. You don't want that.\n")
+    # A writer's raw output: plain "Host:" labels and the metadata block, whose
+    # Tone line has a semicolon and runs long. The metadata is not spoken.
+    clean = ("FINAL HOOK:\nHost:\nIn May 2026, Google changed the free plan.\n" + "_" * 40 + "\n"
+             "Title: Free Plans\nScript Type: Video\nDuration: medium\nAudience: parents\n"
+             "Tone: warm. PARSER RULE: skip everything between [PRODUCTION BEGIN] and [PRODUCTION END]; "
+             "all Host: text outside the markers is spoken. VISUAL RULE: GROK IMAGINE lines are complete prompts.\n"
+             + "_" * 40 + "\nHeading: Chapter 1 - The Free Plan Changed\nHost:\n"
+             "If your link is public, make it private. Nobody knows yet what comes next. "
+             "The free plan now keeps your files for thirty days.\n")
+    s, c = pw.plain_speech_report(sloppy), pw.plain_speech_report(clean)
+    for k in ("long sentences", "hedges", "perfect tenses", "-ing clauses", "filler words",
+              "not-X-it-is-Y lines", "self-answered questions", "contractions", "semicolons"):
+        assert s["counts"][k] >= 1, (k, s["counts"])
+    assert c["total"] == 0, c
+    assert "no rule breaks" in pw.plain_speech_summary(clean)
+    assert "rule breaks (" in pw.plain_speech_summary(sloppy)
+    return f"sloppy sample: {s['total']} breaks; clean sample (with 'May 2026'): 0"
 
 
 @check("Ideas and briefs: today's date + recency rules; Grok searches X and the web; briefs search")
@@ -650,6 +702,69 @@ def _():
     return "16 spoken words on the sample from the server and the badge port; metadata, headings, trailing sections and the HeyGen copy excluded"
 
 
+# The Pro writer's raw layout: the metadata block follows the hook's production
+# block and a ____ divider with no blank line, so it used to glue onto the hook.
+_PRO_RAW_SAMPLE = """FINAL HOOK:
+Host:
+One two three four five.
+[PRODUCTION BEGIN]
+[COLD OPEN / RESOLVE] not spoken
+[PRODUCTION END]
+________________________________________________________________________________
+Title: My Title
+Script-ID: ld-123
+Script-Version: v-456
+Script Type: Video
+Duration: medium
+**Generated:** 2026-07-21 12:14:06
+Audience: creators
+Tone: wry. PARSER RULE: skip everything between [PRODUCTION BEGIN] and [PRODUCTION END]; all Host: text is spoken.
+________________________________________________________________________________
+
+Heading: Chapter 1 - The Setup
+Host:
+[PRODUCTION BEGIN]
+[ON SCREEN / RESOLVE] not spoken
+[PRODUCTION END]
+Six seven eight.
+________________________________________________________________________________
+
+Heading: Chapter 2 - The End
+Host:
+Nine ten.
+"""
+
+
+@check("Script duration: the Pro writer's metadata is not counted, and a Shorten run updates the script box")
+def _():
+    import shutil
+    import subprocess
+    import tempfile
+    from console_ui.text_processing import spoken_text, spoken_word_count
+
+    assert spoken_word_count(_PRO_RAW_SAMPLE) == 10, spoken_text(_PRO_RAW_SAMPLE)
+    web = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    assert '"shortened_script": shortened_script,' in web
+    assert '"shortened_script": streamer.result.get("shortened_script", ""),' in web
+    assert 'f"✅ Shortened: {_before_host_words} → {_after_host_words} spoken words, "' in web
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert "_ta.value = message.shortened_script;" in html
+    node = shutil.which("node")
+    if not node:
+        return "server count checked; node not installed, so the badge port was not run"
+    js = html[html.index("        const _HG_SKIP_PATTERNS"):html.index("        // Build a small inline badge element from estimateHeyGenDuration().")]
+    with tempfile.TemporaryDirectory() as d:
+        sample = os.path.join(d, "sample.md")
+        open(sample, "w", encoding="utf-8").write(_PRO_RAW_SAMPLE)
+        prog = os.path.join(d, "badge.js")
+        open(prog, "w", encoding="utf-8").write(js + "\nconst fs = require('fs');\n"
+            "console.log(estimateHeyGenDuration(fs.readFileSync(process.argv[2], 'utf8')).words);\n")
+        out = subprocess.run([node, prog, sample], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr[:300]
+    assert out.stdout.strip() == "10", out.stdout
+    return "10 spoken words on the raw Pro sample from the server and the badge port; the shortened script goes back to the script box"
+
+
 @check("API Keys dialog: keys are masked, X keys save, and only this machine or a signed-in browser can read or change them")
 def _():
     import json
@@ -902,10 +1017,17 @@ def _():
     assert c.post("/api/titles/apply", json={"script": "Title: a", "title": "x" * 101}).status_code == 400
     assert c.post("/api/titles/suggest", json={"script": " "}).status_code == 400
     html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
-    assert "'demo','title'];" in html and 'data-sps-stage="title"' in html
-    assert "window._spsTitlePending = wantsTitle && checkedList.length > 0;" in html
-    assert html.count("openTitlePicker(processedScript);") == 1 and "function openTitlePicker(script)" in html
-    return "Title: line + top heading replaced, a Title: line added when missing, YouTube A/B titles kept; last stage in the dialog"
+    assert "'demo','title','elevenlabs','explainer'];" in html and 'data-sps-stage="title"' in html
+    assert "const _SPS_DIALOGS = ['title', 'elevenlabs', 'explainer'];" in html
+    for k in ("elevenlabs", "explainer"):
+        assert f'data-sps-stage="{k}"' in html and f"spsOpenDialogStage('{k}')" in html and f"spsDialogClosed('{k}')" in html
+    assert "spsDialogClosed('title')" in html and html.count("spsNextDialog(processedScript);") == 1
+    assert "if (key === 'title') openTitlePicker(" in html and "function openTitlePicker(script)" in html
+    # Both dialogs open a script themselves and follow the script that opens.
+    assert "onclick=\"elOpenScript()\"" in html and "class=\"xv-btn\" onclick=\"openScriptChooser()\"" in html
+    assert "refreshScriptDialogs();" in html and html.count("z-index:10060; background:rgba(2,6,23,0.72)") == 2
+    return ("Title: line + top heading replaced, a Title: line added when missing, YouTube A/B titles kept; "
+            "Title Picker, ElevenLabs Audio, Explainer Video are the dialog stages after processing")
 
 
 
@@ -1730,8 +1852,457 @@ def _():
     return (f"{len(parts)} stitched parts (last 3 request IDs passed), similarity 75% + clone strength (v4 only) with the voice's other settings kept, busy reply retried, one MP3"
             + (" checked with ffprobe" if have_ff else "") + "; key masked + hydrated; own voices first; quota error plain, key redacted")
 
-@check("HeyGen clips from an ElevenLabs MP3: cut in pauses into clips under the frame limit counted at the upscaler's fps, each rendered with a template's avatar (engine, background) into heygen/, not aRoll/")
+@check("ElevenLabs Audio: the volume is evened out when the parts are joined (a part that fades and a louder next part end at one level), set to -18 LUFS, peak-limited; the parts are still joined if leveling fails")
 def _():
+    import shutil
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+
+    # Gains: each part's speech brought to the voiceover's level; a part never looks into the next.
+    g = web_gui._eleven_level_gains([[-30.0] * 300, [-40.0] * 300])
+    assert len(g[0]) == len(g[1]) == 300 and abs((g[1][0] - g[0][-1]) - 10.0) < 0.01, (g[0][-1], g[1][0])
+    fade = [-30.0 - 8.0 * i / 1200 for i in range(1200)]          # 2 min fading 8 dB
+    gf = web_gui._eleven_level_gains([fade])[0]
+    assert gf[-1] - gf[0] > 6.0 and all(b >= a - 1e-9 for a, b in zip(gf, gf[1:])), (gf[0], gf[-1])
+    assert web_gui._loudness_swing(fade) > 6.0 and web_gui._loudness_swing([m + x for m, x in zip(fade, gf)]) < 1.5
+    assert abs(web_gui._loudness_integrated([-23.0] * 100) + 23.0) < 0.01 and web_gui._loudness_integrated([-120.0] * 5) == -70.0
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        return "gain curve only (no ffmpeg here)"
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        parts = []
+        # Part 1 fades 8 dB over 60 s, part 2 is steady and as loud as part 1's start (ElevenLabs' pattern).
+        for name, vol in (("a", "pow(10,-8*t/60/20)"), ("b", "1")):
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                            "anoisesrc=color=pink:amplitude=0.05:duration=" + ("60" if name == "a" else "30"),
+                            "-af", f"volume='{vol}':eval=frame", "-ar", "44100", "-ac", "1", "-b:a", "128k",
+                            str(d / f"{name}.mp3")], check=True)
+            parts.append((d / f"{name}.mp3").read_bytes())
+        out = d / "out" / "vo.mp3"
+        level = web_gui._eleven_join_mp3(parts, out)
+        assert level and level["swing_before"] > 5 and level["swing_after"] < 2, level
+        assert abs(level["after"] - web_gui.ELEVEN_TARGET_LUFS) <= 1.0, level
+        probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=channels,sample_rate,bit_rate",
+                                "-of", "default=nw=1", str(out)], capture_output=True, text=True).stdout
+        dur = float(re.search(r"duration=([\d.]+)", probe).group(1))
+        assert abs(dur - 90) < 0.3 and "channels=1" in probe and "sample_rate=44100" in probe and "bit_rate=192000" in probe, probe
+        pk = subprocess.run(["ffmpeg", "-nostats", "-hide_banner", "-i", str(out), "-af", "ebur128=peak=true", "-f", "null", "-"],
+                            capture_output=True, text=True).stderr
+        tp = float(re.findall(r"Peak:\s+(-?[\d.]+) dBFS", pk)[-1])
+        assert tp <= -1.5, tp
+
+        # Leveling fails: the parts are still joined, nothing lost.
+        keep = web_gui._eleven_level
+        try:
+            web_gui._eleven_level = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+            out2 = d / "out" / "vo2.mp3"
+            assert web_gui._eleven_join_mp3(parts, out2) is None and out2.stat().st_size > 0
+        finally:
+            web_gui._eleven_level = keep
+
+    src = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    assert "level = _eleven_join_mp3(parts, out_path)" in src and "leveled=level," in src
+    assert "seconds = int(round(_audio_seconds(out_path)))" in src
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert "const lv = s.leveled;" in html and "'Volume evened out: '" in html
+    return (f"fade {level['swing_before']} → {level['swing_after']} dB, {level['before']} → {level['after']} LUFS, "
+            f"true peak {tp} dBFS, 192 kbps mono, {dur:.2f}s; plain join when leveling fails")
+
+
+@check("ElevenLabs Audio → Fix a section: picked sentences are re-read (with the sentences around them as context) and put back at the same length and loudness; keep or try again, undo, and Explainers made from the MP3 get the new narration")
+def _():
+    import json as _json
+    import math
+    import shutil
+    import struct
+    import subprocess
+    import tempfile
+    import wave
+    from pathlib import Path
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+    import explainer_video as xv  # noqa: PLC0415
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        return "skipped: no ffmpeg"
+    SR = 44100
+
+    def tones(path, segs, total):
+        """A mono WAV of tone bursts [(start, end, freq, amp)] in silence."""
+        n = int(total * SR)
+        buf = [0.0] * n
+        for s, e, f, a in segs:
+            i0, i1 = int(s * SR), min(n, int(e * SR))
+            ramp = int(0.01 * SR)
+            for i in range(i0, i1):
+                g = min(1.0, (i - i0) / ramp, (i1 - i) / ramp)
+                buf[i] += a * g * math.sin(2 * math.pi * f * (i - i0) / SR)
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(SR)
+            w.writeframes(b"".join(struct.pack("<h", int(max(-1, min(1, v)) * 32767)) for v in buf))
+
+    def to_mp3(wav, mp3, rate="192k"):
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav), "-ar", "44100", "-ac", "1",
+                        "-c:a", "libmp3lame", "-b:a", rate, str(mp3)], check=True)
+
+    def pcm(path):
+        r = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(path), "-f", "s16le", "-ac", "1", "-ar", str(SR), "-"],
+                           capture_output=True, check=True)
+        return struct.unpack(f"<{len(r.stdout) // 2}h", r.stdout)
+
+    def power(x, t, f, win=0.1):
+        """Goertzel power of frequency f in a window starting at t."""
+        i0 = int(t * SR)
+        k = 2 * math.cos(2 * math.pi * f / SR)
+        s1 = s2 = 0.0
+        for v in x[i0:i0 + int(win * SR)]:
+            s1, s2 = v + k * s1 - s2, s1
+        return s1 * s1 + s2 * s2 - k * s1 * s2
+
+    # The old reading: 6 sentences of two 0.5 s "words" at 440 Hz.
+    words, segs, t = [], [], 0.3
+    for k in range(6):
+        for j, txt in enumerate((f"Word{k}a", f"word{k}b.")):
+            words.append({"text": txt, "start": round(t, 3), "end": round(t + 0.5, 3)})
+            segs.append((t, t + 0.5, 440, 0.3))
+            t += 0.5 + (0.15 if j == 0 else 0.7)
+    total = round(t + 0.5, 3)
+    sents = web_gui._eleven_sentences(words)
+    assert [s["text"] for s in sents][:2] == ["Word0a word0b.", "Word1a word1b."] and len(sents) == 6, sents
+    assert [(s["w0"], s["w1"]) for s in sents][2] == (4, 6)
+    title, pid = "Fix Test", "20261122_120000_0abc"
+    posts, mode = [], {"long": False, "reject_context": False}
+
+    class _R:
+        def __init__(self, status, content=b"", body=None):
+            self.status_code, self.content, self._b, self.headers = status, content, body, {}
+            self.text = _json.dumps(body) if body is not None else ""
+
+        def json(self):
+            return self._b
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        vo = d / "out" / "voiceover"
+        vo.mkdir(parents=True)
+        tones(d / "old.wav", segs, total)
+        name = "Fix_Test_elevenlabs_Roz_20261122_100000.mp3"
+        mp3 = vo / name
+        to_mp3(d / "old.wav", mp3)
+        original = mp3.read_bytes()
+        mp3.with_suffix(".txt").write_text(" ".join(w["text"] for w in words), encoding="utf-8")
+        mp3.with_name(mp3.stem + ".voice.json").write_text(_json.dumps(
+            {"voice_id": "voiceABC123", "model_id": "eleven_v4", "similarity": 0.8, "clone_strength": 0.6}))
+        dur = web_gui._audio_seconds(mp3)
+        # An Explainer made from this MP3: its word timings, and two presenter clips (one overlaps sentences 2-3).
+        pdir = d / "out" / "explainer" / pid
+        pdir.mkdir(parents=True)
+        # Forced alignment can time a sentence's first word late: the fix must start where the sound starts.
+        timed = [dict(w) for w in words]
+        timed[4]["start"] = round(timed[4]["start"] + 0.25, 3)
+        (pdir / "words.json").write_text(_json.dumps(timed))
+        s0, e1 = words[4]["start"], words[7]["end"]
+        (pdir / "project.json").write_text(_json.dumps({
+            "title": title, "voiceover": name, "audio_seconds": dur, "timing": {"source": "elevenlabs"},
+            "host": {"parts": [{"file": "/x/c1.mp4", "orig": "/x/clip_01.mp4", "offset": 0.1, "seconds": 1.0},
+                               {"file": "/x/c2.mp4", "orig": "/x/clip_02.mp4", "offset": s0 - 1.0, "seconds": 2.0}]}}))
+
+        def fake_post(url, params=None, headers=None, json=None, timeout=None, **kw):
+            body = dict(json or {})
+            posts.append((url, body))
+            if mode["reject_context"] and "previous_text" in body:
+                return _R(422, body={"detail": {"status": "invalid_request",
+                                                "message": "previous_text is not supported with this model"}})
+            n = len(body["text"].split())
+            wl, gap_in, gap_s = (1.0, 0.3, 1.4) if mode["long"] else (0.55, 0.165, 0.77)
+            take, tt = [], 0.25
+            for i in range(n):
+                take.append((tt, tt + wl, 660, 0.3 * 10 ** (-8 / 20)))
+                tt += wl + (gap_in if i % 2 == 0 else gap_s)
+            tt = tt - gap_s + 0.4
+            tones(d / "take.wav", take, tt)
+            to_mp3(d / "take.wav", d / "take.mp3", "128k")
+            return _R(200, content=(d / "take.mp3").read_bytes())
+
+        keep = (web_gui._get_run_output_dir, web_gui.requests.post, web_gui._eleven_key, web_gui._eleven_voice_settings,
+                web_gui.time.sleep)
+        try:
+            web_gui._get_run_output_dir = lambda title_, create=True: d / "out"
+            web_gui.requests.post = fake_post
+            web_gui._eleven_key = lambda: "sk_test_fix_9876"
+            web_gui._eleven_voice_settings = lambda key, vid, sim, cs=None: {"stability": 0.4, "similarity_boost": sim,
+                                                                            **({"clone_strength": cs} if cs is not None else {})}
+            web_gui.time.sleep = lambda s: None
+            c = web_gui.app.test_client()
+
+            f = c.get("/api/elevenlabs/fix/files?title=" + title).get_json()
+            assert f["success"] and [(x["name"], x["has_text"], x["fixes"]) for x in f["files"]] == [(name, True, 0)], f
+            for bad in ("../x.mp3", "nope.mp3", "notes.txt", ""):
+                assert c.post("/api/elevenlabs/fix/load", json={"title": title, "file": bad}).status_code == 400, bad
+
+            # Load: word times come from the Explainer made from this MP3 (no alignment call), then are kept next to it.
+            ld = c.post("/api/elevenlabs/fix/load", json={"title": title, "file": name}).get_json()
+            assert ld["success"] and ld["timing"] == "explainer" and len(ld["sentences"]) == 6 and not posts, ld
+            assert ld["voice"]["voice_id"] == "voiceABC123" and ld["explainers"] == [pid] and ld["history"] == []
+            assert mp3.with_name(mp3.stem + ".words.json").is_file()
+            assert c.post("/api/elevenlabs/fix/load", json={"title": title, "file": name}).get_json()["timing"] == "explainer"
+
+            req = {"title": title, "file": name, "first": 2, "last": 3, "voice_id": "voiceABC123", "model_id": "eleven_v4",
+                   "similarity": 0.8, "clone_strength": 0.6}
+            assert c.post("/api/elevenlabs/fix/take", json={**req, "first": 4, "last": 9}).status_code == 400
+            assert c.post("/api/elevenlabs/fix/take", json={**req, "voice_id": "../x"}).status_code == 400
+
+            # A take: only the picked sentences are read, with two sentences each side as context.
+            tk = c.post("/api/elevenlabs/fix/take", json=req).get_json()
+            assert tk["success"], tk
+            url, body = posts[-1]
+            assert url.endswith("/v1/text-to-speech/voiceABC123") and body["text"] == "Word2a word2b. Word3a word3b."
+            assert body["previous_text"] == "Word0a word0b. Word1a word1b." and body["next_text"] == "Word4a word4b. Word5a word5b."
+            assert body["model_id"] == "eleven_v4" and body["voice_settings"]["clone_strength"] == 0.6
+            assert "previous_request_ids" not in body and tk["chars"] == len(body["text"])
+            assert 1.04 < tk["ratio"] < 1.15 and 6.0 < tk["gain_db"] < 10.0, tk
+            assert tk["start"] < s0 and tk["end"] > e1 and tk["start"] > words[3]["end"] and tk["end"] < words[8]["start"], tk
+            folder = vo / "fixes" / mp3.stem
+            cand = folder / f"take_{tk['take']}.mp3"
+            assert mp3.read_bytes() == original and cand.is_file()          # nothing changes until it is kept
+            for part in ("before", "after"):
+                r = c.get(tk[part])
+                assert r.status_code == 200 and r.mimetype == "audio/mpeg" and len(r.data) > 1000, part
+            assert c.get(tk["before"].replace("part=before", "part=../x")).status_code == 404
+
+            # Same length; the old reading outside the section; the new one (660 Hz) in its place at the old loudness.
+            a, b = pcm(mp3), pcm(cand)
+            assert abs(len(a) - len(b)) / SR < 0.03, (len(a), len(b))
+            for tw in (words[2]["start"] + 0.2, words[9]["start"] + 0.2, words[10]["start"] + 0.2):
+                assert power(b, tw, 440) > 20 * power(b, tw, 660), tw
+            for tw in (s0 + 0.05, words[6]["start"] + 0.15):
+                assert power(b, tw, 660) > 20 * power(b, tw, 440) and power(a, tw, 440) > 20 * power(a, tw, 660), tw
+            assert power(b, (words[5]["end"] + words[6]["start"]) / 2, 660) < power(b, s0 + 0.15, 660) / 50
+            old_l = web_gui._eleven_fix_lufs(mp3, s0, e1)
+            new_l = web_gui._eleven_fix_lufs(cand, s0, e1)
+            assert abs(old_l - new_l) < 1.5, (old_l, new_l)
+
+            # Too long to fit in its place: refused with a plain message; the old take is replaced only by a new one.
+            mode["long"] = True
+            r = c.post("/api/elevenlabs/fix/take", json=req)
+            assert r.status_code == 400 and "too much to fit" in r.get_json()["error"], r.get_json()
+            mode["long"] = False
+            # A model that takes no surrounding text: read again without it.
+            mode["reject_context"] = True
+            n0 = len(posts)
+            tk = c.post("/api/elevenlabs/fix/take", json=req).get_json()
+            assert tk["success"] and len(posts) == n0 + 2 and "previous_text" not in posts[-1][1], tk
+            mode["reject_context"] = False
+            assert len(list(folder.glob("take_*.mp3"))) == 4             # only the newest take: mix, raw, before, after
+
+            # An Explainer job running on this MP3: the fix waits.
+            xv._job_set(pid, status="running")
+            try:
+                r = c.post("/api/elevenlabs/fix/apply", json={"title": title, "file": name, "take": tk["take"]})
+                assert r.status_code == 409 and "Explainer" in r.get_json()["error"]
+            finally:
+                xv._job_set(pid, status="done")
+
+            # Keep it: the MP3 gets the take, the old one is kept, the Explainer gets the new narration.
+            cand_bytes = (folder / f"take_{tk['take']}.mp3").read_bytes()
+            ap = c.post("/api/elevenlabs/fix/apply", json={"title": title, "file": name, "take": tk["take"]}).get_json()
+            assert ap["success"] and ap["n"] == 1 and ap["explainers"] == [pid], ap
+            assert mp3.read_bytes() == cand_bytes and (folder / "before_fix_01.mp3").read_bytes() == original
+            assert [c_["n"] for c_ in ap["clips"]] == [2] and ap["clips"][0]["name"] == "clip_02.mp4", ap["clips"]
+            assert [h["first"] for h in ap["history"]] == [2] and not list(folder.glob("take_*"))
+            assert (pdir / "narration.wav").is_file() and (pdir / "narration.m4a").is_file()
+            pj = _json.loads((pdir / "project.json").read_text())
+            assert pj["loudness"]["target_lufs"] == -14.0 and abs(xv.media_seconds(pdir / "narration.wav") - dur) < 0.05
+            assert c.post("/api/elevenlabs/fix/apply", json={"title": title, "file": name, "take": tk["take"]}).status_code == 404
+            f = c.get("/api/elevenlabs/fix/files?title=" + title).get_json()
+            assert f["files"][0]["fixes"] == 1
+            assert c.post("/api/elevenlabs/fix/load", json={"title": title, "file": name}).get_json()["history"][0]["n"] == 1
+
+            # A take made before the MP3 changed can't be kept.
+            tk2 = c.post("/api/elevenlabs/fix/take", json={**req, "first": 0, "last": 0}).get_json()
+            assert tk2["success"] and tk2["start"] == 0.0, tk2
+            os.utime(mp3, (1_700_000_000, 1_700_000_000))
+            assert c.post("/api/elevenlabs/fix/apply", json={"title": title, "file": name, "take": tk2["take"]}).status_code == 409
+
+            # Undo: the MP3 from before the fix, and the Explainer narration made from it again.
+            un = c.post("/api/elevenlabs/fix/undo", json={"title": title, "file": name}).get_json()
+            assert un["success"] and un["undone"] == 1 and un["history"] == [] and un["explainers"] == [pid], un
+            assert mp3.read_bytes() == original and not (folder / "before_fix_01.mp3").exists()
+            assert c.post("/api/elevenlabs/fix/undo", json={"title": title, "file": name}).status_code == 400
+        finally:
+            (web_gui._get_run_output_dir, web_gui.requests.post, web_gui._eleven_key, web_gui._eleven_voice_settings,
+             web_gui.time.sleep) = keep
+            with xv._PROJECTS_LOCK:
+                xv._PROJECTS.pop(str(pdir.resolve()), None)
+
+    import inspect  # noqa: PLC0415
+    assert ".voice.json" in inspect.getsource(web_gui._eleven_run)          # new voiceovers record their voice
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    for s_ in ('id="elFixWrap"', "async function elFixTake(", "/api/elevenlabs/fix/apply", "/api/elevenlabs/fix/undo",
+               "function _elFixDoneText(", "Make HeyGen clips"):
+        assert s_ in html, s_
+    return ("sentences from word times; take = picked sentences + context (fallback without), fitted ~x1.09 and +8 dB "
+            "to the old loudness at the same length, 660 Hz only in its place; too long refused; kept with a backup, "
+            "Explainer narration redone and the overlapping presenter clip named; stale take and running job refused; undo")
+
+
+@check("Explainer clips: upload your own video (a recorded demo) next to YouTube downloads, use the whole of it or cut a part, and frame a clip in the right or left half (or full screen)")
+def _():
+    import io as _io
+    import json as _json
+    import shutil
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        return "skipped: no ffmpeg"
+    title, pid = "Demo Talk", "20261122_150000_0d0d"
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = d / "out" / "explainer" / pid
+        proj.mkdir(parents=True)
+        (proj / "project.json").write_text(_json.dumps({"title": title}))
+        demo = d / "demo.mp4"
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1280x800:rate=30:duration=2",
+                        "-f", "lavfi", "-i", "sine=duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                        "-shortest", str(demo)], check=True)
+        keep = web_gui._get_run_output_dir
+        try:
+            web_gui._get_run_output_dir = lambda t, create=True: d / "out"
+            c = web_gui.app.test_client()
+
+            def up(name, data):
+                return c.post(f"/api/explainer/{pid}/video", data={"title": title, "file": (_io.BytesIO(data), name)},
+                              content_type="multipart/form-data")
+            assert up("notes.txt", b"hello").status_code == 400
+            r = up("broken.mp4", b"not really a video")
+            assert r.status_code == 400 and "Can't read broken.mp4" in r.get_json()["error"], r.get_json()
+            r = up("My screen demo.mp4", demo.read_bytes())
+            j = r.get_json()
+            assert r.status_code == 200 and j["success"], j
+            v = next(x for x in j["youtube"]["videos"] if x["id"] == j["video"])
+            assert v["source"] == "upload" and v["title"] == "My screen demo.mp4" and abs(v["seconds"] - 2) < 0.1, v
+            assert (v["width"], v["height"]) == (1280, 800) and v["has_audio"] and v["ready"], v
+            media = proj / "working" / "media"
+            assert sorted(p.name for p in media.iterdir()) == [f"{v['id']}.mp4"], list(media.iterdir())   # no .part left over
+
+            # The whole video as one clip; framed on the right by default; left, full screen.
+            r = c.post(f"/api/explainer/{pid}/youtube", json={"title": title, "action": "clip", "video": v["id"],
+                                                                "start": "0", "end": f"{v['seconds']:.2f}", "label": "demo"}).get_json()
+            assert r["success"], r
+            clip = r["youtube"]["clips"][0]
+            assert clip["place"] == "right" and abs(clip["seconds"] - v["seconds"]) < 0.05 and clip["has_audio"], clip
+            r = c.post(f"/api/explainer/{pid}/youtube", json={"title": title, "action": "place", "id": clip["id"], "place": "left"}).get_json()
+            assert r["success"] and r["youtube"]["clips"][0]["place"] == "left"
+            bad = c.post(f"/api/explainer/{pid}/youtube", json={"title": title, "action": "place", "id": clip["id"], "place": "top"})
+            assert bad.status_code == 400
+            r = c.post(f"/api/explainer/{pid}/youtube", json={"title": title, "action": "remove_video", "id": v["id"]}).get_json()
+            assert r["success"] and not r["youtube"]["videos"] and not r["youtube"]["clips"] and not list(media.iterdir())
+        finally:
+            web_gui._get_run_output_dir = keep
+            import explainer_video as _xvm  # noqa: PLC0415
+            with _xvm._PROJECTS_LOCK:
+                _xvm._PROJECTS.pop(str(proj.resolve()), None)
+    return "upload read by ffprobe (1280x800, 2 s, audio), bad files refused with nothing left behind; whole-video clip framed right, then left; removal deletes the files"
+
+
+@check("Explainer: Regenerate test clip makes a new plan and slides in the same project (same or new stretch); logos, values and clips stay, a clip moves to the slide at the same moment")
+def _():
+    import json as _json
+    import tempfile
+    from pathlib import Path
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+    import explainer_video as xv  # noqa: PLC0415
+    title, pid = "Regen Talk", "20261122_160000_0e0e"
+    sentences = [f"Sentence number {i} says something useful here." for i in range(40)]
+    words, t = [], 0.0
+    for sent in sentences:
+        for w in sent.split():
+            words.append({"text": w, "start": round(t, 2), "end": round(t + 0.3, 2)})
+            t += 0.35
+        t += 0.4
+    total = round(t, 2)
+    sec = lambda i, extra="": (f'<section id="s{i:02d}" data-at="Sentence number {i} says" data-kind="slide"{extra}>'  # noqa: E731
+                               f'<h1 class="h1">Slide {i}</h1></section>')
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = d / "out" / "explainer" / pid
+        (proj / "versions").mkdir(parents=True)
+        (proj / "working" / "media").mkdir(parents=True)
+        (proj / "working" / "media" / "yc_a.mp4").write_bytes(b"x")
+        (proj / "words.json").write_text(_json.dumps(words))
+        (proj / "versions" / "v001.html").write_text("\n\n".join(sec(i) for i in (0, 2, 4)))
+        clip = {"id": "yc_a", "video": "yt_v", "file": "working/media/yc_a.mp4", "start": 0, "end": 3, "seconds": 3,
+                "status": "ready", "slide": "s02", "place": "right", "audio": "mute"}
+        (proj / "project.json").write_text(_json.dumps({
+            "title": title, "audio_seconds": total, "current": 1, "span": [0.0, 30.0],
+            "versions": [{"n": 1, "kind": "build", "note": "", "slides": 3}],
+            "logos": {"acme": {"name": "Acme", "file": "acme.png", "source": "acme.png", "recolor": "auto"}},
+            "values": {"peak": {"status": "confirmed", "value": "10%"}},
+            "youtube": {"videos": [{"id": "yt_v", "status": "ready", "file": "working/media/v.mp4"}], "clips": [clip]}}))
+        p = xv.open_project(proj)
+        m2 = {m["id"]: m for m in p.compile()["slides"]}["s02"]
+        mid = (m2["t0"] + m2["t1"]) / 2
+        calls = []
+        keep = (xv.plan_video, xv.build_slides, web_gui._get_run_output_dir, web_gui._get_anthropic_client, xv.regenerate_test)
+        try:
+            xv.plan_video = lambda proj_, client, cancel, status, log: calls.append(("plan", proj_.span())) or {}
+            # The new take: other slide ids, one of which starts just before the clip's moment.
+            xv.build_slides = lambda proj_, client, cancel, status, log, feedback="", kind="build": (
+                calls.append(("build", feedback)) or [{"id": i, "raw": sec(int(i[1:]))} for i in ("s00", "s01", "s03")])
+            r = xv.regenerate_test(p, object(), None, lambda *a, **k: None, lambda *a, **k: None, start=0, minutes=0.6,
+                                   notes="More charts")
+            assert r["version"] == 2 and p.data["current"] == 2 and calls == [("plan", p.span()), ("build", "More charts")], calls
+            assert p.span()[0] == 0 and 30 < p.span()[1] < 42, p.span()
+            assert p.data["versions"][-1]["note"].startswith("Test clip regenerated, 0:00–") and "More charts" in p.data["notes"]
+            assert p.data["logos"]["acme"]["file"] == "acme.png" and p.data["values"]["peak"]["value"] == "10%"
+            new = {m["id"]: m for m in p.compile()["slides"]}
+            moved = xv.load_youtube(p.data)["clips"][0]["slide"]
+            assert moved in new and new[moved]["t0"] <= mid < new[moved]["t1"] and moved != "s02", (moved, mid, new)
+            # A new stretch: the clip's moment falls outside it, so the clip waits unassigned.
+            r = xv.regenerate_test(p, object(), None, lambda *a, **k: None, lambda *a, **k: None, start=60, minutes=0.5)
+            assert p.span()[0] >= 55 and xv.load_youtube(p.data)["clips"][0]["slide"] == "" and r["version"] == 3
+            try:
+                xv.regenerate_test(p, object(), None, lambda *a, **k: None, lambda *a, **k: None, start=0, minutes=10)
+                raise AssertionError("a test clip as long as the narration was accepted")
+            except RuntimeError as e:
+                assert "whole narration" in str(e)
+
+            # The route: checks the numbers, starts a job with them.
+            got = []
+            web_gui._get_run_output_dir = lambda t_, create=True: d / "out"
+            web_gui._get_anthropic_client = lambda timeout=60.0: object()
+            xv.regenerate_test = lambda proj_, client, cancel, status, log, **kw: got.append(kw) or {"message": "ok"}
+            c = web_gui.app.test_client()
+            for bad in ({"start": -1}, {"minutes": 0.1}, {"minutes": 11}, {"start": "x"}, {"start": total + 10}):
+                assert c.post(f"/api/explainer/{pid}/regenerate", json={"title": title, **bad}).status_code == 400, bad
+            r = c.post(f"/api/explainer/{pid}/regenerate", json={"title": title, "start": 12, "minutes": 1.5, "notes": " punchier "}).get_json()
+            assert r["success"], r
+            for _ in range(100):
+                if xv.job_status(pid).get("status") != "running":
+                    break
+                __import__("time").sleep(0.05)
+            assert got == [{"start": 12.0, "minutes": 1.5, "notes": "punchier"}], got
+        finally:
+            (xv.plan_video, xv.build_slides, web_gui._get_run_output_dir, web_gui._get_anthropic_client, xv.regenerate_test) = keep
+            with xv._PROJECTS_LOCK:
+                xv._PROJECTS.pop(str(proj.resolve()), None)
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert "🔁 Regenerate test clip" in html and "async function xvRegenerate(" in html and "_xvApi('/regenerate')" in html
+    return "new version with a new plan and slides, notes kept; logos and values untouched; the clip moved to the new slide at its moment, unassigned when outside a new stretch; whole-narration refused; route checks start/length"
+
+
+@check("HeyGen presenter planned on the storyboard first: Claude and sections place it before any clip exists (stand-in in the preview, 4K render gated); then clips are made for only those stretches (cut from the ElevenLabs MP3, padded, merged, rendered side by side into heygen/), placed where they were cut and upscaled with Topaz")
+def _():
+    import io as _io
     import json as _json
     import shutil
     import subprocess
@@ -1740,13 +2311,67 @@ def _():
     from pathlib import Path
     os.environ.setdefault("PORT", "0")
     import web_gui  # noqa: PLC0415
+    import explainer_video as xv  # noqa: PLC0415
+    from PIL import Image
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         raise AssertionError("ffmpeg/ffprobe are needed for this check (brew install ffmpeg)")
-    key = "sk_V2_test_heygen_WXYZ9876"
     TPL, LOOK = "92c09f8e9a1c4f078f7ae53886b7ad80", "5fdf87555a1c4320932077baa2c62c37"
-    calls = []
-    mode = {"status": {}, "engines": ["avatar_v", "avatar_iv"], "busy": 0, "made": 0}
+    sents = ["AI stocks lost about two point three trillion dollars in one day.",
+             "Your index fund probably paid for part of that drop too.",
+             "The Nasdaq one hundred fell six point three six percent by the close.",
+             "Here is what that means for the money in your retirement account.",
+             "First, a correction is a fall of ten percent from a recent peak.",
+             "A bear market is a fall of twenty percent or more from that peak.",
+             "So far this is a correction and not a bear market at all.",
+             "Here is your checklist for the week ahead so you can stay calm."]
+    spoken, dur = " ".join(sents), 40.0
+    plan = {"summary": "S.", "sections": [{"key": "c1", "label": "One bad day"}],
+            "slides": [{"id": "s01", "section": "c1", "kind": "slide", "at": "AI stocks lost about", "idea": "a", "logos": [], "host": "none"},
+                       {"id": "s02", "section": "c1", "kind": "slide", "at": "Here is what that means", "idea": "b", "logos": [], "host": "right"},
+                       {"id": "s03", "section": "c1", "kind": "slide", "at": "First, a correction is", "idea": "c", "logos": [], "host": "none"}],
+            "logos": [], "figures": [], "inserts": [], "questions": [], "dropped": []}
+    markup = {
+        "s01": '<section id="s01" data-at="AI stocks lost about" data-kind="slide" data-section="c1"><h2 class="h2">Lost</h2></section>',
+        "s02": '<section id="s02" data-at="Here is what that means" data-kind="slide" data-section="c1" data-host="right"><h1 class="h1" style="position:absolute;left:160px;top:300px">Your account</h1></section>',
+        "s03": '<section id="s03" data-at="First, a correction is" data-kind="slide" data-section="c1"><h2 class="h2">Correction</h2></section>'}
+    calls, hg = [], []
+
+    def hg_posts(log):
+        return [x for x in log if x[0] == "POST"]
+
+    class _O:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    class _Stream:
+        def __init__(self, text):
+            self.text = text
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def __iter__(self):
+            yield _O(type="message_start")
+            yield _O(type="content_block_delta", delta=_O(type="text_delta", text=self.text))
+        def get_final_message(self):
+            return _O(stop_reason="end_turn", content=[_O(type="text", text=self.text)],
+                      usage=_O(input_tokens=100, output_tokens=200, cache_creation_input_tokens=0, cache_read_input_tokens=0))
+
+    class _Messages:
+        def stream(self, **kw):
+            calls.append(kw)
+            task = kw["messages"][0]["content"][-1]["text"]
+            if "format" in kw["output_config"]:
+                return _Stream(_json.dumps(plan))
+            if task.startswith("TASK: WRITE SLIDES"):
+                return _Stream("\n".join(markup[i] for i in re.findall(r"^(s\d+) \(", task, re.M)))
+            raise AssertionError("unexpected Claude call")
+
+    client = _O(beta=_O(messages=_Messages()))
+    buf = _io.BytesIO()
+    Image.new("RGB", (64, 64), (200, 120, 90)).save(buf, "JPEG")
+    avatar_jpg = buf.getvalue()
 
     class _R:
         def __init__(self, status, body=None, content=b""):
@@ -1757,250 +2382,234 @@ def _():
         def raise_for_status(self):
             if self.status_code >= 400:
                 raise web_gui.requests.exceptions.HTTPError(response=self)
-        def iter_content(self, chunk_size=1):
-            yield self.content[:3]
-            yield self.content[3:]
-        def __enter__(self):
-            return self
-        def __exit__(self, *a):
-            return False
 
-    template = {"data": {"id": TPL, "name": "Roz in Black Template", "aspect_ratio": "16:9", "variables": {},
-                         "composition": {"scenes": [{"background": {"color": "#FFFFFF", "type": "color"},
-                                                     "elements": [{"type": "avatar", "avatar_id": LOOK, "engine": "avatar_v"}]}]}}}
+    assets, videos = {}, {}
 
-    def fake_get(url, params=None, headers=None, timeout=None, stream=False):
-        calls.append(("GET", url, dict(headers or {}), None))
+    def fake_get(url, params=None, headers=None, timeout=None, stream=False, **kw):
+        hg.append(("GET", url, None))
         if url.endswith("/v3/templates"):
-            return _R(200, {"data": [{"id": TPL, "name": "Roz in Black Template"}, {"id": "emptytpl01", "name": "No avatar"}],
-                            "has_more": False})
+            return _R(200, {"data": [{"id": TPL, "name": "Roz in Black Template"}], "has_more": False})
         if url.endswith(f"/v3/templates/{TPL}"):
-            return _R(200, template)
-        if url.endswith("/v3/templates/emptytpl01"):
-            return _R(200, {"data": {"id": "emptytpl01", "name": "No avatar", "composition": {"scenes": [{"elements": []}]}}})
+            return _R(200, {"data": {"id": TPL, "name": "Roz in Black Template", "aspect_ratio": "16:9", "composition": {"scenes": [
+                {"background": {"color": "#FFFFFF", "type": "color"}, "elements": [{"type": "avatar", "avatar_id": LOOK, "engine": "avatar_v"}]}]}}})
         if url.endswith(f"/v3/avatars/looks/{LOOK}"):
-            return _R(200, {"data": {"id": LOOK, "name": "Black Outfit 4K", "avatar_type": "digital_twin",
-                                     "supported_api_engines": mode["engines"], "preview_image_url": "https://x/p.jpg"}})
+            return _R(200, {"data": {"id": LOOK, "name": "Black Outfit 4K", "supported_api_engines": ["avatar_v"],
+                                     "preview_image_url": "https://img.heygen/look.jpg"}})
+        if url == "https://img.heygen/look.jpg":
+            return _R(200, content=avatar_jpg)
         if "/v3/videos/" in url:
             vid = url.rsplit("/", 1)[1]
-            script = mode["status"].setdefault(vid, ["processing", "completed"])
-            st = script.pop(0) if script else "completed"
-            if st == "failed":
-                return _R(200, {"data": {"status": "failed", "failure_message": "Audio too quiet"}})
-            return _R(200, {"data": {"status": st, "video_url": f"https://cdn.heygen/{vid}.mp4" if st == "completed" else None}})
-        if url.startswith("https://cdn.heygen/"):
-            assert stream
-            return _R(200, content=b"MP4-" + url.rsplit("/", 1)[1].encode())
+            return _R(200, {"data": {"status": "completed", "video_url": f"https://cdn.heygen/{vid}.mp4"}})
         return _R(404, {"error": {"message": "nope"}})
 
     def fake_post(url, headers=None, json=None, files=None, timeout=None):
-        calls.append(("POST", url, dict(headers or {}), json if json is not None else
-                      {k: (v[0], v[2]) for k, v in (files or {}).items()}))
         if url.endswith("/v3/assets"):
-            return _R(200, {"data": {"asset_id": f"asset{sum(c[1].endswith('/v3/assets') for c in calls)}"}})
+            aid = f"asset{len(assets) + 1}"
+            assets[aid] = Path(files["file"][1].name)
+            hg.append(("POST", url, files["file"][0]))
+            return _R(200, {"data": {"asset_id": aid}})
         if url.endswith("/v3/videos"):
-            if mode["busy"]:
-                mode["busy"] -= 1
-                return _R(429, {"error": {"message": "Too many concurrent videos"}})
-            mode["made"] += 1
-            return _R(200, {"data": {"video_id": f"vid{mode['made']}", "status": "waiting"}})
+            vid = f"vid{len(videos) + 1}"
+            videos[vid] = json
+            hg.append(("POST", url, json))
+            return _R(200, {"data": {"video_id": vid}})
         return _R(404, {"error": {"message": "nope"}})
 
-    def wait_job(c, job_id):
-        for _ in range(1000):
-            s = c.get(f"/api/heygen/audio-video/{job_id}").get_json()
-            if s.get("status") != "running":
+    def fake_download(url, out_path):
+        # HeyGen's video: the avatar (colour bars here) speaking the uploaded MP3, as long as the audio.
+        audio = assets[videos[url.rsplit("/", 1)[1][:-4]]["audio_asset_id"]]
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "smptebars=s=640x360:r=25", "-i", str(audio),
+                        "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+                        str(out_path)], check=True)
+
+    def wait(c, pid):
+        for _ in range(4000):
+            s = c.get(f"/api/explainer/{pid}?title=Talk").get_json()
+            if (s.get("job") or {}).get("status") != "running":
                 return s
-            _thr.Event().wait(0.02)
-        raise AssertionError("HeyGen job never finished")
+            _thr.Event().wait(0.05)
+        raise AssertionError("explainer job never finished")
 
-    def tone(path, seconds):
-        # 4.4 s of tone, then a 0.6 s pause, every 5 s: the pauses are where cuts may go.
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
-                        f"aevalsrc='if(lt(mod(t,5),4.4),0.5*sin(2*PI*300*t),0)':s=44100:d={seconds}",
-                        "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k", str(path)], check=True)
+    topaz = []
 
-    def posts(suffix):
-        return [x for x in calls if x[0] == "POST" and x[1].endswith(suffix)]
+    def fake_presenter_topaz(proj, key, root, status, cancel, log, names=None, model=xv.TOPAZ_MODEL):
+        topaz.append((key, sorted(names or []), model))
+        return {"message": f"{len(names or [])} clip(s) upscaled with Topaz {xv.TOPAZ_MODELS[model]['label']}"}
 
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
-        vo = d / "out" / "voiceover"
-        vo.mkdir(parents=True)
-        (vo / "older.mp3").write_bytes(b"\xff" * 16000)        # unreadable: length estimated at 128 kbps
-        short, long_ = vo / "Talk_elevenlabs_Roz_1.mp3", vo / "Talk_elevenlabs_Roz_2.mp3"
-        tone(short, 10)
-        tone(long_, 30)
-        for i, p in enumerate((vo / "older.mp3", short, long_)):
-            os.utime(p, (1000 + i, 1000 + i))
-        keep = (web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._get_run_output_dir, web_gui.requests.get,
-                web_gui.requests.post, web_gui.time.sleep, os.environ.get("HEYGEN_API_KEY"), web_gui.HEYGEN_AUDIO_MAX_BYTES,
-                web_gui._video_frames, web_gui._plan_clip_cuts)
+        out = d / "out"
+        (out / "voiceover").mkdir(parents=True)
+        mp3 = out / "voiceover" / "Talk_elevenlabs_Roz_1.mp3"
+        expr = "0.5*sin(2*PI*190*t)*gt(sin(2*PI*0.83*t)+sin(2*PI*2.31*t+1.3)+sin(2*PI*0.29*t+0.4),0.2)*lt(mod(t,5),4.6)"
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"aevalsrc='{expr}':s=44100:d={dur}",
+                        "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k", str(mp3)], check=True)
+        mp3.with_suffix(".txt").write_text(spoken, encoding="utf-8")
+        keep = (web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._get_run_output_dir, web_gui._get_anthropic_client, web_gui._eleven_key,
+                web_gui._heygen_key, web_gui._topaz_key, web_gui._hg_download, web_gui.requests.get, web_gui.requests.post,
+                web_gui._HG_AUDIO_POLL_SECONDS, xv.align_words, xv.presenter_topaz, os.environ.get("ANTHROPIC_API_KEY"))
         try:
             settings = d / "settings.json"
-            settings.write_text("{}")
+            settings.write_text(_json.dumps({"heygen_audio_template_id": TPL, "heygen_audio_resolution": "1080p"}))
             web_gui.SCRIPTCRAFT_SETTINGS_PATH = settings
-            web_gui._get_run_output_dir = lambda title, create=True: d / "out"
+            web_gui._get_run_output_dir = lambda title, create=True: out
+            web_gui._get_anthropic_client = lambda timeout=60.0: client
+            web_gui._eleven_key = lambda: "sk_test_eleven"
+            web_gui._heygen_key = lambda: "hg-test-key-123456"
+            web_gui._topaz_key = lambda: "tpz-test-key-4321"
+            web_gui._hg_download = fake_download
             web_gui.requests.get, web_gui.requests.post = fake_get, fake_post
-            web_gui.time.sleep = lambda s: None
-            os.environ.pop("HEYGEN_API_KEY", None)
+            web_gui._HG_AUDIO_POLL_SECONDS = 0
+            # Timed like real narration: one sentence every 5 s, then a half-second pause.
+            xv.align_words = lambda audio, text, key, timeout=900: ([
+                {"text": w_, "start": round(5 * i + 4.5 * k / len(sn.split()), 3),
+                 "end": round(5 * i + 4.5 * (k + 0.8) / len(sn.split()), 3)}
+                for i, sn in enumerate(sents) for k, w_ in enumerate(sn.split())], 0.1)
+            xv.presenter_topaz = fake_presenter_topaz
+            os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test"
             c = web_gui.app.test_client()
+            o = c.get("/api/explainer/options?title=Talk").get_json()
+            assert o["heygen"] is True, o
 
-            o = c.get("/api/heygen/audio-video/options?title=Talk").get_json()
-            assert o["needs_key"] and [f["name"] for f in o["voiceovers"]] == [long_.name, short.name, "older.mp3"], o
-            settings.write_text(_json.dumps({"heygen_api_key": key}))
+            # 1. Plan the presenter: Claude plans with it (seeing the template's avatar) before any clip exists.
+            r = c.post("/api/explainer/start", json={"title": "Talk", "voiceover": mp3.name, "script": "**Host:**\n" + spoken,
+                                                     "presenter": "heygen", "share": "some"}).get_json()
+            pid = r["project"]
+            s = wait(c, pid)
+            assert s["job"]["status"] == "done", s["job"]
+            h = s["host"]
+            assert h["planned"] and h["parts"] == [] and h["still"] == "host/still.jpg" and not hg_posts(hg), h
+            ctx = " ".join(b.get("text", "") for b in calls[0]["messages"][0]["content"] if b.get("type") == "text")
+            assert "is made after this storyboard" in ctx and "The presenter avatar:" in ctx
+            assert any(b.get("type") == "image" for b in calls[0]["messages"][0]["content"])
+            win = next(w for w in s["host_windows"] if w["layout"] == "right")
+            s02 = {m["id"]: m for m in s["slides"]}["s02"]
+            assert abs(win["t0"] - s02["t0"]) < 0.06 and win["t1"] > s02["t1"], (win, s02)
+            assert h["missing"] == [[round(win["t0"], 2), round(min(win["t1"], s["audio_seconds"]), 2)]], (h["missing"], win)
+            need = [x for x in s["outstanding"] if x["type"] == "presenter"]
+            assert len(need) == 1 and need[0]["slides"] == ["s02"], s["outstanding"]
+            page = c.get(f"/api/explainer/{pid}/preview?title=Talk").get_data(as_text=True)
+            assert '"missing": [[0.0, 1000000000.0]]' in page and '"video": null' in page
 
-            o = c.get("/api/heygen/audio-video/options?title=Talk")
-            oj = o.get_json()
-            assert oj["success"] and [t["name"] for t in oj["templates"]] == ["Roz in Black Template", "No avatar"]
-            secs = {f["name"]: f["seconds"] for f in oj["voiceovers"]}
-            assert abs(secs[long_.name] - 30) < 0.1 and abs(secs[short.name] - 10) < 0.1 and secs["older.mp3"] == 1, secs
-            assert (oj["heygen_fps"], oj["count_fps"], oj["max_frames"], oj["max_frames_range"]) == (25, 30, 9000, [250, 108000])
-            assert 30 in oj["count_fps_choices"] and 25 in oj["count_fps_choices"] and key not in o.get_data(as_text=True)
+            # 2. A section placed before any clip: allowed, with a note; it adds a stretch to make.
+            r = c.post(f"/api/explainer/{pid}/sections", json={"title": "Talk", "sections": [{"t0": 36.0, "t1": 38.5, "layout": "left"}]}).get_json()
+            assert r["success"] and "make the HeyGen clips once the storyboard is set" in r["warning"], r.get("warning")
+            gaps = [tuple(x) for x in r["host"]["missing"]]
+            assert gaps[-1] == (36.0, 38.5) and len(gaps) == 2, gaps
+            spans = r["host"]["clip_spans"]
+            tl = xv.open_project(out / "explainer" / pid).timeline()
+            assert spans == [list(x) for x in xv.clip_spans(gaps, r["audio_seconds"], timeline=tl)] and len(spans) == 2, spans
+            # Whole sentences: s02's window runs into "First, a correction ..." (its exit fade), so the clip
+            # takes that sentence to its end; the section's clip starts in the pause before its sentence.
+            assert not [x for a_, b_ in spans for x in (a_, b_) for w in tl.words if w["start"] < x < w["end"]], spans
+            sen = tl.sentences()
+            assert sen[2][1] < spans[0][0] <= sen[3][0] and sen[4][1] <= spans[0][1] < sen[5][0], (spans, sen)
+            assert sen[6][1] < spans[1][0] <= sen[7][0] and spans[1][1] >= sen[7][1], (spans, sen)
 
-            a = c.get(f"/api/heygen/template-avatar/{TPL}").get_json()
-            assert a["avatar_id"] == LOOK and a["avatar_name"] == "Black Outfit 4K" and a["engine"] == "avatar_v"
-            assert a["background"] == {"type": "color", "value": "#FFFFFF"} and a["aspect_ratio"] == "16:9"
-            assert "no avatar" in c.get("/api/heygen/template-avatar/emptytpl01").get_json()["error"]
-            assert c.get("/api/heygen/template-avatar/..%2Fx").status_code in (400, 404)
+            # 3. Templates for the clips; the quote names the stretches and the Topaz credits.
+            ho = c.get("/api/explainer/heygen-options").get_json()
+            assert ho["success"] and ho["template_id"] == TPL and ho["topaz"] and "hg-test-key" not in _json.dumps(ho), ho
+            q = c.post(f"/api/explainer/{pid}/heygen-make", json={"title": "Talk", "upscale": True}).get_json()["quote"]
+            assert q["spans"] == spans and q["label"] == "Starlight Precise 2.6" and q["credits"] == sum(
+                xv.topaz_quote(b - a, 25)["credits"] for a, b in spans), q
+            assert not hg_posts(hg)
+            bad = c.post(f"/api/explainer/{pid}/heygen-make", json={"title": "Talk", "confirm": True, "template_id": "../x"})
+            assert bad.status_code == 400
 
-            base = {"title": "Talk", "template_id": TPL, "resolution": "1080p"}
-            for bad in ("../older.mp3", "older.wav", "missing.mp3", ""):
-                assert c.post("/api/heygen/audio-video", json={**base, "voiceover": bad}).status_code == 400, bad
-            assert c.post("/api/heygen/audio-video", json={**base, "voiceover": short.name, "resolution": "8k"}).status_code == 400
-            for bad in ({"max_frames": 100}, {"max_frames": 200000}, {"max_frames": "abc"}, {"fps": 31}, {"fps": "x"}):
-                assert c.post("/api/heygen/audio-video", json={**base, "voiceover": short.name, **bad}).status_code == 400, bad
-                q = {"title": "Talk", "voiceover": short.name, **bad}
-                assert c.get("/api/heygen/audio-video/plan", query_string=q).status_code == 400, bad
-            web_gui.HEYGEN_AUDIO_MAX_BYTES = 1000                  # one whole-file video must fit HeyGen's upload limit
-            assert c.post("/api/heygen/audio-video", json={**base, "voiceover": short.name}).status_code == 400
-            web_gui.HEYGEN_AUDIO_MAX_BYTES = keep[6]
+            # 4. Make them: only those stretches of the MP3 go to HeyGen; each clip lands where it was cut; Topaz follows.
+            r = c.post(f"/api/explainer/{pid}/heygen-make", json={"title": "Talk", "confirm": True, "template_id": TPL,
+                                                                  "resolution": "1080p", "upscale": True}).get_json()
+            assert r["success"], r
+            s = wait(c, pid)
+            assert s["job"]["status"] == "done" and "2 HeyGen clip(s) made and placed" in s["job"]["message"], s["job"]
+            ups = [x[2] for x in hg if x[0] == "POST" and x[1].endswith("/v3/assets")]
+            assert len(ups) == 2 and all(re.fullmatch(r"Talk_presenter_\d{8}_\d{6}_0[12]_at0m(14|34)s\.mp3", u) for u in ups), ups
+            for (a, b), u in zip(spans, ups):
+                secs = web_gui._audio_seconds(out / "voiceover" / "clips" / u)
+                assert abs(secs - (b - a)) < 0.1, (u, secs, a, b)
+            bodies = [x[2] for x in hg if x[0] == "POST" and x[1].endswith("/v3/videos")]
+            assert [b_["title"] for b_ in bodies] == [f"Talk (ElevenLabs audio) presenter {xv.fmt_secs(a)}-{xv.fmt_secs(b)}" for a, b in spans]
+            assert all(b_["avatar_id"] == LOOK and b_["engine"] == {"type": "avatar_v"} and b_["resolution"] == "1080p" for b_ in bodies)
+            h = s["host"]
+            assert h["planned"] and len(h["parts"]) == 2, h
+            for part, (a, b) in zip(h["parts"], spans):
+                assert abs(part["offset"] - a) < 0.06 and part["score"] > 0.9 and part["name"].endswith(".mp4"), (part, a)
+            assert h["missing"] == [] and h["clip_spans"] == [] and not [x for x in s["outstanding"] if x["type"] == "presenter"]
+            man = _json.loads((out / "heygen" / "heygen_videos.json").read_text())
+            assert set(man) == {"vid1", "vid2"} and all((out / "heygen" / v["file"]).is_file() for v in man.values())
+            assert topaz == [("tpz-test-key-4321", sorted(p_["name"] for p_ in h["parts"]), "slp-2.6")], topaz
+            assert _json.loads(settings.read_text())["heygen_audio_template_id"] == TPL
+            page = c.get(f"/api/explainer/{pid}/preview?title=Talk").get_data(as_text=True)
+            assert '"missing": []' in page and "&path=host/proxy.mp4" in page
+            # The preview copy keeps each clip at its time: black in the gap, as long as the last clip's end.
+            proxy = out / "explainer" / pid / "host" / "proxy.mp4"
+            assert abs(xv.probe_video(proxy)["seconds"] - (h["parts"][1]["offset"] + h["parts"][1]["seconds"])) < 0.1, xv.probe_video(proxy)
+            assert c.post(f"/api/explainer/{pid}/heygen-make", json={"title": "Talk", "confirm": True, "template_id": TPL}).status_code == 400
 
-            # 10 s fits in one 9,000-frame video: the MP3 goes up whole, as one video.
-            calls.clear()
-            r = c.post("/api/heygen/audio-video", json={**base, "voiceover": short.name}).get_json()
-            assert r["success"] and r["avatar"] == "Black Outfit 4K" and r["clips"] == 1 and abs(r["audio_seconds"] - 10) < 0.1, r
-            s = wait_job(c, r["job_id"])
-            assert s["status"] == "done" and [p["video_id"] for p in s["parts"]] == ["vid1"], s
-            up = posts("/v3/assets")
-            assert len(up) == 1 and up[0][3] == {"file": (short.name, "audio/mpeg")} and up[0][2]["x-api-key"] == key
-            body = posts("/v3/videos")[0][3]
-            assert body == {"type": "avatar", "avatar_id": LOOK, "audio_asset_id": "asset1", "title": "Talk (ElevenLabs audio)",
-                            "aspect_ratio": "16:9", "resolution": "1080p", "engine": {"type": "avatar_v"},
-                            "background": {"type": "color", "value": "#FFFFFF"}}, body
-            out = Path(s["parts"][0]["path"])
-            assert out.parent == d / "out" / "heygen" and out.name.startswith("Talk_ElevenLabs_") and out.read_bytes() == b"MP4-vid1.mp4"
-            assert not (vo / "clips").exists() and not (d / "out" / "aRoll").exists()
-            v = c.get(f"/api/heygen/audio-video/{r['job_id']}/file")
-            assert v.status_code == 200 and v.mimetype == "video/mp4"
-            v.close()
-
-            # The plan: 30 s with a 300-frame limit is 4 clips counted at 30 fps (9.86 s each at most)
-            # but 3 counted at 25 fps (11.84 s); every clip's frames are under the limit.
-            q = {"title": "Talk", "voiceover": long_.name, "max_frames": 300}
-            p30 = c.get("/api/heygen/audio-video/plan", query_string=q).get_json()
-            p25 = c.get("/api/heygen/audio-video/plan", query_string={**q, "fps": 25}).get_json()
-            assert p30["success"] and p30["fps"] == 30 and len(p30["clips"]) == 4 and p30["in_pauses"], p30
-            assert len(p25["clips"]) == 3 and all(x["frames"] <= 300 for x in p25["clips"] + p30["clips"]), (p25, p30)
-            assert [x["frames"] for x in p30["clips"]] == [web_gui._hg_frames(x["seconds"], 30) for x in p30["clips"]]
-
-            # 30 s with a 300-frame limit at 25 fps → 3 clips, cut in the pauses, rendered side by side.
-            # HeyGen holds one render back once; it starts on the next round.
-            calls.clear()
-            mode.update(busy=1, made=0, status={})
-            web_gui._video_frames = lambda p: (280, 25.0)
-            r = c.post("/api/heygen/audio-video", json={**base, "voiceover": long_.name, "max_frames": 300, "fps": 25}).get_json()
-            assert r["success"] and r["clips"] == 3 and r["max_frames"] == 300 and r["fps"] == 25, r
-            assert [x["end"] for x in r["plan"]] == [x["end"] for x in p25["clips"]], (r["plan"], p25)
-            s = wait_job(c, r["job_id"])
-            parts = s["parts"]
-            assert s["status"] == "done" and [p["status"] for p in parts] == ["done"] * 3, s
-            stem = Path(parts[0]["path"]).stem[:-len("_part1of3")]
-            assert [Path(p["path"]).name for p in parts] == [f"{stem}_part{i}of3.mp4" for i in (1, 2, 3)]
-            assert all(Path(p["path"]).parent == d / "out" / "heygen" for p in parts)
-            assert sorted(Path(p["path"]).read_bytes() for p in parts) == [b"MP4-vid1.mp4", b"MP4-vid2.mp4", b"MP4-vid3.mp4"]
-            assert [p["audio"] for p in parts] == [f"{stem}_part{i}of3.mp3" for i in (1, 2, 3)]
-            assert sorted(x.name for x in (vo / "clips").iterdir()) == [p["audio"] for p in parts]
-            for p in parts:
-                assert p["frames"] <= 300 and p["seconds"] <= 11.84 and p["video_frames"] == 280 and p["heygen_frames"] == 280, p
-            for cut in (parts[0]["end"], parts[1]["end"]):
-                assert 4.4 < cut % 5 < 5.0, f"cut at {cut} is not in a pause"
-            assert parts[0]["start"] == 0 and parts[0]["end"] == parts[1]["start"] and abs(parts[2]["end"] - 30) < 0.1
-            assert abs(sum(p["seconds"] for p in parts) - 30) < 0.15, parts
-            assert [x[3]["file"][0] for x in posts("/v3/assets")] == [p["audio"] for p in parts]
-            titles = [x[3]["title"] for x in posts("/v3/videos")]
-            assert titles == [f"Talk (ElevenLabs audio) part {i} of 3" for i in (1, 2, 3, 1)], titles   # clip 1 retried
-            v = c.get(f"/api/heygen/audio-video/{r['job_id']}/file?part=2")
-            assert v.status_code == 200 and v.mimetype == "video/mp4"
-            v.close()
-            assert c.get(f"/api/heygen/audio-video/{r['job_id']}/file?part=9").status_code == 404
-            saved = _json.loads(settings.read_text())
-            assert (saved["heygen_audio_template_id"], saved["heygen_audio_resolution"], saved["heygen_audio_max_frames"],
-                    saved["heygen_audio_count_fps"]) == (TPL, "1080p", 300, 25)
-
-            # One clip fails at HeyGen: the others are still saved and the error names the clip.
-            calls.clear()
-            mode.update(made=0, status={"vid2": ["processing", "failed"]})
-            r = c.post("/api/heygen/audio-video", json={**base, "voiceover": long_.name, "max_frames": 300, "fps": 25}).get_json()
-            s = wait_job(c, r["job_id"])
-            assert s["status"] == "error" and [p["status"] for p in s["parts"]] == ["done", "failed", "done"], s
-            assert "Clip 2 of 3: HeyGen could not render it: Audio too quiet" in s["error"] and "2 of 3 clips were saved" in s["error"]
-
-            # Cuts that would leave a clip over the limit stop the job before anything is uploaded.
-            calls.clear()
-            web_gui._plan_clip_cuts = lambda duration, pauses, max_seconds, n: [2.0, 4.0][:n - 1]
-            r = c.post("/api/heygen/audio-video", json={**base, "voiceover": long_.name, "max_frames": 300, "fps": 25}).get_json()
-            s = wait_job(c, r["job_id"])
-            assert s["status"] == "error" and "over the 300 limit" in s["error"] and not posts("/v3/assets"), s
-            web_gui._plan_clip_cuts = keep[8]
-
-            # A look without the template's engine gets HeyGen's default engine; a failed render reads plainly.
-            mode.update(engines=["avatar_iv"], made=0, status={"vid1": ["processing", "failed"]})
-            calls.clear()
-            r = c.post("/api/heygen/audio-video", json={**base, "voiceover": short.name, "max_frames": 9000, "fps": 30}).get_json()
-            s = wait_job(c, r["job_id"])
-            body = posts("/v3/videos")[0][3]
-            assert "engine" not in body and s["status"] == "error" and "Audio too quiet" in s["error"] and key not in s["error"], s
-            assert "Clip 1" not in s["error"]
+            # 5. Taking clips out keeps the planned presenter; its stretch needs a clip again.
+            c.post(f"/api/explainer/{pid}/host", json={"title": "Talk", "remove": h["parts"][1]["name"]})
+            s = wait(c, pid)
+            assert len(s["host"]["parts"]) == 1 and s["host"]["missing"] == [[36.0, 38.5]], s["host"]
+            c.post(f"/api/explainer/{pid}/host", json={"title": "Talk", "remove": h["parts"][0]["name"]})
+            s = wait(c, pid)
+            assert s["host"]["planned"] and s["host"]["parts"] == [] and len(s["host"]["missing"]) == 2, s["host"]
+            assert "make them again under Presenter" in s["job"]["message"]
+            rendered = "render skipped (no Chrome)"
+            if xv.find_chrome():
+                # A sample render before the clips exist: the stand-in fills the presenter's area (not a hole).
+                r = c.post(f"/api/explainer/{pid}/render", json={"title": "Talk", "kind": "sample", "start": 36.2, "seconds": 2}).get_json()
+                s = wait(c, pid)
+                assert s["job"]["status"] == "done", s["job"]
+                f = out / "explainer" / pid / s["renders"][-1]["files"][0]["path"]
+                im = Image.open(_io.BytesIO(subprocess.run(["ffmpeg", "-v", "error", "-ss", "1", "-i", str(f), "-frames:v", "1",
+                                                            "-f", "image2pipe", "-c:v", "png", "-"], capture_output=True).stdout)).convert("RGB")
+                px = im.getpixel((200, 900))                     # inside the left panel (the 36-38.5 s section)
+                assert 15 <= px[0] <= 60 and px[2] > px[0] and max(px) < 90, px
+                rendered = "a sample before the clips shows the stand-in in the presenter's panel"
+            r = c.post(f"/api/explainer/{pid}/render", json={"title": "Talk", "kind": "final"}).get_json()
+            assert not r["success"] and any(x["type"] == "presenter" for x in r["outstanding"]), r
         finally:
-            (web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._get_run_output_dir, web_gui.requests.get,
-             web_gui.requests.post, web_gui.time.sleep, env, web_gui.HEYGEN_AUDIO_MAX_BYTES,
-             web_gui._video_frames, web_gui._plan_clip_cuts) = keep
-            if env is None:
-                os.environ.pop("HEYGEN_API_KEY", None)
+            (web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._get_run_output_dir, web_gui._get_anthropic_client, web_gui._eleven_key,
+             web_gui._heygen_key, web_gui._topaz_key, web_gui._hg_download, web_gui.requests.get, web_gui.requests.post,
+             web_gui._HG_AUDIO_POLL_SECONDS, xv.align_words, xv.presenter_topaz, k) = keep
+            if k is None:
+                os.environ.pop("ANTHROPIC_API_KEY", None)
             else:
-                os.environ["HEYGEN_API_KEY"] = env
+                os.environ["ANTHROPIC_API_KEY"] = k
 
-    # Frames: HeyGen's video is the audio rounded up to a 25 fps frame; the upscaler counts it at its own rate.
-    # These are the three clips of 2026-11-07 (7,855 / 7,501 / 7,087 frames from HeyGen; two were over 9,000 at 30 fps).
-    hf = web_gui._hg_frames
-    assert [hf(x, 25) for x in (314.162708, 300.03, 283.475937)] == [7855, 7501, 7087]
-    assert [hf(x, 30) for x in (314.162708, 300.03, 283.475937)] == [9426, 9002, 8505]
-    assert hf(web_gui._hg_clip_seconds(9000, 30), 30) <= 9000 and hf(web_gui._hg_clip_seconds(9000, 25), 25) <= 9000
-    assert web_gui._hg_clip_count(887.14, 9000, 30) == 3 and web_gui._hg_clip_count(938.43, 9000, 30) == 4
-    assert web_gui._hg_clip_count(938.43, 9000, 25) == 3 and web_gui._hg_clip_count(299, 9000, 30) == 1
-
-    # Cut planning: the longest pause near an even split when there's room; inside a pause (not its middle)
-    # when the limit is tight; one more clip when no pauses line up; even cuts when there are no pauses.
-    plan, cap = web_gui._plan_clip_cuts, web_gui._hg_clip_seconds(9000, 30)
-    pauses = [(t - 0.2, t + 0.2) for t in range(3, 900, 3)] + [(293.0, 294.0)]
-    cuts = plan(887.14, pauses, cap, 3)
-    edges = [0] + cuts + [887.14]
-    assert len(cuts) == 2 and cuts[0] == 293.5 and all(b - a <= cap for a, b in zip(edges, edges[1:])), cuts
-    tight = [(150.0, 150.4), (290.81, 291.08), (297.92, 298.07), (450.0, 450.4), (597.81, 598.15), (750.0, 750.4)]
-    cuts = plan(897.706, tight, cap, 3)                 # 14:58 at 30 fps: only 1.9 s of slack across 3 clips
-    assert cuts and 297.97 <= cuts[0] <= 298.02 and 597.86 <= cuts[1] <= 598.10, cuts
-    edges = [0] + cuts + [897.706]
-    assert all(hf(b - a, 30) <= 9000 for a, b in zip(edges, edges[1:])), [hf(b - a, 30) for a, b in zip(edges, edges[1:])]
-    assert plan(897.706, tight[:2] + tight[3:], cap, 3) is None    # no pause near 5:00 → 3 clips can't be clean
-    assert plan(300, pauses, 359, 1) == []
-
+    # Gaps and clip spans: covered stretches drop out; padding, merging and the narration's end.
+    assert xv.presenter_gaps([{"t0": 5, "t1": 12, "layout": "full"}, {"t0": 20, "t1": 30, "layout": "left"}], [(8, 25)]) == [(5, 8), (25, 30)]
+    assert xv.presenter_gaps([{"t0": 5, "t1": 12, "layout": "full"}, {"t0": 11, "t1": 14, "layout": "pip"}], []) == [(5, 14)]
+    assert xv.clip_spans([(5, 8), (10, 12), (25, 30), (59.8, 60.5)], 60.2) == [(4.5, 12.5), (24.5, 30.5), (59.3, 60.2)]
+    assert len(xv.clip_spans([(0, 3600)], 3600)) == 3
+    # With the timed words: whole sentences, the pad kept inside the pauses (no tail of the sentence
+    # before, no first words of the next); a window ending in a sentence's first word takes in all of it.
+    ws, t = [], 0.0
+    for sent in ("One two three.", "Four five six seven.", "Eight nine.", "Ten eleven twelve."):
+        for wd in sent.split():
+            ws.append({"text": wd, "start": round(t, 2), "end": round(t + 0.3, 2)})
+            t += 0.4
+        t += 0.6
+    tl = xv.Timeline(ws, t)
+    assert xv.clip_spans([(1.75, 4.1)], t, timeline=tl) == [(1.25, 5.2)], xv.clip_spans([(1.75, 4.1)], t, timeline=tl)
+    assert xv.clip_spans([(1.75, 4.1)], t) == [(1.25, 4.6)]                     # without words: ends inside "nine"
+    assert xv.clip_spans([(2.3, 3.2)], t, timeline=tl) == [(1.3, 3.8)]          # a window inside one sentence
+    src = open(os.path.join(APP, "web_gui.py"), encoding="utf-8").read()
+    assert src.count("timeline=p.timeline()") == 2
     html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
-    assert 'id="hgaSection"' in html and 'id="hgaMaxFrames"' in html and "async function startHeyGenAudioVideo()" in html
-    assert "max_frames: maxFrames, fps: fps" in html and "function _hgaRenderClips(" in html and 'id="hgaCountFps"' in html
-    assert "fetch('/api/heygen/audio-video/plan?' + q)" in html
-    assert "hgaRefresh((s.path || '').split('/').pop());" in html
-    return "frames predicted as HeyGen + upscaler count them (the 2026-11-07 clips: 9,426/9,002/8,505 at 30 fps); 30 s at 300 frames → 4 clips at 30 fps, 3 at 25; cuts in pauses (inside one when tight; extra clip when none line up); rendered side by side (held-back render retried) into heygen/_partNof3.mp4; failed clip named; over-limit stops before upload; bad files/limits/fps refused; key never shown"
+    assert 'id="hgaSection"' not in html and "/api/heygen/audio-video" not in html and "function hga" not in html
+    assert "async function xvMakeClips(" in html and "function _xvMakePanel(" in html and "async function xvHostPlan(" in html
+    assert '<option value="heygen">' in html and "o.type === 'presenter'" in html and "Explainer Video</a> → Presenter" in html
+    assert "presenter clips are made later in the Explainer Video" in html
+    js = open(os.path.join(APP, "static", "explainer", "runtime.js"), encoding="utf-8").read()
+    assert "HeyGen clip not made yet" in js and "placeHost(holes, t, frame)" in js   # the stand-in also sits in a device frame's screen
+    return ("planned presenter: Claude plans with the avatar still, a section placed before any clip, stand-in in the preview, "
+            "4K render gated; 2 clips made for just the 2 stretches (padded, cut from the MP3, nothing sent before the confirm), "
+            "placed at their cut points by audio, then Topaz; preview copy keeps clip times across the gap; removing clips "
+            "keeps the plan; " + rendered)
+
+
 
 @check("Explainer video: Claude Opus 5.5 (high) plans + writes slides in parallel batches on the timed narration; unsafe/off-style markup stripped; logos, figures and [insert] values gate the 4K render; revise splits a slide into a new version; renders sample, 4K final, phone copy and asset PNG")
 def _():
@@ -2171,8 +2780,17 @@ def _():
             assert s["usage"]["output_tokens"] > 0 and s["usage"]["cost"] > 0
 
             page = c.get(f"/api/explainer/{pid}/preview?title=Talk").get_data(as_text=True)
-            for bad in ("alert(1)", "onclick", "evil.example", "box-shadow", "lineargradient", "url(#g)"):
-                assert bad not in page.lower(), bad
+            # design.css has its own box-shadow (the cards' solid offset); Claude's blurred red one is what must go.
+            # The app's own transition and board-look scripts draw canvas gradients
+            # (createLinearGradient); only Claude's markup has to be free of them, so those files are set aside.
+            own = page
+            for js in ("transitions.js", "board.js"):
+                with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "static", "explainer", js), encoding="utf-8") as fh:
+                    fxjs = fh.read()
+                assert fxjs in page, js
+                own = own.replace(fxjs, "")
+            for bad in ("alert(1)", "onclick", "evil.example", "9px red", "lineargradient", "url(#g)"):
+                assert bad not in own.lower(), bad
             assert "Content-Security-Policy" in page and 'data-t0="0.000"' in page and "data:image/png;base64," in page
             assert 'data-logo-missing="openai"' in page and re.search(r'class="[^"]*ph-pending', page) and "#s02 .x" in page
 
@@ -2184,6 +2802,54 @@ def _():
             page = c.get(f"/api/explainer/{pid}/preview?title=Talk").get_data(as_text=True)
             assert "+12,000 jobs" in page and 'data-to="6.36"' in page and not re.search(r'class="[^"]*ph-pending', page), \
                 re.findall(r'<[^>]*ph-pending[^>]*>', page)[:3]
+
+            # Change a logo's file: a new upload replaces it on every slide, even under the same file name
+            # (the compiled slides are cached by the logo records); a text badge instead, and a file again.
+            import io as _io
+            uris = lambda html_: set(re.findall(r"data:image/png;base64,[A-Za-z0-9+/=]{40,}", html_))   # noqa: E731
+
+            def png(color, size=(600, 100)):
+                im_ = Image.new("RGBA", size, (0, 0, 0, 0))
+                ImageDraw.Draw(im_).rectangle((10, 10, size[0] - 10, size[1] - 10), fill=color)
+                buf_ = _io.BytesIO()
+                im_.save(buf_, "PNG")
+                return buf_.getvalue()
+
+            def put_logo(**fields):
+                f_ = {"title": "Talk", **{k_: v_ for k_, v_ in fields.items() if k_ != "upload"}}
+                if "upload" in fields:
+                    f_["file"] = (_io.BytesIO(fields["upload"][1]), fields["upload"][0])
+                return c.post(f"/api/explainer/{pid}/logo", data=f_, content_type="multipart/form-data").get_json()
+
+            page0 = c.get(f"/api/explainer/{pid}/preview?title=Talk").get_data(as_text=True)
+            was = s["logos"]["acme"]
+            r = put_logo(key="acme", name="Acme", recolor="original", upload=("icons8-acme-480.png", png((200, 30, 30, 255))))
+            L1 = r["logos"]["acme"]
+            assert r["success"] and L1["source"] == "icons8-acme-480.png" and L1["recolor"] == "original" and L1["aspect"] > 5, L1
+            assert L1["updated"] > (was.get("updated") or 0) and L1["path"] == "logos/acme.png"
+            assert Image.open(img / "icons8-acme-480.png").convert("RGB").getpixel((300, 50)) == (200, 30, 30)
+            page1 = c.get(f"/api/explainer/{pid}/preview?title=Talk").get_data(as_text=True)
+            assert uris(page1) != uris(page0) and r["outstanding"] == []
+            # Same name, same shape, same recolor: only the file's content differs, and the slides still change.
+            r = put_logo(key="acme", name="Acme", recolor="original", upload=("icons8-acme-480.png", png((30, 30, 200, 255))))
+            assert r["success"] and r["logos"]["acme"]["aspect"] == L1["aspect"] and r["logos"]["acme"]["updated"] > L1["updated"]
+            page2 = c.get(f"/api/explainer/{pid}/preview?title=Talk").get_data(as_text=True)
+            assert uris(page2) != uris(page1) and Image.open(proj / "logos" / "acme.png").convert("RGB").getpixel((300, 50)) == (30, 30, 200)
+            # A text badge instead; nothing new is asked for; then the file again from images/.
+            r = put_logo(key="acme", remove="1")
+            assert r["success"] and "acme" not in r["logos"] and r["logo_choices"]["acme"] == "badge" and r["outstanding"] == [], r["outstanding"]
+            assert 'data-logo-missing="acme"' in c.get(f"/api/explainer/{pid}/preview?title=Talk").get_data(as_text=True)
+            r = put_logo(key="acme", name="Acme", image="icons8-acme-480.png")
+            assert r["success"] and r["logos"]["acme"]["source"] == "icons8-acme-480.png" and "acme" not in r["logo_choices"]
+            assert 'data-logo-missing="acme"' not in c.get(f"/api/explainer/{pid}/preview?title=Talk").get_data(as_text=True)
+            # The brand that was a badge gets a file later.
+            r = put_logo(key="openai", name="OpenAI", upload=("openai-mark.png", png((240, 240, 240, 255), (300, 300))))
+            assert r["success"] and r["logos"]["openai"]["kind"] == "icon" and r["outstanding"] == [], r
+            page3 = c.get(f"/api/explainer/{pid}/preview?title=Talk").get_data(as_text=True)
+            assert 'data-logo-missing="openai"' not in page3
+            assert put_logo(key="acme", upload=("notes.txt", b"x"))["success"] is False
+            assert put_logo(key="", remove="1")["success"] is False
+
             r = c.post(f"/api/explainer/{pid}/render", json={"title": "Talk", "kind": "final"}).get_json()
             assert not r["success"] and "Approve" in r["error"], r
             assert c.post(f"/api/explainer/{pid}/approve", json={"title": "Talk"}).get_json()["approved"] == 1
@@ -2263,6 +2929,9 @@ def _():
 
     html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
     assert 'onclick="openExplainerModal()"' in html and 'id="explainerModal"' in html
+    assert 'id="xvEpisodeTitle"' in html and "_xvEpisode(src.empty ? '' : src.title);" in html
+    assert 'id="xvMuteBtn"' in html and 'onclick="xvMute()"' in html and "function xvMute(on)" in html
+    assert "xvMute(muted);" in html and "localStorage.setItem('scriptcraft_xv_muted'" in html, "the episode title shows at the top"
     assert '<iframe id="xvFrame" sandbox="allow-scripts"' in html and "ev.source !== fr.contentWindow" in html
     assert "async function xvRevise(" in html and "async function xvRender(" in html and "function _xvRenderNeeds(" in html
     return ("plan + 2 batches (+1 retry for a dropped slide) at effort high with cached prefix; fallback beta dropped after a 400; "
@@ -2364,8 +3033,21 @@ def _():
     assert [(x["file"], x["src"], x["t0"], x["t1"]) for x in segs] == [("a", 0.0, 0.01, 20.05), ("b", 0.02, 20.05, 40.03)], segs
     inputs, graph = xv._host_filter({"k": 2, "W": 3840, "H": 2160, "focus": 0.5, "segments": segs,
                                      "windows": [{"t0": 18.0, "t1": 22.0, "layout": "right"}]}, 15.0, 25.0)
-    assert inputs.count("-i") == 2 and "concat=n=2" in graph and "overlay=2240:0" in graph and "between(t,2.9990,7.0000)" in graph, graph
+    # Each clip's piece is laid at its own time (a gap between clips would stay black, not shift the next one).
+    assert inputs.count("-i") == 2 and "concat" not in graph and graph.count("overlay=2240:0") == 2, graph
+    assert "between(t,2.9990,5.0500)" in graph and "between(t,5.0490,7.0000)" in graph and "PTS-STARTPTS+5.0500/TB" in graph, graph
     assert "-reinit_filter" in xv._x264_cmd(Path("x.mp4"), 16)
+    with tempfile.TemporaryDirectory() as d:                   # Topaz's H.265 copies are full range: white must stay at TV white
+        full = Path(d) / "full.mp4"
+        ff("-f", "lavfi", "-i", "color=c=white:s=64x36:r=25:d=1", "-vf", "scale=out_range=pc,format=yuv420p",
+           "-color_range", "pc", "-c:v", "libx264", full)
+        inputs, graph = xv._host_filter({"k": 0.05, "W": 96, "H": 54, "focus": 0.5, "windows": [{"t0": 0, "t1": 1, "layout": "full"}],
+                                         "segments": [{"t0": 0, "t1": 1, "src": 0, "w": 64, "h": 36, "file": str(full)}]}, 0, 1)
+        r = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=black:s=16x16:d=1", *inputs, "-filter_complex",
+                            graph.split(";[0:v]")[0] + ";[b1]signalstats,metadata=print:file=-[v]", "-map", "[v]",
+                            "-frames:v", "1", "-f", "null", "-"], capture_output=True, text=True)
+        ymax = [float(l.split("=")[-1]) for l in r.stdout.splitlines() if "signalstats.YMAX=" in l]
+        assert ymax and ymax[0] <= 236, (ymax, r.stderr[-300:])
 
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
@@ -2520,6 +3202,115 @@ def _():
     return ("30 s test clip ends on a sentence; wrong-voiceover clips refused before Claude; clips placed by audio (upscale of clip 1 "
             "used, same-length decoy rejected); Claude sees the presenter still; per-slide layout without Claude; " + rendered
             + "; the rest planned around the test (slide inside it dropped) and merged; presenter removable")
+
+
+@check("Explainer video: a phrase spoken twice (an intro that names the chapters) never moves a slide: 'build the rest' searches each slide after the one before it; slides out of order are flagged (and gate the 4K render) and 'Put slides in narration order' fixes them free as a new version")
+def _():
+    import json as _json
+    import tempfile
+    from pathlib import Path
+    import explainer_video as xv  # noqa: PLC0415
+
+    sents = ["The meter moved and nobody touched it.",                      # 0  s01 c1
+             "I am counting three signs of rationing.",                     # 1
+             "Sign one. The shrinking plan.",                               # 2  the intro names the chapters
+             "Sign two. The admission.",                                    # 3
+             "At the end you get a cheat sheet you can copy.",              # 4  s02 c1
+             "The menu still says all you can eat.",                        # 5  s03 c1
+             "Sign one. The shrinking plan. OpenAI cut the Pro plan in half.",  # 6  s04 c2
+             "At two hundred dollars a month the plan got smaller.",        # 7  s05 c2
+             "Sign two. The admission. The owner wrote it down.",           # 8  s06 c3
+             "On November first the cost problem was in writing."]         # 9  s07 c3
+    words, t, starts = [], 0.0, []
+    for sent in sents:
+        starts.append(round(t, 3))
+        for w in sent.split():
+            words.append({"text": w, "start": round(t, 3), "end": round(t + 0.3, 3)})
+            t += 0.35
+        t += 0.6
+    dur = round(t + 0.5, 3)
+    tl = xv.Timeline(words, dur)
+    at = {"s01": "The meter moved and", "s02": "At the end you get", "s03": "The menu still says",
+          "s04": "Sign one. The shrinking plan.", "s05": "At two hundred dollars", "s06": "Sign two. The admission.",
+          "s07": "On November first the"}
+    sec = {"s01": "c1", "s02": "c1", "s03": "c1", "s04": "c2", "s05": "c2", "s06": "c3", "s07": "c3"}
+    real = {"s01": 0, "s02": 4, "s03": 5, "s04": 6, "s05": 7, "s06": 8, "s07": 9}
+    slides = [{"id": i, "section": sec[i], "kind": "slide", "at": at[i], "idea": i, "logos": [], "host": "none"} for i in at]
+    by = {s["id"]: s for s in slides}
+    assert tl.find(at["s04"])[0] == starts[2], "the check needs the chapter name spoken first in the intro"
+
+    # 1. Build the rest: Claude's list is in time order; each slide is searched after the one before it.
+    a, b = 0.0, starts[1]                                            # test clip = s01 only
+    before, after, skipped = xv.place_around([by[i] for i in ("s02", "s03", "s04", "s05", "s06", "s07")], tl, a, b)
+    assert not before and not skipped, (before, skipped)
+    assert [(s["id"], round(x, 3)) for x, s in after] == [(i, starts[real[i]]) for i in ("s02", "s03", "s04", "s05", "s06", "s07")], after
+    a, b = starts[7], starts[8] - 0.05                               # test clip = s05, in the middle
+    before, after, skipped = xv.place_around([by[i] for i in ("s01", "s02", "s03", "s04", "s06", "s07")], tl, a, b)
+    assert [(s["id"], round(x, 3)) for x, s in before] == [(i, starts[real[i]]) for i in ("s01", "s02", "s03", "s04")], before
+    assert [(s["id"], round(x, 3)) for x, s in after] == [("s06", starts[8]), ("s07", starts[9])] and not skipped, after
+    before, after, skipped = xv.place_around([by["s05"], by["s03"]], tl, 0.0, starts[1])   # a list out of order still sorts
+    assert [s["id"] for _x, s in after] == ["s03", "s05"] and not skipped, after
+    _b, _a, skipped = xv.place_around([{"id": "s09", "at": "nothing like this is said"}], tl, 0.0, starts[1])
+    assert skipped == ["s09"]
+
+    # 2. Slides out of order (as the old merge left them): flagged on the first squeezed slide, and gating the 4K.
+    data_at = dict(at, s04="Sign one. The shrinking plan. OpenAI cut", s06="Sign two. The admission. The owner")
+
+    def markup(order, cues=data_at):
+        return "\n".join(f'<section id="{i}" data-at="{cues[i]}" data-kind="slide" data-section="{sec[i]}">'
+                         f'<h2 class="h2" data-at="{cues[i]}">{i}</h2></section>' for i in order)
+
+    broken = ["s01", "s04", "s06", "s02", "s03", "s05", "s07"]
+    plan = {"summary": "", "sections": [{"key": k, "label": k} for k in ("c1", "c2", "c3")],
+            "slides": [by[i] for i in broken], "logos": [], "figures": [], "inserts": [], "questions": [], "dropped": []}
+    c = xv.compile_composition(markup(broken), tl, duration=dur, plan=plan, logos={}, values={}, logo_choices={})
+    order_w = [w for w in c["warnings"] if w.get("order")]
+    assert [w["slide"] for w in order_w] == ["s02"] and "out of order" in order_w[0]["msg"], c["warnings"]
+    meta = {m["id"]: m for m in c["slides"]}
+    assert meta["s02"]["t0"] > meta["s06"]["t0"] and any(w.get("order") for w in meta["s02"]["warnings"])
+    # The narration order: sections in plan order first, so the repeated name lands on the chapter.
+    for cues in (data_at, at):
+        got = [s["id"] for s in xv.narration_order(xv.split_sections(markup(broken, cues)), tl, plan)]
+        assert got == ["s01", "s02", "s03", "s04", "s05", "s06", "s07"], (cues is at, got)
+    c = xv.compile_composition(markup(sorted(at)), tl, duration=dur, plan=plan, logos={}, values={}, logo_choices={})
+    assert not c["warnings"], c["warnings"]
+    assert [round(m["t0"] + xv.LEAD, 2) for m in c["slides"]][1:] == [round(starts[real[i]], 2) for i in sorted(at)][1:], c["slides"]
+
+    # 3. The project: an 'order' item in Needs you, then one free click makes a new version in narration order.
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "versions").mkdir()
+        (d / "versions" / "v001.html").write_text(markup(broken), encoding="utf-8")
+        (d / "words.json").write_text(_json.dumps(words), encoding="utf-8")
+        (d / "plan.json").write_text(_json.dumps(plan), encoding="utf-8")
+        (d / "project.json").write_text(_json.dumps({"title": "T", "audio_seconds": dur, "current": 1, "approved": 1,
+                                                     "versions": [{"n": 1, "kind": "extend", "note": "", "created": 1, "slides": 7}]}))
+        p = xv.Project(d)
+        need = [o for o in p.outstanding(p.compile()) if o["type"] == "order"]
+        assert need and need[0]["slides"] == ["s02"], need
+        n = xv.order_slides(p)
+        assert n == 2 and p.data["current"] == 2 and p.data["approved"] is None, (n, p.data)
+        assert [s["id"] for s in xv.split_sections(p.composition())] == sorted(at)
+        assert [s["id"] for s in p.plan()["slides"]] == sorted(at)
+        assert (d / "versions" / "v001.html").read_text(encoding="utf-8") == markup(broken), "the old version is kept"
+        v = p.data["versions"][-1]
+        assert v["kind"] == "order" and "narration order" in v["note"] and v["slides"] == 7, v
+        c = p.compile()
+        assert not [w for w in c["warnings"] if w.get("order")] and not [o for o in p.outstanding(c) if o["type"] == "order"]
+        assert xv.order_slides(p) is None and p.data["current"] == 2, "already in order: no new version"
+        assert v["kind"] not in ("revise", "rebuild") and not xv._test_notes(p), "an order fix is not a note for Claude"
+
+    # 4. Wiring: build the rest uses it, the route and the button exist, and Claude never gets the order warning.
+    src = Path(xv.__file__).read_text(encoding="utf-8")
+    assert "place_around(new_plan.get(\"slides\") or [], timeline, a, b)" in src
+    assert 'not w.get("minor") and not w.get("order")' in src
+    gui = (Path(APP) / "web_gui.py").read_text(encoding="utf-8")
+    assert '@app.route("/api/explainer/<pid>/order", methods=["POST"])' in gui and "_xv.order_slides(p)" in gui
+    html = (Path(APP) / "templates" / "index.html").read_text(encoding="utf-8")
+    assert "o.type === 'order'" in html and "async function xvOrder()" in html and "_xvApi('/order')" in html
+    assert "!w.minor && !w.order &&" in html, "Fix flagged slides must not send order warnings to Claude"
+    return ("chapter names spoken twice land on the chapter (test clip first or in the middle); the squeezed slide is "
+            "flagged and gates the 4K; one free click puts 7 slides back in order as v2, the plan follows, v1 kept")
 
 
 @check("Explainer video: pick clips from your HeyGen account (download the ones not in the folder, refuse other voiceovers), place each on the narration by its audio, and place presenter sections (In/Out + layout) that render, get checked and reach Claude")
@@ -2744,12 +3535,25 @@ def _():
                 assert any("covers the presenter" in i for i in issues.get("s01", [])), issues           # full section 5-8 s
                 assert not any("presenter" in i for i in issues.get("s03", [])), issues                  # no section
                 rendered = "sample shows the clip in the section's left panel; the layout check flags the headlines under both sections"
-            # Claude's revision of s02 is told about the section.
+            # The user puts the presenter on s02, on a laptop (the slide's 🧑‍💼 menu).
+            assert c.post(f"/api/explainer/{pid}/layout", json={"title": "Talk", "slide": "s02", "host": "nope"}).status_code == 400
+            r = c.post(f"/api/explainer/{pid}/layout", json={"title": "Talk", "slide": "s02", "host": "pip:laptop"}).get_json()
+            assert r["success"] and [(m["host"], m["frame"]) for m in r["slides"] if m["id"] == "s02"] == [("pip", "laptop")], r
+            assert proj.data["host_picks"]["s02"]["host"] == "pip:laptop"
+            # Claude's revision of s02 is told about the section and about the user's presenter. The
+            # fake Claude drops the presenter (as the real one did, citing "no avatar" in the script's
+            # notes); the app puts it back.
             r = c.post(f"/api/explainer/{pid}/revise", json={"title": "Talk", "feedback": "", "scope": "slides", "slides": ["s02"],
                                                               "see": False, "warnings": {"s02": ["“Your account” covers the presenter"]}}).get_json()
             s = wait(c, pid)
             task = calls[-1]["messages"][0]["content"][-1]["text"]
             assert s["job"]["status"] == "done" and "PRESENTER SECTIONS the user placed on this slide" in task and "left panel 22.0-27.0 s" in task, task[-600:]
+            assert "the user placed the presenter on this slide (corner window on a laptop)" in task, task[-900:]
+            assert 'Keep data-host="pip" data-frame="laptop"' in task and "Never remove it" in task
+            assert "never remove or change its data-host" in calls[-1]["system"][0]["text"]
+            assert "left:900px" in proj.composition()                                   # Claude's change is kept
+            assert [(m["host"], m["frame"]) for m in s["slides"] if m["id"] == "s02"] == [("pip", "laptop")], s["slides"]
+            assert "Presenter kept where you placed it: s02" in proj.data["versions"][-1]["note"], proj.data["versions"][-1]
             r = c.post(f"/api/explainer/{pid}/host", json={"title": "Talk", "remove": man["vidPart2xyz"]["file"]}).get_json()
             s = wait(c, pid)
             assert s["host"] is None and not s["host_windows"]
@@ -2771,7 +3575,468 @@ def _():
     assert "function xvHgOpen(" in html and "async function xvSecAdd(" in html and 'id="xvMarks"' in html and 'value="mine"' in html
     return ("HeyGen list marks the copy in the folder; part 2 downloaded and placed at 20 s by its audio, the chapter clip "
             "(another voice) refused, part 1 added from the folder without a download, a clip removed; sections cleaned, "
-            "the one without footage warned, approval cleared; " + rendered + "; Claude's revision brief names the section")
+            "the one without footage warned, approval cleared; " + rendered + "; Claude's revision brief names the section "
+            "and the presenter the user put on a slide (on a laptop), which stays when Claude's rewrite drops it")
+
+
+@check("Explainer video: upscaled presenter clips under any file name are found by length and checked by audio or frames, even when clips of a set are the same length; Rescan works for any presenter footage; adding an upscale as a clip replaces the original")
+def _():
+    import json as _json
+    import shutil
+    import subprocess
+    import tempfile
+    import threading as _thr
+    from pathlib import Path
+    os.environ.setdefault("PORT", "0")
+    import web_gui  # noqa: PLC0415
+    import explainer_video as xv  # noqa: PLC0415
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        raise AssertionError("ffmpeg/ffprobe are needed for this check (brew install ffmpeg)")
+
+    def ff(*args):
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *map(str, args)], check=True)
+
+    logs = []
+    log = lambda msg, level="info": logs.append(msg)
+    status = lambda stage=None, message=None, progress=None: None
+    keep_min = xv.HOST_MIN_BYTES
+    try:
+        xv.HOST_MIN_BYTES = 0
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            for sub in ("voiceover", "heygen", "aroll"):
+                (root / sub).mkdir()
+            mp3 = root / "voiceover" / "Talk_elevenlabs_Roz_1.mp3"
+            expr = "0.5*sin(2*PI*190*t)*gt(sin(2*PI*0.83*t)+sin(2*PI*2.31*t+1.3)+sin(2*PI*0.29*t+0.4),0.2)*lt(mod(t,5),4.6)"
+            ff("-f", "lavfi", "-i", f"aevalsrc='{expr}':s=44100:d=30", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k", mp3)
+            stem = "Talk_ElevenLabs_20261109_100000"
+            # Three clips of exactly the same length (10 s), each a different picture.
+            for i, src in enumerate(("testsrc2", "smptebars", "rgbtestsrc"), 1):
+                ff("-f", "lavfi", "-i", f"{src}=s=640x360:r=25:d=10", "-ss", 10 * (i - 1), "-t", 10, "-i", mp3, "-map", "0:v",
+                   "-map", "1:a", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", root / "heygen" / f"{stem}_part{i}of3.mp4")
+            woman = root / "aroll" / "Woman speaking into microphone.mp4"       # upscale of clip 3, renamed, with audio
+            ff("-i", root / "heygen" / f"{stem}_part3of3.mp4", "-vf", "scale=1280:720", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", woman)
+            man = root / "aroll" / "Man at a desk.mp4"                           # upscale of clip 2, renamed, no audio
+            ff("-i", root / "heygen" / f"{stem}_part2of3.mp4", "-vf", "scale=1280:720", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", man)
+
+            def project(name):
+                folder = root / "explainer" / name
+                folder.mkdir(parents=True)
+                proj = xv.Project(folder)
+                xv.normalize_audio(mp3, folder / "narration.wav", folder / "narration.m4a")
+                proj.data.update(title="Talk", audio_seconds=30.0)
+                proj.save()
+                return proj
+
+            names = lambda h: [Path(x["file"]).name for x in h["parts"]]
+            # 1. The set from setup: both upscales end up on the right clips (a wrong guess is checked and passed on).
+            src = next(x for x in xv.find_host_sources(root, [30.0]) if x["id"].startswith("set:"))
+            assert all(len(p_["upscales"]) == 2 for p_ in src["parts"][1:]), src["parts"]
+            h = xv.attach_host(project("p1"), src, root, status, log)
+            assert names(h) == [f"{stem}_part1of3.mp4", man.name, woman.name], names(h)
+            assert [x["upscaled"] for x in h["parts"]] == [False, True, True] and h["parts"][2]["h"] == 720
+            assert abs(h["parts"][2]["offset"] - 20.0) < 0.06 and abs(h["parts"][1]["offset"] - 10.0) < 0.06, h["parts"]
+            # 2. Clips added one by one (as from HeyGen), then Rescan.
+            p2 = project("p2")
+            items = [xv.clip_item(root / "heygen" / f"{stem}_part{i}of3.mp4", []) for i in (1, 2, 3)]
+            h = xv.attach_clips(p2, items, status, log)
+            assert names(h) == [f"{stem}_part{i}of3.mp4" for i in (1, 2, 3)] and not any(x["upscaled"] for x in h["parts"])
+            r = xv.rescan_upscales(p2, root, status, log)
+            assert r == {"changed": 2, "upscaled": 2, "clips": 3}, r
+            assert names(p2.host()) == [f"{stem}_part1of3.mp4", man.name, woman.name], names(p2.host())
+            assert xv.rescan_upscales(p2, root, status, log)["changed"] == 0
+            proxy = xv.host_segments(p2.host(), originals=True)
+            assert [Path(x["file"]).name for x in proxy] == [f"{stem}_part{i}of3.mp4" for i in (1, 2, 3)]
+            # An upscale that is deleted falls back to the original on the next Rescan.
+            man.rename(root / "Man at a desk (moved).mov.bak")
+            r = xv.rescan_upscales(p2, root, status, log)
+            assert r["changed"] == 1 and names(p2.host())[1] == f"{stem}_part2of3.mp4", (r, names(p2.host()))
+            # 3. Adding the upscale itself as a clip (e.g. downloaded under its new name) replaces clip 3.
+            p3 = project("p3")
+            xv.attach_clips(p3, items, status, log)
+            h = xv.attach_clips(p3, [xv.clip_item(woman, [])], status, log)
+            assert len(h["parts"]) == 3 and names(h)[2] == woman.name and h["parts"][2]["upscaled"], names(h)
+            assert any("used in its place" in n for n in h["notes"]), h["notes"]
+            # The rescan route on a project whose clips came one by one.
+            keep = (web_gui._get_run_output_dir, web_gui.SCRIPTCRAFT_SETTINGS_PATH)
+            try:
+                web_gui._get_run_output_dir = lambda title, create=True: root
+                settings = root / "settings.json"
+                settings.write_text("{}")
+                web_gui.SCRIPTCRAFT_SETTINGS_PATH = settings
+                c = web_gui.app.test_client()
+                p4 = project("20261109_100000_abcd")
+                xv.attach_clips(p4, items, status, log)
+                r = c.post("/api/explainer/20261109_100000_abcd/host", json={"title": "Talk", "rescan": True}).get_json()
+                assert r["success"], r
+                for _ in range(2000):
+                    st = c.get("/api/explainer/20261109_100000_abcd?title=Talk").get_json()
+                    if (st.get("job") or {}).get("status") != "running":
+                        break
+                    _thr.Event().wait(0.05)
+                assert st["job"]["status"] == "done" and "1 clip(s) switched" in st["job"]["message"], st["job"]
+                assert [x["upscaled"] for x in st["host"]["parts"]] == [False, False, True]
+            finally:
+                web_gui._get_run_output_dir, web_gui.SCRIPTCRAFT_SETTINGS_PATH = keep
+    finally:
+        xv.HOST_MIN_BYTES = keep_min
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert "async function xvHostRescan(" in html and "any name; it must be the same length" in html
+    return ("three same-length clips: the renamed upscales land on clips 2 and 3 (one by audio, one by frames); Rescan "
+            "upgrades clips added one by one and reverts a deleted upscale; an upscale added as a clip replaces the original; "
+            "the preview copy keeps using the originals")
+
+
+@check("Topaz 4K upscales over HTTP: create (estimate) → accept → multipart upload → complete → poll → download; the Explainer quotes then upscales presenter clips and swaps the 4K copies in by audio; the key lives in API Keys")
+def _():
+    import json as _json
+    import shutil
+    import subprocess
+    import tempfile
+    import threading as _thr
+    from pathlib import Path
+    os.environ.setdefault("PORT", "0")
+    import requests as _rq
+    import web_gui  # noqa: PLC0415
+    import explainer_video as xv  # noqa: PLC0415
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        raise AssertionError("ffmpeg/ffprobe are needed for this check (brew install ffmpeg)")
+
+    def ff(*args):
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *map(str, args)], check=True)
+
+    logs = []
+    log = lambda msg, level="info": logs.append(msg)
+    status = lambda stage=None, message=None, progress=None: None
+    with tempfile.TemporaryDirectory() as d:
+        root, cloud = Path(d) / "script", Path(d) / "cloud"      # what "Topaz" sends back lives outside the script folder
+        for sub in ("voiceover", "heygen"):
+            (root / sub).mkdir(parents=True)
+        cloud.mkdir()
+        mp3 = root / "voiceover" / "Talk_elevenlabs_Roz_1.mp3"
+        expr = "0.5*sin(2*PI*190*t)*gt(sin(2*PI*0.83*t)+sin(2*PI*2.31*t+1.3)+sin(2*PI*0.29*t+0.4),0.2)*lt(mod(t,5),4.6)"
+        ff("-f", "lavfi", "-i", f"aevalsrc='{expr}':s=44100:d=20", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k", mp3)
+        stem = "Talk_ElevenLabs_20261109_110000"
+        for i, src in enumerate(("testsrc2", "smptebars"), 1):
+            ff("-f", "lavfi", "-i", f"{src}=s=640x360:r=25:d=10", "-ss", 10 * (i - 1), "-t", 10, "-i", mp3, "-map", "0:v",
+               "-map", "1:a", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", root / "heygen" / f"{stem}_part{i}of2.mp4")
+            ff("-i", root / "heygen" / f"{stem}_part{i}of2.mp4", "-vf", "scale=1280:720", "-c:v", "libx264", "-pix_fmt",
+               "yuv420p", "-c:a", "copy", cloud / f"up{i}.mp4")         # what "Topaz" sends back
+        calls, polls = [], {}
+
+        class _R:
+            def __init__(self, code=200, data=None, headers=None, body=b""):
+                self.status_code, self._d, self.headers, self._b, self.text = code, data, headers or {}, body, ""
+            def json(self):
+                return self._d
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise RuntimeError(self.status_code)
+            def iter_content(self, chunk_size=1):
+                yield self._b
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        state = {"n": 0, "urls": 1, "key": "tpz-test-key-0001"}
+
+        def fake_post(url, headers=None, json=None, timeout=None, **kw):
+            calls.append(("POST", url, json, (headers or {}).get("X-API-Key")))
+            if (headers or {}).get("X-API-Key") != state["key"]:
+                return _R(401, {"message": "invalid key"})
+            state["n"] += 1
+            # Remember which clip this request is for (by its size), to send back its own upscale.
+            size = (json or {}).get("source", {}).get("size")
+            state.setdefault("src", {})[f"rq{state['n']}"] = next(
+                (i for i in (1, 2) if (root / "heygen" / f"{stem}_part{i}of2.mp4").stat().st_size == size), 1)
+            return _R(200, {"requestId": f"rq{state['n']}", "estimates": {"cost": [7, 9], "time": [60, 90]}})
+
+        def fake_patch(url, headers=None, json=None, timeout=None, **kw):
+            calls.append(("PATCH", url, json, None))
+            if url.endswith("/accept") and state.get("accept_fails"):     # e.g. 425 "Credit refill in progress"
+                code = state["accept_fails"].pop(0)
+                return _R(code, {"message": "Insufficient credits" if code == 402 else "Credit refill in progress"})
+            if url.endswith("/accept"):      # the real API answers 202 Accepted, with an uploadId
+                return _R(202, {"uploadId": "MTc5", "urls": [f"https://upload.example/{url.split('/')[-2]}/{k}" for k in range(1, state["urls"] + 1)]})
+            if state.get("unquoted") and any(u["eTag"].startswith('"') for u in (json or {}).get("uploadResults", [])):
+                return _R(400, {"message": "bad eTag https://upload.example/secret?X-Amz-Signature=abc"})
+            return _R(202, {"message": "queued"})
+
+        def fake_put(url, data=None, headers=None, timeout=None, **kw):
+            calls.append(("PUT", url, len(data or b""), (headers or {}).get("Content-Type")))
+            if state.get("put_fail"):
+                return _R(500)
+            return _R(200, headers={"ETag": f'"etag-{url.rsplit("/", 1)[-1]}"'})
+
+        def fake_delete(url, headers=None, timeout=None, **kw):
+            calls.append(("DELETE", url, None, None))
+            return _R(204)
+
+        def fake_get(url, headers=None, timeout=None, stream=False, **kw):
+            if url == xv.TOPAZ_BALANCE:
+                return _R(200, {"available_credits": state.get("balance", 300), "reserved_credits": 0, "total_credits": 300})
+            if url.startswith("https://dl.example/"):
+                if state.get("dl_fails"):
+                    state["dl_fails"] -= 1
+                    raise _rq.exceptions.ConnectionError(f"Max retries exceeded with url: {url}?X-Amz-Signature=abc")
+                return _R(200, body=(cloud / url.rsplit("/", 1)[-1]).read_bytes())
+            if state.get("status_fails"):
+                state["status_fails"] -= 1
+                raise _rq.exceptions.ReadTimeout("HTTPSConnectionPool(host='api.topazlabs.com', port=443): Read timed out. (read timeout=60)")
+            rid = url.split("/")[-2]
+            polls[rid] = polls.get(rid, 0) + 1
+            if polls[rid] == 1:
+                return _R(200, {"status": "processing", "progress": 40})
+            return _R(200, {"status": "complete", "download": {"url": f"https://dl.example/up{state['src'][rid]}.mp4", "expiresIn": 604800}})
+
+        keep = (_rq.post, _rq.patch, _rq.put, _rq.get, _rq.delete, xv.TOPAZ_POLL_SECONDS, xv.HOST_MIN_BYTES, xv.TOPAZ_PART_BYTES,
+                xv.TOPAZ_RETRY_WAITS, xv.TOPAZ_DOWNLOAD_WAITS, xv.TOPAZ_OFFLINE_MAX)
+        try:
+            _rq.post, _rq.patch, _rq.put, _rq.get, _rq.delete = fake_post, fake_patch, fake_put, fake_get, fake_delete
+            xv.TOPAZ_POLL_SECONDS, xv.HOST_MIN_BYTES = 0.01, 0
+            xv.TOPAZ_RETRY_WAITS, xv.TOPAZ_DOWNLOAD_WAITS = (0.01, 0.01, 0.01), (0.01, 0.01)
+            # 1. One upscale, multipart: three upload URLs → three parts that add up to the file.
+            src = root / "heygen" / f"{stem}_part1of2.mp4"
+            state["urls"] = 3
+            xv.TOPAZ_PART_BYTES = 1 << 30
+            r = xv.topaz_upscale(state["key"], src, xv.topaz_out_path(src), status, None, log)
+            post = next(c for c in calls if c[0] == "POST")
+            body = post[2]
+            assert post[1] == "https://api.topazlabs.com/video/" and body["filters"] == [{"model": "slp-2.6"}]
+            assert body["output"]["videoEncoder"] == "H265" and body["output"]["videoProfile"] == "Main10"
+            assert body["source"]["resolution"] == {"width": 640, "height": 360} and body["source"]["frameCount"] == 250
+            assert body["source"]["size"] == src.stat().st_size and body["source"]["frameRate"] == 25
+            assert body["output"]["resolution"] == {"width": 3840, "height": 2160} and body["output"]["audioTransfer"] == "Copy"
+            puts = [c for c in calls if c[0] == "PUT"]
+            assert len(puts) == 3 and sum(c[2] for c in puts) == src.stat().st_size and puts[0][3] == "video/mp4", puts
+            done = next(c for c in calls if c[0] == "PATCH" and "complete-upload" in c[1])
+            assert done[1].endswith("/rq1/complete-upload/") and [u["partNum"] for u in done[2]["uploadResults"]] == [1, 2, 3]
+            assert done[2]["uploadResults"][0]["eTag"] == '"etag-1"'
+            assert r["estimate"] == {"estimates.cost": [7, 9]} and Path(r["out"]).name == f"{stem}_part1of2_starlight4k.mp4"
+            assert xv.probe_video(Path(r["out"]))["h"] == 720 and polls["rq1"] == 2
+            Path(r["out"]).unlink()
+            # A bad key is reported plainly.
+            try:
+                xv.topaz_upscale("wrong", src, xv.topaz_out_path(src), status, None, log)
+                raise AssertionError("bad key accepted")
+            except RuntimeError as e:
+                assert "Topaz rejected the API key (401)" in str(e), e
+            assert xv.topaz_quote(300, 25) == {"credits": 630, "dollars": 41.79}        # Starlight Precise 2.6
+            assert xv.topaz_quote(300, 25, "iris-2") == {"credits": 121, "dollars": 8.03}
+            # Iris still sends its "auto" setting and keeps the old file name.
+            r = xv.topaz_upscale(state["key"], src, xv.topaz_out_path(src, "iris-2"), status, None, log, model="iris-2")
+            assert [c for c in calls if c[0] == "POST"][-1][2]["filters"] == [{"model": "iris-2", "auto": "Auto"}]
+            assert Path(r["out"]).name == f"{stem}_part1of2_topaz4k.mp4"
+            Path(r["out"]).unlink()
+            # Which clips a model would upscale: not 4K yet, or a copy from a lesser Topaz model;
+            # an upscale made elsewhere (HeyGen) is kept.
+            hz = {"parts": [{"file": "/f/a_topaz4k.mp4", "orig": "/f/a.mp4", "h": 2160},
+                            {"file": "/f/b_starlight4k.mp4", "orig": "/f/b.mp4", "h": 2160},
+                            {"file": "/f/Woman hosting a podcast.mp4", "orig": "/f/c.mp4", "h": 2160},
+                            {"file": "/f/d.mp4", "orig": "/f/d.mp4", "h": 1080}]}
+            assert [Path(x["orig"]).name for x in xv.topaz_todo(hz)] == ["a.mp4", "d.mp4"]
+            assert [Path(x["orig"]).name for x in xv.topaz_todo(hz, "slf-3")] == ["a.mp4", "d.mp4"]
+            assert [Path(x["orig"]).name for x in xv.topaz_todo(hz, "iris-2")] == ["d.mp4"]
+            assert [xv.topaz_model_of(x["file"]) for x in hz["parts"]] == ["iris-2", "slp-2.6", None, None]
+            # Two same-length 4K copies named after the clip: the newer one (the redo) wins.
+            vids = [{"path": Path("/f/a_topaz4k.mp4"), "seconds": 10.0, "h": 2160, "mtime": 1},
+                    {"path": Path("/f/a_starlight4k.mp4"), "seconds": 10.0, "h": 2160, "mtime": 2}]
+            assert xv.best_upscale({"path": "/f/a.mp4", "seconds": 10.0, "h": 1080}, vids, set())["path"].name == "a_starlight4k.mp4"
+            # Storage that wants the ETag without quotes: one retry, unquoted; links never reach the message.
+            state["unquoted"], state["urls"] = True, 1
+            r = xv.topaz_upscale(state["key"], src, xv.topaz_out_path(src), status, None, log)
+            last = [c for c in calls if c[0] == "PATCH" and "complete-upload" in c[1]][-1]
+            assert last[2]["uploadResults"][0]["eTag"] == "etag-1" and any("unquoted" in m for m in logs)
+            Path(r["out"]).unlink()
+            state["unquoted"] = False
+            e400 = xv._topaz_error(_R(400, {"message": "bad https://x.example/a?X-Amz-Signature=abc"}))
+            assert "X-Amz" not in e400 and "<link>" in e400, e400
+            # A failed upload cancels the request so its reserved credits are released.
+            state["put_fail"] = True
+            try:
+                xv.topaz_upscale(state["key"], src, xv.topaz_out_path(src), status, None, log)
+                raise AssertionError("upload failure not reported")
+            except RuntimeError as e:
+                assert "upload failed (500)" in str(e), e
+            rid = [c for c in calls if c[0] == "PATCH" and c[1].endswith("/accept")][-1][1].split("/")[-2]
+            assert calls[-1] == ("DELETE", f"https://api.topazlabs.com/video/{rid}", None, None), calls[-1]
+            state["put_fail"] = False
+            assert xv.topaz_balance(state["key"])["available_credits"] == 300
+            # Retries. "Credit refill in progress" (425) on accept: canceled (nothing spent), a new request
+            # after a wait, upscaled.
+            out = xv.topaz_out_path(src)
+            n_posts, logs[:] = sum(1 for c_ in calls if c_[0] == "POST"), []
+            state["accept_fails"] = [425]
+            r = xv._topaz_tries(state["key"], src, out, status, None, log, xv.TOPAZ_MODEL)
+            assert Path(r["out"]).is_file() and sum(1 for c_ in calls if c_[0] == "POST") == n_posts + 2
+            assert any("trying again" in m and "425" in m for m in logs), logs
+            out.unlink()
+            # "Not enough credits" (402): one more try (an automatic top-up may be under way), then reported;
+            # none when an earlier clip already ran out.
+            for credit_retry, tries in ((True, 2), (False, 1)):
+                n_posts, state["accept_fails"] = sum(1 for c_ in calls if c_[0] == "POST"), [402] * 5
+                try:
+                    xv._topaz_tries(state["key"], src, out, status, None, log, xv.TOPAZ_MODEL, credit_retry=credit_retry)
+                    raise AssertionError("402 not reported")
+                except xv.TopazRetry as e:
+                    assert e.credits and "not enough credits" in str(e), e
+                assert sum(1 for c_ in calls if c_[0] == "POST") == n_posts + tries
+            # A status check that times out (what canceled a clip 8 minutes into processing) is waited out:
+            # same request, no cancel, logged once.
+            state["accept_fails"], state["status_fails"], logs[:] = [], 2, []
+            n_posts, n_dels = (sum(1 for c_ in calls if c_[0] == m) for m in ("POST", "DELETE"))
+            r = xv._topaz_tries(state["key"], src, out, status, None, log, xv.TOPAZ_MODEL)
+            assert Path(r["out"]).is_file() and sum(1 for c_ in calls if c_[0] == "POST") == n_posts + 1
+            assert sum(1 for c_ in calls if c_[0] == "DELETE") == n_dels
+            assert sum("still waiting" in m for m in logs) == 1 and any("answering again" in m for m in logs), logs
+            out.unlink()
+            # ... but not forever: then the request is canceled and the error says Topaz stopped answering.
+            xv.TOPAZ_OFFLINE_MAX, state["status_fails"] = -1, 1
+            try:
+                xv._topaz_tries(state["key"], src, out, status, None, log, xv.TOPAZ_MODEL)
+                raise AssertionError("an unanswered status check was not reported")
+            except RuntimeError as e:
+                assert "did not answer" in str(e) and not isinstance(e, xv.TopazRetry), e
+            assert calls[-1][0] == "DELETE" and not out.exists()
+            xv.TOPAZ_OFFLINE_MAX, state["status_fails"] = keep[-1], 0
+            # A dropped download of a finished (paid) upscale is downloaded again; its link stays out of the log.
+            state["dl_fails"], logs[:] = 2, []
+            r = xv._topaz_tries(state["key"], src, out, status, None, log, xv.TOPAZ_MODEL)
+            assert Path(r["out"]).is_file() and sum("Download" in m and "trying again" in m for m in logs) == 2, logs
+            assert not any("X-Amz" in m for m in logs), logs
+            out.unlink()
+            # Topaz can't be reached at all: retried, then reported (still a TopazRetry: nothing was spent).
+            fp, _rq.post = _rq.post, lambda *a, **k: (_ for _ in ()).throw(_rq.exceptions.ConnectionError("no network"))
+            try:
+                xv._topaz_tries(state["key"], src, out, status, None, log, xv.TOPAZ_MODEL)
+                raise AssertionError("no network not reported")
+            except xv.TopazRetry as e:
+                assert "Could not reach Topaz" in str(e), e
+            finally:
+                _rq.post = fp
+            assert xv._no_links("Max retries exceeded with url: /b/k?X-Amz-Signature=abc") == "Max retries exceeded with url: <link>"
+
+            # 2. The Explainer: quote, then upscale + swap in (checked by audio).
+            state["urls"], state["n"] = 1, 0
+            folder = root / "explainer" / "20261109_110000_abcd"
+            folder.mkdir(parents=True)
+            proj = xv.Project(folder)
+            xv.normalize_audio(mp3, folder / "narration.wav", folder / "narration.m4a")
+            proj.data.update(title="Talk", audio_seconds=20.0)
+            proj.save()
+            xv.attach_clips(proj, [xv.clip_item(root / "heygen" / f"{stem}_part{i}of2.mp4", []) for i in (1, 2)], status, log)
+            kkeep = (web_gui._get_run_output_dir, web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._topaz_key)
+            try:
+                web_gui._get_run_output_dir = lambda title, create=True: root
+                settings = root / "settings.json"
+                settings.write_text("{}")
+                web_gui.SCRIPTCRAFT_SETTINGS_PATH = settings
+                web_gui._topaz_key = lambda: ""
+                c = web_gui.app.test_client()
+                q = c.post("/api/explainer/20261109_110000_abcd/topaz", json={"title": "Talk"}).get_json()
+                assert q["success"] and not q["quote"]["has_key"] and [x["name"] for x in q["quote"]["clips"]] == [f"{stem}_part1of2.mp4", f"{stem}_part2of2.mp4"]
+                assert q["quote"]["credits"] == 2 * 21 and q["quote"]["label"] == "Starlight Precise 2.6", q["quote"]
+                assert c.post("/api/explainer/20261109_110000_abcd/topaz", json={"title": "Talk", "model": "iris-2"}).get_json()["quote"]["credits"] == 2 * 5
+                assert c.post("/api/explainer/20261109_110000_abcd/topaz", json={"title": "Talk", "confirm": True}).status_code == 400
+                web_gui._topaz_key = lambda: state["key"]
+
+                def run(body):
+                    r = c.post("/api/explainer/20261109_110000_abcd/topaz", json={"title": "Talk", "confirm": True, **body}).get_json()
+                    assert r["success"], r
+                    for _ in range(3000):
+                        st = c.get("/api/explainer/20261109_110000_abcd?title=Talk").get_json()
+                        if (st.get("job") or {}).get("status") != "running":
+                            return st
+                        _thr.Event().wait(0.05)
+                    raise AssertionError("topaz job never finished")
+
+                # Out of credits: the first clip gets one more try, the next clip none (no waiting on each).
+                n_posts, state["accept_fails"] = sum(1 for c_ in calls if c_[0] == "POST"), [402] * 5
+                st = run({})
+                assert st["job"]["status"] == "error" and "not enough credits" in st["job"]["error"], st["job"]
+                assert sum(1 for c_ in calls if c_[0] == "POST") == n_posts + 3
+                state["accept_fails"] = []
+                # The balance covers one clip: the quote says which; that one is upscaled.
+                state["balance"] = 30
+                q = c.post("/api/explainer/20261109_110000_abcd/topaz", json={"title": "Talk"}).get_json()["quote"]
+                assert q["available"] == 30 and q["fits"] == [f"{stem}_part1of2.mp4"], q
+                # Every upscale failing shows as a failed job, not a ✅.
+                state["put_fail"] = True
+                st = run({"names": [f"{stem}_part1of2.mp4"]})
+                assert st["job"]["status"] == "error" and "Topaz upscale failed for 1 clip(s)" in st["job"]["error"], st["job"]
+                state["put_fail"] = False
+                st = run({"names": q["fits"]})
+                assert st["job"]["status"] == "done" and "1 clip(s) upscaled with Topaz Starlight Precise 2.6; 1 of 2 clip(s) now 4K" in st["job"]["message"], st["job"]
+                state["balance"] = 300
+                n_posts = sum(1 for c_ in calls if c_[0] == "POST")
+                st = run({})                    # the test "4K" copies are 720p, so clip 1 counts again: its copy is reused
+                assert st["job"]["status"] == "done" and "2 of 2 clip(s) now 4K" in st["job"]["message"], st["job"]
+                assert sum(1 for c_ in calls if c_[0] == "POST") == n_posts + 1      # only clip 2 went to Topaz
+                assert [x["name"] for x in st["host"]["parts"]] == [f"{stem}_part1of2_starlight4k.mp4", f"{stem}_part2of2_starlight4k.mp4"], st["host"]["parts"]
+                assert [x["topaz"] for x in st["host"]["parts"]] == ["slp-2.6", "slp-2.6"]
+                assert all(x["upscaled"] and x["h"] == 720 for x in st["host"]["parts"])
+                # 3. The API Keys dialog stores the Topaz key like the others (masked when read back).
+                assert c.post("/api/keys", json={"topaz_api_key": "tpz-dialog-key-9876"}).get_json()["updated"] == ["topaz_api_key"]
+                kj = c.get("/api/keys").get_json()
+                assert kj["keys"]["topaz_api_key"] == "•" * 4 + "9876" and kj["sources"]["topaz_api_key"] == "saved"
+                c.post("/api/keys", json={"clear": ["topaz_api_key"]})
+            finally:
+                web_gui._get_run_output_dir, web_gui.SCRIPTCRAFT_SETTINGS_PATH, web_gui._topaz_key = kkeep
+                os.environ.pop("TOPAZ_API_KEY", None)
+        finally:
+            (_rq.post, _rq.patch, _rq.put, _rq.get, _rq.delete, xv.TOPAZ_POLL_SECONDS, xv.HOST_MIN_BYTES, xv.TOPAZ_PART_BYTES,
+             xv.TOPAZ_RETRY_WAITS, xv.TOPAZ_DOWNLOAD_WAITS, xv.TOPAZ_OFFLINE_MAX) = keep
+    html = open(os.path.join(APP, "templates", "index.html"), encoding="utf-8").read()
+    assert 'id="modalTopazApiKey"' in html and "setSrc('src_topaz', srcMap.topaz_api_key);" in html
+    assert html.count("['modalTopazApiKey','topaz_api_key']") == 2 and "function _xvTopazModelSel(" in html and "async function xvTopaz(" in html
+    return ("request body (Starlight Precise 2.6 by default, Iris on request; 3840x2160 10-bit H.265, audio copied, source "
+            "frames/size), Iris copies redone by Starlight and the newer copy used, 3-part upload with ETags, polling to the "
+            "download; bad key reported; retries (425 refill, 402 once, status timeouts waited out, download again, no "
+            "network); Explainer quote without a key, then 2 clips upscaled and swapped in by audio; "
+            "Topaz key saved and masked in API Keys")
+
+
+@check("Topaz 4K copies open in QuickTime and Finder: an H.265 'hev1' download is marked 'hvc1' (streams copied, file time kept)")
+def _():
+    import inspect  # noqa: PLC0415
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+    import explainer_video as xv  # noqa: PLC0415
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        return "skipped: no ffmpeg"
+
+    def tag(p):
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                            "stream=codec_tag_string", "-of", "csv=p=0", str(p)], capture_output=True, text=True)
+        return r.stdout.strip()
+
+    with tempfile.TemporaryDirectory() as d:
+        hev1, h264, junk = Path(d, "up.mp4.part"), Path(d, "plain.mp4"), Path(d, "junk.mp4")
+        base = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=1",
+                "-f", "lavfi", "-i", "sine=duration=1"]
+        subprocess.run(base + ["-c:v", "libx265", "-x265-params", "log-level=none", "-pix_fmt", "yuv420p10le",
+                               "-tag:v", "hev1", "-c:a", "aac", "-f", "mp4", str(hev1)], check=True)
+        subprocess.run(base + ["-c:v", "libx264", "-c:a", "aac", str(h264)], check=True)
+        junk.write_bytes(b"not a video")
+        assert tag(hev1) == "hev1", tag(hev1)
+        os.utime(hev1, (1_700_000_000, 1_700_000_000))
+        seconds, logged = xv.media_seconds(hev1), []
+        assert xv.apple_hevc_tag(hev1, lambda *a: logged.append(a)) is True
+        assert tag(hev1) == "hvc1" and hev1.stat().st_mtime == 1_700_000_000, (tag(hev1), hev1.stat().st_mtime)
+        assert abs(xv.media_seconds(hev1) - seconds) < 0.05 and not logged, logged
+        assert xv.apple_hevc_tag(hev1) is False                      # already hvc1: left alone
+        size = h264.stat().st_size
+        assert xv.apple_hevc_tag(h264) is False and h264.stat().st_size == size and tag(h264) == "avc1"
+        assert xv.apple_hevc_tag(junk) is False and junk.read_bytes() == b"not a video"
+        assert sorted(p.name for p in Path(d).iterdir()) == ["junk.mp4", "plain.mp4", "up.mp4.part"]
+    dl = inspect.getsource(xv._topaz_download)
+    assert dl.index("apple_hevc_tag(tmp, log)") < dl.index("tmp.replace(out)"), "retag before the copy is saved"
+    return "hev1 → hvc1 with the same length and file time; hvc1, H.264 and unreadable files untouched; the Topaz download retags before saving"
 
 
 if __name__ == "__main__":
