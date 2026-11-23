@@ -59,6 +59,11 @@ objects with volume, materials and motion (wheels, window glow, smoke,
 parallax), stronger on the hook. A saved "rich" means cinematic.
 See explainer_scenes.py.
 
+Look: film_look defaults to waves, which is the picture above. whiteboard,
+chalkboard, sketchnote and marker redraw the same slides on a board. The
+choice is saved on the project. A two-minute look test renders only that
+preview. It does not start the 4K render.
+
 Article screenshots and spoken-emphasis strokes are overlays
 (explainer_articles.py). They use the slide times the compiler already
 resolved. They do not restyle text cards, the wave field, bots, logos, or
@@ -192,6 +197,19 @@ from explainer_imagery import (  # noqa: E402
     VISUAL_STYLES,
     page_visual,
     visual_style_key,
+)
+from explainer_styles import (  # noqa: E402
+    FILM_LOOK_DEFAULT,
+    FILM_LOOKS,
+    LOOK_TEST_ID,
+    LOOK_TEST_SECONDS,
+    THREE_LOOKS,
+    film_look_key,
+    film_payload,
+    look_test_span,
+    page_fx,
+    sample_lesson,
+    sample_raw,
 )
 from explainer_scenes import sprite as scene_sprite  # noqa: E402
 
@@ -3640,12 +3658,21 @@ def _page_bookends(compiled: dict, urls: Optional[dict], mode: str) -> dict:
     return {k: v for k, v in (("intro", intro), ("end", end)) if v}
 
 
+def _kalam_face() -> str:
+    """Kalam Bold (OFL, Indian Type Foundry) as a data-URI face for board lettering."""
+    raw = (ASSET_DIR / "fonts" / "Kalam-Bold.ttf").read_bytes()
+    b64 = base64.b64encode(raw).decode("ascii")
+    return ("@font-face{font-family:Kalam;font-weight:700;font-display:block;"
+            f"src:url(data:font/ttf;base64,{b64}) format('truetype');}}")
+
+
 def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer",
               host: Optional[dict] = None, pip_frame: Optional[str] = None,
               bubble: Optional[str] = None, clips: Optional[list] = None,
               media_origin: str = "", visual: Optional[dict] = None,
               demos: Optional[list] = None, articles: Optional[list] = None,
-              emphasis: Optional[dict] = None, bookends: Optional[dict] = None) -> str:
+              emphasis: Optional[dict] = None, bookends: Optional[dict] = None,
+              film_look: Optional[str] = None, words: Optional[list] = None) -> str:
     """A self-contained page: design CSS, the compiled slides, the runtime.
     The runtime exposes __seek(t), __check() and __ready for the renderer;
     in preview mode it answers postMessage seeks from the dialog. With a
@@ -3657,11 +3684,14 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
     files on with ffmpeg, holding the last frame when the clip is shorter.
     `visual` picks classic or cinematic. Both keep the wave background.
     Cinematic adds the object entrance. The slide HTML is not changed.
+    `film_look` defaults to waves. A board look keeps the same markup and
+    draws over it. `words` are the narration timings the handwriting follows.
     `articles` and `emphasis` are overlays: a screenshot over the waves, and
     marker strokes under words that are already on the slide."""
     css = (ASSET_DIR / "design.css").read_text(encoding="utf-8")
     js = (ASSET_DIR / "runtime.js").read_text(encoding="utf-8")
     fxjs = (ASSET_DIR / "transitions.js").read_text(encoding="utf-8")
+    boardjs = (ASSET_DIR / "board.js").read_text(encoding="utf-8")
     host_on = bool(host) and compiled.get("host_on")
     video = (host or {}).get("video") if host_on and mode == "preview" else None
     frame_mode = pip_frame_key(pip_frame, None if pip_frame is not None else (host or {}).get("pip_frame"))
@@ -3670,17 +3700,17 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
                 for c in (clips or [])]
     style = visual_style_key((visual or {}).get("style"))
     visual_cfg = page_visual(style, compiled.get("slides"))
+    look = film_look_key(film_look if film_look is not None else (visual or {}).get("look"))
+    film_cfg = film_payload(compiled, words or [], look, emphasis=emphasis)
     cfg = json.dumps({"duration": compiled["duration"], "fps": FPS, "mode": mode,
                       "start": compiled.get("start", 0.0), "end": compiled.get("end", compiled["duration"]),
                       "sections": compiled.get("sections") or [],
                       "asides": _aside_payloads(compiled.get("slides") or [], bubble),
-                      "clips": clip_cfg, "visual": visual_cfg,
+                      "clips": clip_cfg, "visual": visual_cfg, "film": film_cfg,
                       "articles": articles or [], "emphasis": emphasis or {"marks": []},
                       "demos": demos or [],
                       "bookends": _page_bookends(compiled, bookends, mode),
-                      "fx": [{"id": s.get("id"), "t": s.get("t0"), "dur": s.get("fx_dur"),
-                              "style": s.get("fx"), "amp": s.get("fx_amp"), "why": s.get("fx_reason")}
-                             for s in (compiled.get("slides") or []) if s.get("fx")],
+                      "fx": page_fx(compiled.get("slides") or [], look),
                       "host": {"on": True, "layouts": HOST_LAYOUTS, "focus": float(host.get("focus", HOST_FOCUS)),
                                "video": video, "sections": compiled.get("host_sections") or [],
                                "fade": HOST_SECTION_FADE, "windows": windows,
@@ -3691,7 +3721,13 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
     csp = ("default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
            "script-src 'unsafe-inline'; font-src data:"
            + (("; media-src 'self'" + (f" {origin}" if origin else "")) if media else ""))
-    cls = f"mode-{mode}" + (" host-on" if host_on else "")
+    cls = f"mode-{mode}" + (" host-on" if host_on else "") + (" film-board" if look != "waves" else "")
+    drawjs = boardjs
+    if look != "waves":
+        css = css + _kalam_face()
+    if look in THREE_LOOKS:
+        drawjs = ((ASSET_DIR / "three.min.js").read_text(encoding="utf-8") + "\n"
+                  + (ASSET_DIR / "scene3d.js").read_text(encoding="utf-8"))
     return (f"<!doctype html><html class=\"{cls}\"><head><meta charset=\"utf-8\">"
             f"<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">"
             f"<title>{_html.escape(title)}</title><style>{css}</style></head>"
@@ -3703,7 +3739,8 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
             "<div id=\"hud-left\"></div><div id=\"hud-right\"></div></div>"
             "<canvas id=\"fx\" width=\"1920\" height=\"1080\"></canvas>"
             "</div></div>"
-            f"<script>window.__EXPLAINER = {cfg};</script><script>{fxjs}</script><script>{js}</script></body></html>")
+            f"<script>window.__EXPLAINER = {cfg};</script><script>{drawjs}</script>"
+            f"<script>{fxjs}</script><script>{js}</script></body></html>")
 
 
 # ---------------------------------------------------------------------------
@@ -4545,7 +4582,7 @@ def list_projects(root: Path, title: str) -> list:
         return out
     for p in base.iterdir():
         f = p / "project.json"
-        if p.is_dir() and PROJECT_ID_RE.match(p.name) and f.is_file():
+        if p.is_dir() and PROJECT_ID_RE.match(p.name) and p.name != LOOK_TEST_ID and f.is_file():
             try:
                 d = json.loads(f.read_text(encoding="utf-8"))
             except Exception:
@@ -5350,7 +5387,9 @@ class _Chrome:
         self.ud = tempfile.mkdtemp(prefix="xv-chrome-")
         args = [self.exe, "--remote-debugging-port=0", f"--user-data-dir={self.ud}", "--hide-scrollbars",
                 "--force-color-profile=srgb", "--mute-audio", "--no-first-run", "--no-default-browser-check",
-                "--disable-extensions", "--disable-background-networking", "--disable-gpu",
+                "--disable-extensions", "--disable-background-networking",
+                "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--enable-webgl",
+                "--ignore-gpu-blocklist",
                 "--allow-file-access-from-files", "about:blank"]
         if self.headless_new:
             args.insert(1, "--headless=new")
@@ -5631,6 +5670,162 @@ def render_stills(page: Path, times: list, scale: float = 1.0) -> list:
     return asyncio.run(_stills_async(page, times, scale))
 
 
+def ensure_sample_project(root: Path, title: str) -> "Project":
+    """A hidden project filled with the bundled lesson, for a look test with no video open."""
+    folder = Path(root) / "explainer" / LOOK_TEST_ID
+    folder.mkdir(parents=True, exist_ok=True)
+    project = open_project(folder)
+    lesson = sample_lesson()
+    if project.data.get("title") != title or not project.data.get("current"):
+        project.write("words.json", json.dumps(lesson["words"]))
+        project.write("spoken.txt", " ".join(w["text"] for w in lesson["words"]))
+        project.write("versions/v001.html", sample_raw(lesson))
+        project.data.update({
+            "title": title,
+            "current": 1,
+            "approved": None,
+            "versions": [{"n": 1, "kind": "sample", "note": "Bundled sample lesson",
+                          "slides": len(lesson["compiled"]["slides"]), "created": time.time()}],
+            "audio_seconds": 120.0,
+            "renders": [],
+            "youtube": {"videos": [], "clips": lesson["clips"]},
+            "articles": lesson["articles"],
+            "host": {"parts": [{"file": "host/presenter.mp4", "orig": "presenter.mp4", "offset": 0,
+                               "seconds": 120, "w": 1920, "h": 1080, "score": 0.9}],
+                     "focus": 0.45, "sections": []},
+            "gap_fx": {"s07>s08": {"fx": "pixel", "dur": "normal"}},
+            "created": project.data.get("created") or time.time(),
+        })
+        project._compiled = None
+        project.save()
+    return project
+
+
+def load_words(project: "Project") -> list:
+    try:
+        raw = json.loads(project.read("words.json") or "[]")
+    except (json.JSONDecodeError, OSError):
+        return []
+    return [w for w in raw if isinstance(w, dict) and (w.get("text") or "").strip()]
+
+
+def render_look_clip(project: "Project", page: Path, out: Path, start: float, end: float,
+                     status: Callable, cancel: threading.Event, *, fps: int = 12,
+                     scale: float = 0.5, crf: int = 23) -> Path:
+    """A short preview of one look. Lower frame rate than the full render.
+
+    It writes only `out`. It does not append a final or review render.
+    """
+    chrome = find_chrome()
+    if not chrome:
+        raise RuntimeError("Rendering needs Chrome or Chromium.")
+    fps = max(4, min(30, int(fps)))
+    dur = max(0.2, float(end) - float(start))
+    n = max(1, int(round(dur * fps)))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".part.mp4")
+    log_dir = Path(tempfile.mkdtemp(prefix="xv-look-"))
+    try:
+        asyncio.run(_look_clip_async(page, tmp, float(start), n, fps, float(scale), int(crf),
+                                     chrome, status, cancel, log_dir / "ffmpeg.log"))
+    finally:
+        shutil.rmtree(log_dir, ignore_errors=True)
+    wav = project.dir / "narration.wav"
+    if wav.is_file():
+        muxed = out.with_suffix(".mux.mp4")
+        try:
+            _run(build_mux_cmd(tmp, wav, muxed, float(start), dur, []))
+            muxed.replace(out)
+            tmp.unlink(missing_ok=True)
+            return out
+        except Exception:
+            muxed.unlink(missing_ok=True)
+    tmp.replace(out)
+    return out
+
+
+async def _look_clip_async(page, out, start, n, fps, scale, crf, chrome, status, cancel, log_path):
+    exe, headless_new = chrome
+    errlog = open(log_path, "w+b")
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "image2pipe",
+           "-framerate", str(fps), "-c:v", "png", "-i", "-",
+           "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
+           "-pix_fmt", "yuv420p",
+           "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+           "-movflags", "+faststart", str(out)]
+    ff = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=errlog)
+    try:
+        async with _Chrome(exe, headless_new) as ch:
+            await ch.open(page, scale, transparent=False)
+            for i in range(n):
+                if cancel.is_set():
+                    raise Cancelled()
+                png = await ch.frame(start + i / fps)
+                ff.stdin.write(png)
+                if i % 8 == 7 or i == n - 1:
+                    status(message=f"Look test: frame {i + 1} of {n}", progress=0.05 + 0.9 * (i + 1) / n)
+        ff.stdin.close()
+        rc = ff.wait(timeout=120)
+        if rc != 0:
+            errlog.seek(0)
+            raise RuntimeError(f"ffmpeg failed: {errlog.read().decode(errors='ignore')[-300:]}")
+    finally:
+        if ff.poll() is None:
+            ff.kill()
+        errlog.close()
+
+
+def prepare_look_test(project: "Project", look: str, *, seconds: float = LOOK_TEST_SECONDS,
+                      clips: Optional[list] = None, articles: Optional[list] = None) -> dict:
+    """Plan a look test on a project that already has slides. Saves the look.
+
+    Does not change the approved version or the full-render list.
+    """
+    look = film_look_key(look)
+    with project.lock:
+        project.data["film_look"] = look
+        approved = project.data.get("approved")
+        current = project.data.get("current")
+        renders = list(project.data.get("renders") or [])
+    project.save()
+    compiled = project.compile()
+    span = look_test_span(compiled, seconds=seconds, clips=clips, articles=articles)
+    # compile() can migrate gap chips. Put the approval and render list back
+    # if a caller had them, so a look test cannot approve or replace a final.
+    with project.lock:
+        project.data["approved"] = approved
+        project.data["current"] = current
+        project.data["renders"] = renders
+    project.save()
+    return span
+
+
+def run_look_test(project: "Project", look: str, status: Callable, cancel: threading.Event, *,
+                  seconds: float = LOOK_TEST_SECONDS, render=None) -> dict:
+    """Render the look-test window to working/ and remember the file."""
+    clips = load_youtube(project.data).get("clips") or []
+    articles = project.data.get("articles") or []
+    if isinstance(articles, dict):
+        articles = articles.get("items") or []
+    span = prepare_look_test(project, look, seconds=seconds, clips=clips, articles=articles)
+    compiled = project.compile()
+    page = write_page(project, compiled, "render", "look_test.html")
+    rel = f"working/look_test_{film_look_key(look)}.mp4"
+    out = project.dir / rel
+    status(message=f"Drawing the {film_look_key(look)} test…", progress=0.04)
+    draw = render or render_look_clip
+    draw(project, page, out, span["start"], span["end"], status, cancel)
+    rec = {"look": film_look_key(look), "path": rel, "seconds": span["seconds"],
+           "start": span["start"], "end": span["end"], "features": span["features"],
+           "created": time.time()}
+    with project.lock:
+        project.data["look_test"] = rec
+    project.save()
+    return {"message": f"Look test ready ({span['seconds']:.0f}s, {film_look_key(look)})",
+            "file": rel, "look_test": rec}
+
+
 def contact_sheet(pngs: list, labels: list, cols: int = 4, width: int = 480) -> bytes:
     from PIL import Image, ImageDraw
     h = width * 9 // 16
@@ -5671,11 +5866,12 @@ def write_page(project: Project, compiled: dict, mode: str, name: str) -> Path:
     host = project.host()
     frame, bubble = look_of(project.data, host)
     style = visual_style_key(None, project.data.get("visual_style"))
+    look = film_look_key(None, project.data.get("film_look"))
     import explainer_articles as _articles
     article_layer, emphasis_layer = _articles.page_layers(project, compiled)
     page.write_text(page_html(compiled, mode=mode, title=project.data.get("title") or "Explainer",
                               host=host, pip_frame=frame, bubble=bubble,
-                              visual={"style": style},
+                              visual={"style": style}, film_look=look, words=load_words(project),
                               articles=article_layer, emphasis=emphasis_layer,
                               demos=demo_payloads(compiled, load_youtube(project.data)["clips"], mode)),
                     encoding="utf-8")

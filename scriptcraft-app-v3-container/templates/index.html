@@ -3739,6 +3739,28 @@
                         </div>
                         <div id="xvPane-needs" class="xv-pane on"></div>
                         <div id="xvPane-slides" class="xv-pane">
+                            <div id="xvLookBox" class="xv-item" style="margin-bottom:8px;">
+                                <span class="xv-label">Look</span>
+                                <div style="color:#64748b; font-size:0.78em; margin:2px 0 6px;">The current look is the wave background and these slides. Pick a board style to redraw this video. Nothing changes until you choose one.</div>
+                                <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+                                    <select id="xvFilmLook" class="xv-input" style="flex:1; min-width:180px;" onchange="xvFilmLook(this.value)">
+                                        <option value="waves">Current look (waves)</option>
+                                        <option value="whiteboard">Whiteboard explainer</option>
+                                        <option value="chalkboard">Chalkboard</option>
+                                        <option value="sketchnote">Sketchnote</option>
+                                        <option value="marker">Marker on paper</option>
+                                        <option value="tilt">Tilt-shift miniature</option>
+                                        <option value="island">Low-poly island</option>
+                                        <option value="tabletop">Tabletop flythrough</option>
+                                        <option value="popup">Paper pop-up</option>
+                                    </select>
+                                    <button id="xvLookTestBtn" class="xv-btn" type="button" onclick="xvLookTest()">Generate 2-min test</button>
+                                </div>
+                                <div id="xvLookMsg" style="font-size:0.78em; color:#94a3b8; margin-top:6px; min-height:1.1em;"></div>
+                                <div id="xvLookBar" style="display:none; height:6px; background:#1e293b; border-radius:3px; overflow:hidden; margin-top:6px;"><div id="xvLookBarFill" style="height:100%; width:0; background:#f59e0b;"></div></div>
+                                <video id="xvLookPlayer" controls playsinline style="display:none; width:100%; margin-top:8px; border-radius:6px; background:#000;"></video>
+                                <a id="xvLookDown" href="#" style="display:none; color:#93c5fd; font-size:0.78em;">Download test clip</a>
+                            </div>
                             <div style="display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap; align-items:center;">
                                 <button class="xv-btn small" onclick="xvSelectFlagged()">Tick flagged</button>
                                 <button class="xv-btn small" onclick="xvSelectNone()">Clear ticks</button>
@@ -12409,7 +12431,7 @@ Thank you for watching!`;
             const visual = document.getElementById('xvVisual').value;
             const transitionMode = (document.getElementById('xvTransition') || {}).value || 'full';
             const d = await _xvPost('/api/explainer/start', { voiceover: audio, script: script, text: extractHeyGenSection(script) || '', logos: logos,
-                test: test, presenter: presenter, share: share, pip_frame: pipFrame, bubble: bubble, visual_style: visual, transition_mode: transitionMode });
+                test: test, presenter: presenter, share: share, pip_frame: pipFrame, bubble: bubble, visual_style: visual, film_look: (document.getElementById('xvFilmLook') || {}).value || 'waves', transition_mode: transitionMode });
             if (!d.success) {
                 btn.disabled = false;
                 _xvStatus('❌ ' + _xvEsc(d.error || 'Could not start.') + (d.needs_key ? ' <a href="#" onclick="closeExplainerModal(); openApiKeysModal(); return false;">🔑 API Keys</a>' : ''), '#f87171');
@@ -12475,7 +12497,7 @@ Thank you for watching!`;
             if (s.current) {
                 const yclips = ((s.youtube || {}).clips || []).map(c => [c.id, c.slide, c.audio, c.file, c.start, c.end, c.status]);
                 const articlesKey = (s.articles || []).map(a => [a.id, a.slide, a.chosen, a.file, a.ocr]);
-                const key = s.current + '|' + JSON.stringify([s.values, s.logo_choices, s.logos, s.span, s.pip_frame, s.bubble, s.visual_style, s.transition_mode, s.gap_fx, s.bookends, s.clock, yclips, articlesKey, s.emphasis, s.host && [s.host.created, s.host.focus, s.host.sections, s.host.pip_frame]]);
+                const key = s.current + '|' + JSON.stringify([s.values, s.logo_choices, s.logos, s.span, s.pip_frame, s.bubble, s.visual_style, s.film_look, s.transition_mode, s.gap_fx, s.bookends, s.clock, yclips, articlesKey, s.emphasis, s.host && [s.host.created, s.host.focus, s.host.sections, s.host.pip_frame]]);
                 if (key !== _xv.frameKey) {
                     _xv.frameKey = key;
                     document.getElementById('xvFrame').src = _xvApi('/preview?' + _xvQ() + '&v=' + s.current + '&_=' + Date.now());
@@ -13216,7 +13238,91 @@ Thank you for watching!`;
             el.innerHTML = html;
         }
 
+        function xvFilmLook(v) {
+            if (_xv.pid) xvLook('film_look', v);
+        }
+        function xvSyncLookBox() {
+            const s = _xv.state || {};
+            const sel = document.getElementById('xvFilmLook');
+            if (sel && document.activeElement !== sel && s.film_look) sel.value = s.film_look;
+            const job = s.job || {};
+            const running = job.status === 'running' && job.kind === 'look-test';
+            const bar = document.getElementById('xvLookBar');
+            const btn = document.getElementById('xvLookTestBtn');
+            if (bar) bar.style.display = running ? 'block' : 'none';
+            const fill = document.getElementById('xvLookBarFill');
+            if (fill && running) fill.style.width = Math.round((job.progress || 0) * 100) + '%';
+            if (btn) btn.disabled = running;
+            const msg = document.getElementById('xvLookMsg');
+            if (msg && running) msg.textContent = job.message || 'Drawing the test clip…';
+            const lt = s.look_test;
+            if (lt && lt.path && _xv.pid && !running) {
+                const src = _xvApi('/file?' + _xvQ() + '&path=' + encodeURIComponent(lt.path) + '&v=' + (lt.created || 0));
+                xvShowLookClip(src, lt);
+            }
+        }
+        function xvShowLookClip(src, lt) {
+            const vid = document.getElementById('xvLookPlayer');
+            const a = document.getElementById('xvLookDown');
+            const msg = document.getElementById('xvLookMsg');
+            if (!vid || !src) return;
+            if (vid.getAttribute('data-src') !== src) {
+                vid.src = src;
+                vid.setAttribute('data-src', src);
+            }
+            vid.style.display = 'block';
+            if (a) {
+                a.href = src;
+                a.style.display = 'inline-block';
+                a.textContent = 'Download ' + ((lt && lt.look) || 'test') + ' clip';
+            }
+            if (msg && lt) msg.textContent = 'Test clip ready (' + Math.round(lt.seconds || 0) + 's, ' + (lt.look || '') + ').';
+        }
+        async function xvLookTest() {
+            const sel = document.getElementById('xvFilmLook');
+            const look = sel ? sel.value : 'waves';
+            const msg = document.getElementById('xvLookMsg');
+            if (msg) msg.textContent = 'Starting a two-minute test…';
+            const body = { title: _xv.title || 'Sample explainer', film_look: look };
+            const url = _xv.pid ? _xvApi('/look-test') : '/api/explainer/look-test';
+            let d;
+            try { d = await _xvPost(url, body); }
+            catch (e) { d = { success: false, error: e.message }; }
+            if (!d.success) {
+                if (msg) msg.textContent = d.error || 'Could not start the test.';
+                return;
+            }
+            const pid = d.pid || _xv.pid;
+            const sample = !!d.sample;
+            if (!sample && d.pid === _xv.pid) {
+                _xv.state = d;
+                _xvRenderState(_xv.state);
+                return;
+            }
+            if (_xv.lookPoll) clearInterval(_xv.lookPoll);
+            _xv.lookPoll = setInterval(async () => {
+                let st;
+                try { st = await (await fetch('/api/explainer/' + encodeURIComponent(pid) + '?title=' + encodeURIComponent(body.title))).json(); }
+                catch (e) { st = { success: false }; }
+                if (!st.success) return;
+                const job = st.job || {};
+                const bar = document.getElementById('xvLookBar');
+                if (bar) bar.style.display = job.status === 'running' ? 'block' : 'none';
+                const fill = document.getElementById('xvLookBarFill');
+                if (fill) fill.style.width = Math.round((job.progress || 0) * 100) + '%';
+                if (msg && job.status === 'running') msg.textContent = job.message || 'Drawing the test clip…';
+                if (job.status === 'running') return;
+                clearInterval(_xv.lookPoll);
+                _xv.lookPoll = null;
+                const lt = (job.result && job.result.look_test) || st.look_test;
+                if (job.status === 'done' && lt && lt.path) {
+                    const src = '/api/explainer/' + encodeURIComponent(pid) + '/file?title=' + encodeURIComponent(body.title) + '&path=' + encodeURIComponent(lt.path) + '&v=' + (lt.created || 0);
+                    xvShowLookClip(src, lt);
+                } else if (msg) msg.textContent = job.error || job.message || 'The test stopped.';
+            }, 1000);
+        }
         function _xvRenderSlides() {
+            xvSyncLookBox();
             const list = (_xv.state && _xv.state.slides) || [];
             const icon = { scene: '🌃', chapter: '📖', asset: '📋', slide: '🟦' };
             const cur = _xvSlideAt(_xv.t);
