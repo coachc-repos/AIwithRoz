@@ -393,6 +393,14 @@ def extract_tool_links_and_info(script_content: str) -> str:
         return "\n🛠️ No specific tools or resources were mentioned in this content."
 
 
+# Inside Host text: a divider line or a script metadata line (see
+# extract_heygen_host_script). templates/index.html has the same _HG_HOST_BREAK.
+_HOST_BREAK_RE = re.compile(
+    r"^\s*(?:[_\-*]{3,}\s*$|\*{0,2}\s*(?:Title|Script[-\s]*ID|Script[-\s]*Version|"
+    r"Script\s*Type|Duration|Audience|Tone|Generated|Template\s*ID|Voice\s*ID)\s*\*{0,2}\s*:)",
+    re.IGNORECASE)
+
+
 def extract_heygen_host_script(script_content: str, verbose: bool = True) -> str:
     """
     Extract ONLY Host dialogue from script for HeyGen text-to-video.
@@ -591,6 +599,19 @@ def extract_heygen_host_script(script_content: str, verbose: bool = True) -> str
             # this it glued onto the next line of dialogue, and the scrub below
             # dropped the whole paragraph, dialogue included.
             if re.match(r"^\*{0,2}\s*Chapter\s+\d+\s*[-:–]", stripped, re.IGNORECASE):
+                if current_paragraph:
+                    paragraph_text = " ".join(current_paragraph)
+                    if paragraph_text:
+                        host_paragraphs.append(paragraph_text)
+                    current_paragraph = []
+                continue
+
+            # A divider (____, ----) or a metadata line (Title:, Script-ID:,
+            # Audience:, Tone: ...) ends the paragraph and is not spoken. The
+            # Pro writer puts its metadata block right after the hook with no
+            # blank line, so it glued onto the hook paragraph, where the scrub
+            # below can't see it, and was counted and read aloud.
+            if _HOST_BREAK_RE.match(stripped):
                 if current_paragraph:
                     paragraph_text = " ".join(current_paragraph)
                     if paragraph_text:

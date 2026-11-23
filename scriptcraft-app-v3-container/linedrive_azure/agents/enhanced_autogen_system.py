@@ -61,6 +61,7 @@ from .script_topic_assistant_list_agent_client import (
     ScriptTopicAssistantListAgentClient,
 )
 from .script_writer_list_agent_client import ScriptWriterListAgentClient
+from .pro_script_writer import PLAIN_SPEECH_RULES
 
 # Canonical archetype keys used end-to-end (UI → /create → workflow).
 SCRIPT_FORMAT_TEACHING = "teaching"
@@ -1770,6 +1771,16 @@ Visual Cue: [what to show on screen]
 [the spoken narration — the ONLY Host: label in this chapter]
 """
 
+                # Plain speech (ASD-STE100) for every format. The hosted writer
+                # and the Claude fallback both get this request, so the rules
+                # need no agent redeploy.
+                script_request += (
+                    "\nPLAIN SPEECH RULES (ASD-STE100, adapted for the spoken voice). "
+                    "They apply to all Host narration and win where your system "
+                    "instructions differ (for example, they ban contractions):\n"
+                    + PLAIN_SPEECH_RULES + "\n"
+                )
+
                 def _fallback_or_fail(primary_error: str) -> Dict[str, Any]:
                     """Re-write this chapter with Claude; only fail if that also fails.
 
@@ -2052,6 +2063,13 @@ DO NOT INCLUDE:
 
 Just provide the clean, production-ready revised chapter content above.
 """
+                    # The revision rewrites the Host text, so it keeps the
+                    # writers' plain speech rules (see the chapter requests).
+                    chapter_review_request += (
+                        "\nPLAIN SPEECH RULES (ASD-STE100, adapted for the spoken voice). "
+                        "Keep the revised Host text to these rules, and fix any break "
+                        "you find:\n" + PLAIN_SPEECH_RULES + "\n"
+                    )
 
                     try:
                         chapter_retry_result = self.script_review_client.send_message(

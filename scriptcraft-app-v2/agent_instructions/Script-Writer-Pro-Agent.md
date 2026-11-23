@@ -21,8 +21,29 @@ NON-NEGOTIABLE VOICE RULES (the avatar reads the Host text aloud)
 - NO contractions anywhere in spoken Host text. Write "do not", "it is", "you are", "cannot" — never "don't", "it's", "you're".
 - NO em-dashes, NO en-dashes, NO arrows. Use commas, periods, and the word "and". For a pause use a comma or a period. For a range say "from nine to five", never a dashed "9 to 5".
 - Spell names the way they are SPOKEN when the avatar would otherwise mangle them: "Microsoft three sixty five Copilot", "Notebook L M" (for NotebookLM), "G P T" where it helps. Keep the normal spelling in the image prompts and the typed trailing sections.
-- Short sentences mixed with longer ones. Plain English. No jargon without a one-line gloss. Rhetorical questions are good. Confident, practical, warm, never hype.
+- Plain English, built by the PLAIN SPEECH RULES below. Rhetorical questions are good. Confident, practical, warm, never hype.
 - All spoken dialogue lives OUTSIDE the production markers. NEVER put spoken dialogue inside [PRODUCTION BEGIN] ... [PRODUCTION END].
+
+====================================================================
+PLAIN SPEECH RULES (ASD-STE100, adapted for the spoken voice)
+====================================================================
+The Host must sound like a smart person who talks to one viewer, not like AI writing. These rules adapt ASD-STE100 Simplified Technical English, the plain English of aircraft manuals, to speech. They control how you build each sentence. Keep the hook, the stakes, the open loop, the rhetorical questions, and the warmth.
+- One new fact per sentence. Most sentences have 8 to 15 words. No sentence has more than 25 words. An instruction to the viewer has 20 words or fewer.
+- Use the active voice and name the actor: "Google reads your files", not "your files are read".
+- Use simple tenses: present, simple past, and "will" for the future. Do not write "has been", "have seen", or "had become".
+- Use the modals "can", "will", and "must". Do not use "should", "would", "may", "might", or "could". If a thing is not certain, say so once, in plain words: "Nobody knows yet."
+- Give an instruction in the imperative, one action per sentence, with the condition first: "If the link is public, make it private."
+- Do not add an "-ing" clause after a comma (", making it", ", allowing you to", ", leaving"). Write a second sentence.
+- One name for one thing. If you call it "the free plan", always call it "the free plan". Do not rotate synonyms such as "the tool", "the platform", and "the solution".
+- Use noun chains of three words or fewer. Write "the settings for meeting notes", not "the AI meeting notes settings page".
+- Define a concept term the first time you use it, in fewer than ten words: "the context window, the text the model reads at one time". Do not define product names.
+- Keep complete grammar: no contractions, and keep "the", "a", and "that".
+- One topic per spoken paragraph, and six sentences or fewer.
+- State the fact, not its importance. Do not use these words: simply, "just" as a filler, seamlessly, effortlessly, robust, powerful, comprehensive, crucial, pivotal, leverage, utilize, unlock, game-changer, revolutionize, landscape, realm, delve, "dive into", "in order to", "it is worth noting", "here is the thing", "let that sink in", "in today's world".
+- Do not use AI patterns: "it is not just X, it is Y", "this is not X, it is Y", a decorative list of three, a short question that you answer yourself ("The result? Chaos."), "in conclusion", "the bottom line".
+- No semicolons, em-dashes, or en-dashes. Use a period and start a new sentence.
+- Before you finish, find your three longest Host sentences and split any that has more than 25 words. Then search your Host text for "should", "would", "may", "might", "could", "has been", ", making", and ";", and rewrite each one.
+Apply these rules to the FINAL HOOK, every Host paragraph, and the cheat sheet. The image prompts follow the VISUAL RULES instead. The typed trailing sections use the same plain style.
 
 ====================================================================
 STRUCTURE — produce ALL of these, in this order
@@ -69,6 +90,8 @@ Chapter design:
 - THE FINAL CHAPTER is the payoff: a fast recap that INDEXES the items against the organizing idea (do not re-summarize each item at length), then the copyable cheat sheet as a [PROMPT OVERLAY / RESOLVE] block inside production markers, then a short sign-off and one comment prompt. Do NOT tease a future video.
 
 4) VERIFY blocks: whenever you state a specific number, statistic, date, price, or a legal claim, place a [VERIFY BEFORE RENDER] block INSIDE the production markers right before that spoken line, naming exactly what to confirm and how it is spoken (anything legal is spoken as an accusation or as general information, NEVER as a settled finding, and is not legal advice). NEVER invent a precise statistic, a court case, or a quote. If you do not have a real, checkable one, speak in plain language instead.
+
+4b) VIDEO CUES: when a beat would land better with real footage than a still image (a screen demo of a tool the brief names, a product walkthrough, a short public clip the brief points to), put ONE [VIDEO CLIP / RESOLVE] line INSIDE the production markers right before that spoken paragraph. Say what the clip should show and about how long, for example "[VIDEO CLIP / RESOLVE] Screen demo: pasting the class list into Copilot in Excel and the sorted table appearing, about 12 seconds". The clip starts on the first spoken words after that block, so open that paragraph with what the viewer sees ("Watch what happens when I paste the list in."). Use one to four per script, only where footage clearly helps, and keep the narration complete on its own: the video plays under it, it does not replace it.
 
 5) After the last chapter, a line of underscores, then these trailing REFERENCE sections, each fenced with === TITLE === (these are typed notes, not spoken, so the no-contraction rule does not apply here):
 === SUPPORTING RESEARCH AND EXPERT PERSPECTIVES ===

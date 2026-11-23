@@ -67,6 +67,31 @@ def load_channel_playbook() -> str:
     except Exception:
         return ""
 
+
+# Plain speech: ASD-STE100 Simplified Technical English (the controlled
+# English of aircraft manuals) adapted to a spoken script, so the Host sounds
+# like a person and not like AI writing. Adapted from the MIT-licensed
+# SimpleEnglish skill (github.com/AminBlg/SimpleEnglish), "Plain" mode: its
+# sentence rules, not the strict STE dictionary, which flattens a spoken voice.
+# The Pro prompt includes it, and every chapter request ends with it
+# (enhanced_autogen_system.py). plain_speech_report() counts what still slips.
+PLAIN_SPEECH_RULES = """The Host must sound like a smart person who talks to one viewer, not like AI writing. These rules adapt ASD-STE100 Simplified Technical English, the plain English of aircraft manuals, to speech. They control how you build each sentence. Keep the hook, the stakes, the open loop, the rhetorical questions, and the warmth.
+- One new fact per sentence. Most sentences have 8 to 15 words. No sentence has more than 25 words. An instruction to the viewer has 20 words or fewer.
+- Use the active voice and name the actor: "Google reads your files", not "your files are read".
+- Use simple tenses: present, simple past, and "will" for the future. Do not write "has been", "have seen", or "had become".
+- Use the modals "can", "will", and "must". Do not use "should", "would", "may", "might", or "could". If a thing is not certain, say so once, in plain words: "Nobody knows yet."
+- Give an instruction in the imperative, one action per sentence, with the condition first: "If the link is public, make it private."
+- Do not add an "-ing" clause after a comma (", making it", ", allowing you to", ", leaving"). Write a second sentence.
+- One name for one thing. If you call it "the free plan", always call it "the free plan". Do not rotate synonyms such as "the tool", "the platform", and "the solution".
+- Use noun chains of three words or fewer. Write "the settings for meeting notes", not "the AI meeting notes settings page".
+- Define a concept term the first time you use it, in fewer than ten words: "the context window, the text the model reads at one time". Do not define product names.
+- Keep complete grammar: no contractions, and keep "the", "a", and "that".
+- One topic per spoken paragraph, and six sentences or fewer.
+- State the fact, not its importance. Do not use these words: simply, "just" as a filler, seamlessly, effortlessly, robust, powerful, comprehensive, crucial, pivotal, leverage, utilize, unlock, game-changer, revolutionize, landscape, realm, delve, "dive into", "in order to", "it is worth noting", "here is the thing", "let that sink in", "in today's world".
+- Do not use AI patterns: "it is not just X, it is Y", "this is not X, it is Y", a decorative list of three, a short question that you answer yourself ("The result? Chaos."), "in conclusion", "the bottom line".
+- No semicolons, em-dashes, or en-dashes. Use a period and start a new sentence.
+- Before you finish, find your three longest Host sentences and split any that has more than 25 words. Then search your Host text for "should", "would", "may", "might", "could", "has been", ", making", and ";", and rewrite each one."""
+
 SCRIPT_WRITER_PRO_SYSTEM = r"""You are the LineDrive Script Writer. From a title and a short brief you write a COMPLETE, production-ready YouTube video script in ONE pass. You decide the format yourself by reading the brief: a ranked countdown / "top N" list, a set of bold future predictions, a teaching "N things" explainer, or a teardown. Do not ask which one and do not announce it. Read the brief and pick the shape a seasoned creator would, then commit to it.
 
 The host is one person speaking to camera, voiced later by a HeyGen avatar, so every spoken word must be natural to say out loud. The visuals are generated later from the prompts you write, so each image prompt must be complete and self-contained.
@@ -77,8 +102,14 @@ NON-NEGOTIABLE VOICE RULES (the avatar reads the Host text aloud)
 - NO contractions anywhere in spoken Host text. Write "do not", "it is", "you are", "cannot" — never "don't", "it's", "you're".
 - NO em-dashes, NO en-dashes, NO arrows. Use commas, periods, and the word "and". For a pause use a comma or a period. For a range say "from nine to five", never a dashed "9 to 5".
 - Spell names the way they are SPOKEN when the avatar would otherwise mangle them: "Microsoft three sixty five Copilot", "Notebook L M" (for NotebookLM), "G P T" where it helps. Keep the normal spelling in the image prompts and the typed trailing sections.
-- Short sentences mixed with longer ones. Plain English. No jargon without a one-line gloss. Rhetorical questions are good. Confident, practical, warm, never hype.
+- Plain English, built by the PLAIN SPEECH RULES below. Rhetorical questions are good. Confident, practical, warm, never hype.
 - All spoken dialogue lives OUTSIDE the production markers. NEVER put spoken dialogue inside [PRODUCTION BEGIN] ... [PRODUCTION END].
+
+====================================================================
+PLAIN SPEECH RULES (ASD-STE100, adapted for the spoken voice)
+====================================================================
+""" + PLAIN_SPEECH_RULES + r"""
+Apply these rules to the FINAL HOOK, every Host paragraph, and the cheat sheet. The image prompts follow the VISUAL RULES instead. The typed trailing sections use the same plain style.
 
 ====================================================================
 STRUCTURE — produce ALL of these, in this order
@@ -125,6 +156,8 @@ Chapter design:
 - THE FINAL CHAPTER is the payoff: a fast recap that INDEXES the items against the organizing idea (do not re-summarize each item at length), then the copyable cheat sheet as a [PROMPT OVERLAY / RESOLVE] block inside production markers, then a short sign-off and one comment prompt. Do NOT tease a future video.
 
 4) VERIFY blocks: whenever you state a specific number, statistic, date, price, or a legal claim, place a [VERIFY BEFORE RENDER] block INSIDE the production markers right before that spoken line, naming exactly what to confirm and how it is spoken (anything legal is spoken as an accusation or as general information, NEVER as a settled finding, and is not legal advice). NEVER invent a precise statistic, a court case, or a quote. If you do not have a real, checkable one, speak in plain language instead.
+
+4b) VIDEO CUES: when a beat would land better with real footage than a still image (a screen demo of a tool the brief names, a product walkthrough, a short public clip the brief points to), put ONE [VIDEO CLIP / RESOLVE] line INSIDE the production markers right before that spoken paragraph. Say what the clip should show and about how long, for example "[VIDEO CLIP / RESOLVE] Screen demo: pasting the class list into Copilot in Excel and the sorted table appearing, about 12 seconds". The clip starts on the first spoken words after that block, so open that paragraph with what the viewer sees ("Watch what happens when I paste the list in."). Use one to four per script, only where footage clearly helps, and keep the narration complete on its own: the video plays under it, it does not replace it.
 
 5) After the last chapter, a line of underscores, then these trailing REFERENCE sections, each fenced with === TITLE === (these are typed notes, not spoken, so the no-contraction rule does not apply here):
 === SUPPORTING RESEARCH AND EXPERT PERSPECTIVES ===
@@ -184,7 +217,10 @@ def build_pro_user_message(title: str, brief: str = "") -> str:
             "image prompts or a line ending in 'no people, no faces, no hands', "
             "do not copy them. Follow VISUAL RULES: the literal subject, a "
             "portrait when the paragraph is about a named person, and the party "
-            "emblem when the paragraph is about that party.\n\n"
+            "emblem when the paragraph is about that party. Where the reference "
+            "breaks the PLAIN SPEECH RULES (a sentence over 25 words, a 'could' "
+            "or 'should', an '-ing' clause after a comma), follow the rules, not "
+            "the reference.\n\n"
             f"<golden_reference>\n{golden}\n</golden_reference>"
         )
     playbook = load_channel_playbook()
@@ -328,6 +364,83 @@ def _report_chapter_count(text: str) -> None:
         print(f"   ✅ {n} chapters written (target 7 or 8)")
     else:
         print(f"   ⚠️ {n} chapters written, expected 7 or 8")
+
+
+# What plain_speech_report() counts in the spoken text: the PLAIN SPEECH RULES
+# a regex can see. Like the SimpleEnglish linter it undercounts (no passive
+# voice, no synonym rotation), so it is a drift signal, not a verdict.
+PLAIN_SPEECH_MAX_WORDS = 25
+_PS_CHECKS = {
+    "hedges": re.compile(r"\b(?:should|would|might|could)\b|\bmay\b", re.I),
+    "perfect tenses": re.compile(r"\b(?:has|have|had)\s+been\b|\b(?:has|have)\s+\w+ed\b", re.I),
+    "-ing clauses": re.compile(
+        r",\s+(?:mak|allow|enabl|ensur|highlight|creat|provid|offer|help|reduc|improv|lead|"
+        r"caus|result|leav|turn|giv|lett|forc|keep|send|show|rais|putt|bring|push|driv)ing\b",
+        re.I),
+    "filler words": re.compile(
+        r"\b(?:simply|seamless(?:ly)?|effortless(?:ly)?|robust|powerful|comprehensive|crucial|"
+        r"pivotal|leverag\w*|utiliz\w*|unlock\w*|game[- ]changer|revolutioni[sz]\w*|landscape|"
+        r"realm|delv\w*|dive into|in order to|it is worth noting|here is the thing|"
+        r"let that sink in)\b", re.I),
+    "not-X-it-is-Y lines": re.compile(
+        r"\bnot\s+(?:just|only|merely)\b|\bis\s+not\s+[^.?!\n]{1,60}[.,]\s+it\s+is\b", re.I),
+    "self-answered questions": re.compile(
+        r"(?:^|(?<=[.!?]))\s*(?:\w+\s){0,2}\w+\?\s+[A-Z]\w*(?:\s\w+){0,2}[.!]", re.M),
+    "contractions": re.compile(
+        r"\b\w+(?:n['’]t|['’]ll|['’]re|['’]ve|['’]d)\b|\b(?:it|that|there|what|here)['’]s\b", re.I),
+    "semicolons": re.compile(r";"),
+    "dashes": re.compile(r"[—–]|(?<=\w) - (?=\w)"),
+}
+# "May" the month is not a hedge.
+_PS_MONTH_MAY = re.compile(r"\bMay\b(?=\s+(?:\d|of\b|this\b|last\b|next\b))|\b(?:in|by|since|until|early|late|mid)\s+May\b")
+# The metadata block and its underscore rules. spoken_text() keeps them in a
+# writer's raw output (plain "Host:" labels), which is what gets scored.
+_PS_METADATA = re.compile(
+    r"(?im)^\s*\**\s*(?:Title|Script[- ]ID|Script[- ]Version|Script Type|Duration|Audience|Tone)"
+    r"\s*:.*$|^\s*_{10,}\s*$")
+
+
+def plain_speech_report(text: str) -> dict:
+    """Count PLAIN SPEECH RULES breaks in the words the avatar will speak:
+    sentences over PLAIN_SPEECH_MAX_WORDS plus each pattern in _PS_CHECKS."""
+    text = _PS_METADATA.sub("", text or "")
+    try:
+        from console_ui.text_processing import spoken_text
+        spoken = spoken_text(text)
+    except ImportError:
+        spoken = text
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", spoken)
+                 if len(s.split()) >= 2]
+    lengths = [len(s.split()) for s in sentences]
+    long = [s for s, n in zip(sentences, lengths) if n > PLAIN_SPEECH_MAX_WORDS]
+    counts = {"long sentences": len(long)}
+    for name, rx in _PS_CHECKS.items():
+        hits = rx.findall(spoken)
+        if name == "hedges":
+            hits = hits[:max(0, len(hits) - len(_PS_MONTH_MAY.findall(spoken)))]
+        counts[name] = len(hits)
+    words = max(1, len(spoken.split()))
+    total = sum(counts.values())
+    return {
+        "words": words,
+        "sentences": len(sentences),
+        "mean_sentence_words": round(sum(lengths) / max(1, len(lengths)), 1),
+        "longest_sentence_words": max(lengths, default=0),
+        "long_sentences": long,
+        "counts": counts,
+        "total": total,
+        "per_100_words": round(100.0 * total / words, 2),
+    }
+
+
+def plain_speech_summary(text: str) -> str:
+    """One Progress Log line for plain_speech_report()."""
+    r = plain_speech_report(text)
+    found = ", ".join(f"{n} {k}" for k, n in r["counts"].items() if n)
+    return (f"🗣️ Plain speech (ASD-STE100): {r['sentences']} sentences, "
+            f"{r['mean_sentence_words']} words on average, longest "
+            f"{r['longest_sentence_words']}; "
+            + (f"{r['total']} rule breaks ({found})" if found else "no rule breaks"))
 
 
 # ---------------------------------------------------------------------------
