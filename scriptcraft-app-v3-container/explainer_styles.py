@@ -1,0 +1,786 @@
+"""Board looks for the explainer renderer.
+
+The default look is still the particle waves. A saved board look redraws the
+same slides: handwriting that finishes on the spoken word, a camera (or a
+wipe, or a peel) between ideas, and the presenter, clips, articles and
+manual transitions left in place.
+
+These looks follow the published descriptions of Lemo-Opuscar's Sketch & Board
+styles. They are not a copy of that project's code, fonts or media. See
+STYLE_LOOKS_NOTICE.txt.
+"""
+from __future__ import annotations
+
+import math
+import re
+from typing import Optional
+
+FILM_LOOKS = ("waves", "whiteboard", "chalkboard", "sketchnote", "marker")
+FILM_LOOK_DEFAULT = "waves"
+BOARD_LOOKS = ("whiteboard", "chalkboard", "sketchnote", "marker")
+LOOK_TEST_SECONDS = 120.0
+# Hidden project that holds a bundled sample when no explainer is open.
+# list_projects skips it so it never shows up as one of the user's videos.
+LOOK_TEST_ID = "20000101_000000_a11c"
+
+# A cell on the big board, in the same pixel space the camera travels.
+CELL_W, CELL_H = 2100.0, 1280.0
+CELL_GAP_X, CELL_GAP_Y = 320.0, 380.0
+
+
+def film_look_key(choice: Optional[str] = None, saved: Optional[str] = None) -> str:
+    """Which look to draw. An explicit choice wins, then a saved look, then waves.
+
+    An unknown value is not a choice, so the current look stays.
+    """
+    if choice in FILM_LOOKS:
+        return choice
+    if saved in FILM_LOOKS:
+        return saved
+    return FILM_LOOK_DEFAULT
+
+
+def hand_ease(u: float) -> float:
+    """Slow, then fast, then slow. Zero at the start of a stroke, one at the end."""
+    u = 0.0 if u < 0 else 1.0 if u > 1 else u
+    return u - math.sin(2 * math.pi * u) / (2 * math.pi) * 0.8
+
+
+def stroke_progress(t: float, t0: float, t1: float) -> float:
+    """How much of a stroke is on the board at time t. It finishes at t1."""
+    if t1 <= t0:
+        return 1.0 if t >= t1 else 0.0
+    if t <= t0:
+        return 0.0
+    if t >= t1:
+        return 1.0
+    return hand_ease((t - t0) / (t1 - t0))
+
+
+def _glyph(width: float, spec: str) -> dict:
+    strokes = []
+    for part in spec.split("|"):
+        pts = []
+        for pair in part.split():
+            x, y = pair.split(",")
+            pts.append([round(float(x), 3), round(float(y), 3)])
+        if len(pts) == 1:
+            pts.append([round(pts[0][0] + 0.04, 3), round(pts[0][1] + 0.04, 3)])
+        if len(pts) >= 2:
+            strokes.append(pts)
+    return {"w": width, "s": strokes}
+
+
+# Single-stroke forms. Coordinates run 0–1 across the glyph, top to bottom.
+# Built for this renderer. Not a third-party font.
+_GLYPH_SPEC = {
+    "A": (0.72, "0.16,1 0.50,0.06 0.84,1|0.30,0.62 0.70,0.62"),
+    "B": (0.68, "0.18,0.98 0.18,0.06|0.18,0.06 0.58,0.06 0.74,0.22 0.58,0.48 0.18,0.48|0.20,0.48 0.64,0.48 0.78,0.70 0.62,0.98 0.18,0.98"),
+    "C": (0.66, "0.78,0.22 0.55,0.06 0.28,0.16 0.14,0.48 0.28,0.84 0.55,0.96 0.80,0.78"),
+    "D": (0.70, "0.18,0.98 0.18,0.06|0.18,0.06 0.52,0.06 0.82,0.28 0.82,0.72 0.52,0.98 0.18,0.98"),
+    "E": (0.62, "0.78,0.08 0.20,0.08 0.20,0.96 0.76,0.96|0.20,0.50 0.62,0.50"),
+    "F": (0.60, "0.78,0.08 0.22,0.08 0.22,0.98|0.22,0.50 0.64,0.50"),
+    "G": (0.70, "0.78,0.24 0.56,0.06 0.26,0.14 0.12,0.48 0.26,0.86 0.58,0.96 0.82,0.72 0.82,0.52 0.52,0.52"),
+    "H": (0.72, "0.18,0.04 0.18,0.98|0.18,0.50 0.80,0.50|0.80,0.04 0.80,0.98"),
+    "I": (0.36, "0.18,0.08 0.18,0.96"),
+    "J": (0.52, "0.62,0.06 0.62,0.72 0.46,0.96 0.22,0.86"),
+    "K": (0.70, "0.18,0.04 0.18,0.98|0.74,0.08 0.22,0.52 0.76,0.98"),
+    "L": (0.58, "0.20,0.06 0.20,0.96 0.74,0.96"),
+    "M": (0.86, "0.12,0.98 0.12,0.12 0.48,0.58 0.84,0.12 0.84,0.98"),
+    "N": (0.74, "0.16,0.98 0.16,0.10 0.82,0.92 0.82,0.06"),
+    "O": (0.72, "0.50,0.06 0.82,0.22 0.88,0.52 0.78,0.86 0.50,0.98 0.22,0.86 0.12,0.52 0.22,0.18 0.50,0.06 0.62,0.08"),
+    "P": (0.64, "0.18,0.98 0.18,0.08|0.18,0.08 0.60,0.08 0.78,0.26 0.60,0.50 0.18,0.50"),
+    "Q": (0.74, "0.50,0.06 0.80,0.22 0.86,0.52 0.74,0.84 0.48,0.96 0.22,0.84 0.14,0.50 0.24,0.18 0.50,0.06|0.58,0.70 0.86,0.98"),
+    "R": (0.68, "0.18,0.98 0.18,0.08|0.18,0.08 0.60,0.08 0.76,0.26 0.58,0.48 0.18,0.48|0.46,0.48 0.80,0.98"),
+    "S": (0.62, "0.74,0.18 0.52,0.06 0.24,0.16 0.20,0.36 0.70,0.62 0.74,0.80 0.50,0.96 0.22,0.84"),
+    "T": (0.66, "0.12,0.10 0.88,0.10|0.50,0.10 0.50,0.98"),
+    "U": (0.72, "0.16,0.08 0.16,0.70 0.36,0.96 0.64,0.96 0.84,0.70 0.84,0.08"),
+    "V": (0.70, "0.12,0.08 0.50,0.98 0.88,0.08"),
+    "W": (0.90, "0.08,0.08 0.28,0.98 0.50,0.42 0.72,0.98 0.92,0.08"),
+    "X": (0.70, "0.14,0.08 0.86,0.98|0.86,0.08 0.14,0.98"),
+    "Y": (0.68, "0.12,0.08 0.50,0.48 0.88,0.08|0.50,0.48 0.50,0.98"),
+    "Z": (0.66, "0.16,0.10 0.84,0.10 0.18,0.96 0.84,0.96"),
+    "a": (0.62, "0.72,0.46 0.48,0.40 0.24,0.52 0.22,0.74 0.42,0.92 0.70,0.86 0.74,0.48 0.74,0.96"),
+    "b": (0.62, "0.22,0.08 0.22,0.96|0.22,0.52 0.48,0.46 0.70,0.64 0.62,0.90 0.36,0.96 0.22,0.82"),
+    "c": (0.56, "0.70,0.50 0.48,0.42 0.24,0.56 0.24,0.78 0.48,0.94 0.70,0.84"),
+    "d": (0.64, "0.74,0.08 0.74,0.96|0.74,0.56 0.50,0.44 0.26,0.62 0.24,0.86 0.46,0.96 0.74,0.80"),
+    "e": (0.60, "0.22,0.66 0.70,0.62 0.68,0.48 0.42,0.42 0.22,0.58 0.24,0.82 0.48,0.96 0.70,0.86"),
+    "f": (0.46, "0.62,0.10 0.40,0.04 0.28,0.18 0.30,0.98|0.16,0.42 0.52,0.42"),
+    "g": (0.62, "0.70,0.48 0.46,0.42 0.24,0.58 0.26,0.82 0.50,0.94 0.72,0.78|0.70,0.48 0.72,1.12 0.48,1.24 0.26,1.10"),
+    "h": (0.62, "0.20,0.06 0.20,0.98|0.20,0.58 0.42,0.46 0.68,0.58 0.68,0.98"),
+    "i": (0.32, "0.18,0.22 0.22,0.26|0.20,0.46 0.20,0.96"),
+    "j": (0.40, "0.28,0.22 0.32,0.26|0.30,0.46 0.30,1.08 0.14,1.22"),
+    "k": (0.60, "0.20,0.08 0.20,0.98|0.62,0.48 0.22,0.70 0.64,0.98"),
+    "l": (0.32, "0.18,0.06 0.18,0.86 0.32,0.98"),
+    "m": (0.84, "0.12,0.98 0.12,0.50|0.12,0.60 0.28,0.46 0.44,0.58 0.44,0.98|0.44,0.60 0.60,0.46 0.78,0.58 0.78,0.98"),
+    "n": (0.64, "0.16,0.98 0.16,0.50|0.16,0.60 0.38,0.46 0.62,0.60 0.62,0.98"),
+    "o": (0.62, "0.46,0.42 0.70,0.56 0.68,0.78 0.46,0.96 0.22,0.78 0.20,0.56 0.40,0.42 0.56,0.44"),
+    "p": (0.62, "0.20,0.46 0.20,1.22|0.20,0.56 0.46,0.44 0.68,0.60 0.62,0.84 0.40,0.96 0.20,0.82"),
+    "q": (0.64, "0.72,0.46 0.72,1.22|0.72,0.58 0.48,0.44 0.24,0.62 0.26,0.86 0.50,0.96 0.72,0.80"),
+    "r": (0.46, "0.16,0.98 0.16,0.50|0.16,0.62 0.36,0.46 0.58,0.50"),
+    "s": (0.52, "0.62,0.50 0.40,0.42 0.20,0.54 0.48,0.70 0.64,0.80 0.40,0.96 0.18,0.86"),
+    "t": (0.42, "0.28,0.16 0.28,0.84 0.46,0.98|0.12,0.42 0.50,0.42"),
+    "u": (0.64, "0.16,0.46 0.16,0.78 0.36,0.96 0.58,0.84 0.62,0.46|0.62,0.70 0.62,0.98"),
+    "v": (0.60, "0.12,0.46 0.40,0.98 0.70,0.46"),
+    "w": (0.80, "0.08,0.48 0.24,0.98 0.44,0.62 0.62,0.98 0.80,0.48"),
+    "x": (0.58, "0.14,0.48 0.70,0.98|0.70,0.48 0.14,0.98"),
+    "y": (0.60, "0.12,0.46 0.40,0.82|0.70,0.46 0.28,1.16 0.12,1.06"),
+    "z": (0.56, "0.16,0.48 0.68,0.48 0.18,0.96 0.70,0.96"),
+    "0": (0.64, "0.50,0.06 0.80,0.24 0.84,0.52 0.74,0.84 0.50,0.98 0.24,0.84 0.14,0.52 0.22,0.22 0.50,0.06"),
+    "1": (0.42, "0.16,0.28 0.40,0.08 0.40,0.96"),
+    "2": (0.64, "0.16,0.28 0.28,0.08 0.58,0.08 0.78,0.26 0.20,0.96 0.80,0.96"),
+    "3": (0.62, "0.16,0.16 0.50,0.06 0.74,0.22 0.50,0.48 0.76,0.70 0.52,0.96 0.18,0.84"),
+    "4": (0.64, "0.62,0.98 0.62,0.08 0.14,0.62 0.78,0.62"),
+    "5": (0.62, "0.74,0.08 0.22,0.08 0.18,0.48 0.52,0.42 0.76,0.60 0.70,0.88 0.40,0.98 0.16,0.84"),
+    "6": (0.62, "0.72,0.18 0.46,0.06 0.22,0.36 0.18,0.66 0.36,0.96 0.64,0.90 0.74,0.66 0.52,0.50 0.22,0.58"),
+    "7": (0.62, "0.14,0.10 0.80,0.10 0.32,0.98"),
+    "8": (0.62, "0.48,0.48 0.22,0.28 0.36,0.06 0.66,0.10 0.74,0.32 0.48,0.48 0.22,0.70 0.36,0.96 0.66,0.94 0.76,0.70 0.48,0.48"),
+    "9": (0.62, "0.28,0.84 0.52,0.96 0.76,0.66 0.80,0.36 0.58,0.08 0.30,0.14 0.22,0.36 0.42,0.50 0.74,0.42"),
+    ".": (0.28, "0.20,0.90 0.28,0.98"),
+    ",": (0.28, "0.24,0.86 0.30,0.96 0.16,1.10"),
+    "!": (0.30, "0.18,0.06 0.18,0.68|0.16,0.90 0.22,0.98"),
+    "?": (0.52, "0.12,0.22 0.28,0.06 0.58,0.06 0.74,0.24 0.48,0.48 0.40,0.68|0.38,0.90 0.44,0.98"),
+    "'": (0.24, "0.16,0.06 0.22,0.22"),
+    "-": (0.46, "0.08,0.58 0.84,0.58"),
+    ":": (0.28, "0.18,0.32 0.24,0.38|0.18,0.78 0.24,0.86"),
+    ";": (0.28, "0.18,0.32 0.24,0.38|0.22,0.74 0.26,0.86 0.12,1.02"),
+}
+
+
+def glyphs() -> dict:
+    return {ch: _glyph(w, spec) for ch, (w, spec) in _GLYPH_SPEC.items()}
+
+
+_GLYPHS = glyphs()
+
+
+def glyph_of(ch: str) -> dict:
+    if ch in _GLYPHS:
+        return _GLYPHS[ch]
+    up = ch.upper()
+    if up in _GLYPHS:
+        return _GLYPHS[up]
+    return _GLYPHS["?"]
+
+
+def schedule_word(text: str, t0: float, t1: float) -> list:
+    """Stroke times for one spoken word. The last stroke ends at t1.
+
+    Every stroke sits inside [t0, t1], in writing order. A space has no strokes.
+    """
+    t0, t1 = float(t0), float(t1)
+    if t1 < t0:
+        t0, t1 = t1, t0
+    pieces = []
+    for ch in text or "":
+        if ch.isspace():
+            pieces.append((ch, 0))
+            continue
+        pieces.append((ch, len(glyph_of(ch)["s"])))
+    total = sum(n for _, n in pieces) or 1
+    span = max(0.04, t1 - t0)
+    cursor = t0
+    out = []
+    for ch, n in pieces:
+        times = []
+        for _i in range(n):
+            dur = span / total
+            times.append([round(cursor, 4), round(min(t1, cursor + dur), 4)])
+            cursor += dur
+        out.append({"ch": ch, "n": n, "times": times})
+    # The word is finished when the narrator finishes it.
+    for item in reversed(out):
+        if item["times"]:
+            item["times"][-1][1] = round(t1, 4)
+            break
+    return out
+
+
+def _tokens(text: str) -> list:
+    return re.findall(r"[A-Za-z0-9']+", text or "")
+
+
+def words_in_window(words: list, t0: float, t1: float) -> list:
+    out = []
+    for w in words or []:
+        try:
+            start = float(w.get("start"))
+        except (TypeError, ValueError):
+            continue
+        if t0 - 0.02 <= start < t1 - 0.01 and (w.get("text") or "").strip():
+            out.append(w)
+    return out
+
+
+def _match_spoken(board_words: list, spoken: list) -> list:
+    """Pair each board word with a narration word, in order. Unmatched words
+    are returned with no timing so the caller can spread them."""
+    pairs = []
+    i = 0
+    for raw in board_words:
+        key = re.sub(r"[^a-z0-9']", "", raw.lower())
+        hit = None
+        while i < len(spoken):
+            have = re.sub(r"[^a-z0-9']", "", str(spoken[i].get("text") or "").lower())
+            i += 1
+            if have and have == key:
+                hit = spoken[i - 1]
+                break
+        pairs.append((raw, hit))
+    return pairs
+
+
+# Palettes follow the published colour logic for each look. The numbers are
+# the ones those descriptions name, used here as a paint recipe, not as assets.
+PALETTES = {
+    "whiteboard": {
+        "board": "#f3f0e8", "board2": "#e4ddd0", "ink": "#23262c", "blue": "#2a5cb3",
+        "accent": "#d97757", "ghost": "#8e97a6", "sheen": "#ffffff", "frame": "#d9d3c7",
+        "emphasis": "#2a5cb3",
+    },
+    "chalkboard": {
+        "board": "#143328", "board2": "#10281f", "ink": "#f4f1ea", "blue": "#f4f1ea",
+        "accent": "#e39b4a", "ghost": "#143328", "sheen": "#000000", "frame": "#6b4528",
+        "wall": "#efe6d6", "emphasis": "#e39b4a",
+    },
+    "sketchnote": {
+        "board": "#fbfaf6", "board2": "#f3f1ea", "ink": "#1e1e22", "blue": "#5b5852",
+        "accent": "#e2b000", "ghost": "#e4e0d6", "sheen": "#000000", "frame": "#fbfaf6",
+        "emphasis": "#e2b000",
+    },
+    "marker": {
+        "board": "#faf9f5", "board2": "#f3f1ea", "ink": "#1b1c20", "blue": "#2456d6",
+        "accent": "#e23b2e", "ghost": "#faf9f5", "sheen": "#000000", "frame": "#faf9f5",
+        "emphasis": "#e23b2e",
+    },
+}
+
+
+def ink_rules(look: str) -> dict:
+    look = film_look_key(look)
+    return {
+        "multiply": look in ("whiteboard", "marker", "sketchnote"),
+        "pool": look == "whiteboard",
+        "dry": look == "whiteboard",
+        "overshoot": 0.08 if look != "chalkboard" else 0.02,
+        "pen": look == "whiteboard",
+        "magnets": look == "whiteboard",
+        "pullback": look in ("whiteboard", "sketchnote"),
+        "dots": look == "sketchnote",
+        "chalk": look == "chalkboard",
+        "peel": look == "marker",
+    }
+
+
+def native_style(look: str, kind: str = "") -> str:
+    """What an automatic transition becomes on a board. Manual chips are not passed here."""
+    if look == "chalkboard":
+        return "wipe"
+    if look == "marker":
+        return "peel"
+    if look == "whiteboard" and kind == "chapter":
+        return "wipe"
+    return "camera"
+
+
+def kept_fx(slide: dict, look: str) -> str:
+    """The effect the page should still run.
+
+    Waves keep every effect. A board look keeps a hand-picked chip and replaces
+    an automatic glitch-style effect with a camera move, an eraser wipe or a peel.
+    """
+    style = (slide or {}).get("fx") or ""
+    if film_look_key(look) == "waves" or not style:
+        return style
+    if (slide or {}).get("fx_origin") == "manual":
+        return style
+    return ""
+
+
+def camera_keys(regions: list, look: str, duration: float) -> list:
+    """Pen-led moves between regions, a hold while a region is read, and a
+    pull-back on the looks that end on the whole board."""
+    look = film_look_key(look)
+    duration = max(0.5, float(duration or 0))
+    if not regions:
+        return [{"t": 0.0, "x": 960.0, "y": 540.0, "z": 1.0}]
+    if look in ("chalkboard", "marker"):
+        r = regions[0]
+        cx, cy = r["x"] + r["w"] / 2, r["y"] + r["h"] / 2
+        z = 1680.0 / r["w"]
+        keys = [{"t": 0.0, "x": round(cx, 1), "y": round(cy, 1), "z": round(z, 4)}]
+        if look == "chalkboard":
+            # Once, late, the frame opens enough to show the wood around the slate.
+            keys.append({"t": round(max(0.0, duration - 2.4), 3), "x": round(cx, 1),
+                         "y": round(cy, 1), "z": round(z, 4)})
+            keys.append({"t": round(max(0.2, duration - 0.4), 3), "x": round(cx, 1),
+                         "y": round(cy, 1), "z": round(z * 0.78, 4)})
+        return keys
+    keys = []
+    for i, r in enumerate(regions):
+        cx, cy = r["x"] + r["w"] / 2, r["y"] + r["h"] / 2
+        z = 1680.0 / r["w"]
+        arrive = float(r["t0"]) + (0.05 if i == 0 else 0.55)
+        depart = float(r["t0"]) - 0.05
+        if i == 0:
+            keys.append({"t": 0.0, "x": round(cx, 1), "y": round(cy, 1), "z": round(z * 1.08, 4)})
+            keys.append({"t": round(min(duration, arrive), 3), "x": round(cx, 1), "y": round(cy, 1), "z": round(z, 4)})
+        else:
+            keys.append({"t": round(max(0.0, depart), 3), "x": keys[-1]["x"], "y": keys[-1]["y"], "z": keys[-1]["z"]})
+            keys.append({"t": round(min(duration, max(depart + 0.05, arrive)), 3),
+                         "x": round(cx, 1), "y": round(cy, 1), "z": round(z, 4)})
+    if ink_rules(look)["pullback"] and regions:
+        xs = [r["x"] for r in regions] + [r["x"] + r["w"] for r in regions]
+        ys = [r["y"] for r in regions] + [r["y"] + r["h"] for r in regions]
+        cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+        z = min(1760.0 / max(1.0, max(xs) - min(xs)), 960.0 / max(1.0, max(ys) - min(ys)))
+        t_back = max(keys[-1]["t"] + 0.2, duration - 2.2)
+        keys.append({"t": round(min(duration, t_back), 3), "x": keys[-1]["x"], "y": keys[-1]["y"], "z": keys[-1]["z"]})
+        keys.append({"t": round(duration, 3), "x": round(cx, 1), "y": round(cy, 1), "z": round(z, 4)})
+    keys.sort(key=lambda k: k["t"])
+    # Two keys at the same time would skip the move. Nudge the later one.
+    for i in range(1, len(keys)):
+        if keys[i]["t"] <= keys[i - 1]["t"]:
+            keys[i]["t"] = round(keys[i - 1]["t"] + 0.05, 3)
+    return keys
+
+
+def _ease_cam(p: float) -> float:
+    p = 0.0 if p < 0 else 1.0 if p > 1 else p
+    return p * p * (3 - 2 * p)
+
+
+def camera_at(t: float, keys: list) -> dict:
+    if not keys:
+        return {"x": 960.0, "y": 540.0, "z": 1.0}
+    t = float(t)
+    if t <= keys[0]["t"]:
+        return {"x": keys[0]["x"], "y": keys[0]["y"], "z": keys[0]["z"]}
+    if t >= keys[-1]["t"]:
+        return {"x": keys[-1]["x"], "y": keys[-1]["y"], "z": keys[-1]["z"]}
+    for a, b in zip(keys, keys[1:]):
+        if a["t"] <= t <= b["t"]:
+            span = max(1e-6, b["t"] - a["t"])
+            p = _ease_cam((t - a["t"]) / span)
+            return {"x": a["x"] + (b["x"] - a["x"]) * p, "y": a["y"] + (b["y"] - a["y"]) * p,
+                    "z": a["z"] + (b["z"] - a["z"]) * p}
+    return {"x": keys[-1]["x"], "y": keys[-1]["y"], "z": keys[-1]["z"]}
+
+
+_SC_RE = re.compile(
+    r'data-sc="([a-z0-9-]+)"[^>]*?\bx="([\d.]+)"\s+y="([\d.]+)"\s+width="([\d.]+)"\s+height="([\d.]+)"')
+_PILL_RE = re.compile(r'class="sc-pill"[^>]*>([^<]+)')
+
+
+def objects_in_section(html: str, sid: str) -> list:
+    if not html or not sid:
+        return []
+    m = re.search(r'id="' + re.escape(sid) + r'"[\s\S]*?</section>', html)
+    chunk = m.group(0) if m else ""
+    pill = _PILL_RE.search(chunk)
+    label = pill.group(1).strip() if pill else ""
+    found = []
+    for name, x, y, w, h in _SC_RE.findall(chunk):
+        found.append({"name": name, "x": float(x), "y": float(y), "w": float(w), "h": float(h),
+                      "label": label if name in ("brand", "bot") else ""})
+    return found[:8]
+
+
+def _region_box(index: int, look: str) -> tuple:
+    if look in ("chalkboard", "marker"):
+        return 160.0, 120.0
+    col = index % 3
+    row = index // 3
+    return 180.0 + col * (CELL_W + CELL_GAP_X), 160.0 + row * (CELL_H + CELL_GAP_Y)
+
+
+def _color_for(look: str, role: str) -> str:
+    pal = PALETTES[look]
+    if role == "accent":
+        return pal["accent"]
+    if role == "given":
+        return pal["blue"]
+    if role == "answer":
+        return pal["accent"]
+    return pal["ink"]
+
+
+def _layout_region(slide: dict, index: int, look: str, spoken: list, html: str) -> dict:
+    x, y = _region_box(index, look)
+    t0, t1 = float(slide.get("t0") or 0), float(slide.get("t1") or 0)
+    if t1 <= t0:
+        t1 = t0 + 1.0
+    text = (slide.get("spoken") or slide.get("text") or slide.get("idea") or "").strip()
+    board_words = _tokens(text)[:14]
+    if not board_words:
+        board_words = ["…"]
+    pairs = _match_spoken(board_words, spoken)
+    # Words the narration did not name are spread across the slide so they
+    # still get written, after the matched ones.
+    unmatched = [(raw, hit) for raw, hit in pairs if hit is None]
+    if unmatched:
+        span = max(0.4, t1 - t0 - 0.3)
+        step = span / len(unmatched)
+        cursor = t0 + 0.15
+        fixed = []
+        for raw, hit in pairs:
+            if hit is not None:
+                fixed.append((raw, hit))
+                continue
+            dur = min(0.45, step * 0.8)
+            fixed.append((raw, {"text": raw, "start": cursor, "end": cursor + dur}))
+            cursor += step
+        pairs = fixed
+    host = slide.get("host") or ""
+    text_w = CELL_W * (0.56 if host == "pip" else 0.86)
+    lines = []
+    letters = []
+    size_title = 92.0 if slide.get("kind") == "chapter" else 64.0
+    size_body = 46.0
+    cx, cy = x + 90.0, y + 110.0
+    # First line is the title (up to four words). The rest wrap underneath.
+    title_n = min(4, len(pairs)) if slide.get("kind") == "chapter" else min(3, len(pairs))
+    chunks = [pairs[:title_n], pairs[title_n:]]
+    sizes = [size_title, size_body]
+    for li, (chunk, size) in enumerate(zip(chunks, sizes)):
+        if not chunk:
+            continue
+        cursor_x = cx
+        line_y = cy if li == 0 else cy + size_title + 36 + (li - 1) * (size_body + 28)
+        max_x = x + 90 + text_w
+        words_out = []
+        for wi, (raw, hit) in enumerate(chunk):
+            start = float(hit.get("start") or t0)
+            end = float(hit.get("end") or start + 0.3)
+            if end <= start:
+                end = start + 0.18
+            role = "ink"
+            if look == "marker":
+                if wi == len(chunk) - 1 and li == len([c for c in chunks if c]) - 1:
+                    role = "answer"
+                elif wi == 0 and li == 1:
+                    role = "given"
+            elif wi == len(chunk) - 1 and li == 0:
+                role = "accent"
+            scheduled = schedule_word(raw, start, end)
+            width = 0.0
+            for item in scheduled:
+                width += glyph_of(item["ch"])["w"] * size * 0.62
+                if item["ch"].isspace():
+                    width += size * 0.28
+            width += size * 0.34
+            if cursor_x + width > max_x and cursor_x > cx + 10:
+                line_y += size + 22
+                cursor_x = cx
+            color = _color_for(look, role)
+            word_letters = []
+            pen_x = cursor_x
+            for item in scheduled:
+                g = glyph_of(item["ch"])
+                if item["ch"].isspace() or not item["times"]:
+                    pen_x += size * 0.28
+                    continue
+                letter = {"ch": item["ch"], "x": round(pen_x, 1), "y": round(line_y, 1),
+                          "size": size, "color": color, "region": index,
+                          "strokes": [{"i": i, "t0": a, "t1": b} for i, (a, b) in enumerate(item["times"])]}
+                letters.append(letter)
+                word_letters.append(letter)
+                pen_x += g["w"] * size * 0.62
+            words_out.append({"text": raw, "t0": round(start, 4), "t1": round(end, 4), "role": role})
+            cursor_x = pen_x + size * 0.34
+        if words_out:
+            lines.append({"y": line_y, "size": size, "banner": look == "sketchnote" and li == 0,
+                          "words": words_out})
+    objs = []
+    for ob in objects_in_section(html, slide.get("id") or ""):
+        ox = x + 80 + (ob["x"] / 1920.0) * (CELL_W - 200)
+        oy = y + 80 + (ob["y"] / 1080.0) * (CELL_H - 180)
+        ow = max(80.0, ob["w"] * (CELL_W / 1920.0) * 0.9)
+        oh = max(60.0, ob["h"] * (CELL_H / 1080.0) * 0.9)
+        objs.append({"name": ob["name"], "x": round(ox, 1), "y": round(oy, 1),
+                     "w": round(ow, 1), "h": round(oh, 1), "label": ob.get("label") or "",
+                     "t0": round(t0 + 0.1, 3), "t1": round(min(t1, t0 + 1.1), 3)})
+    if objs and look == "whiteboard":
+        objs[0]["magnet"] = True
+    return {"id": slide.get("id") or f"r{index}", "i": index, "x": x, "y": y, "w": CELL_W, "h": CELL_H,
+            "t0": round(t0, 3), "t1": round(t1, 3), "kind": slide.get("kind") or "slide",
+            "host": host, "lines": lines, "letters": letters, "objects": objs}
+
+
+def film_payload(compiled: dict, words: Optional[list] = None, look: Optional[str] = None,
+                 emphasis: Optional[dict] = None) -> dict:
+    """What the board engine draws. Waves return a marker and nothing else,
+    so the page stays the current look."""
+    look = film_look_key(look)
+    if look == "waves":
+        return {"look": "waves"}
+    slides = list((compiled or {}).get("slides") or [])
+    html = (compiled or {}).get("html") or ""
+    regions = []
+    letters = []
+    for i, slide in enumerate(slides):
+        if slide.get("kind") in ("intro", "end"):
+            continue
+        spoken = words_in_window(words or [], float(slide.get("t0") or 0), float(slide.get("t1") or 0))
+        region = _layout_region(slide, len(regions), look, spoken, html)
+        letters.extend(region.pop("letters"))
+        regions.append(region)
+    duration = float((compiled or {}).get("end") or (compiled or {}).get("duration") or 0)
+    if regions:
+        duration = max(duration, regions[-1]["t1"])
+    native = []
+    for slide in slides:
+        style = slide.get("fx") or ""
+        if not style or slide.get("fx_origin") == "manual":
+            continue
+        if slide.get("kind") in ("intro", "end"):
+            continue
+        native.append({"id": slide.get("id") or "", "t": float(slide.get("t0") or 0),
+                       "dur": max(0.45, float(slide.get("fx_dur") or 0.6)),
+                       "style": native_style(look, slide.get("kind") or "")})
+    manual = [slide.get("id") for slide in slides
+              if slide.get("fx") and slide.get("fx_origin") == "manual"]
+    return {
+        "look": look,
+        "palette": PALETTES[look],
+        "ink": ink_rules(look),
+        "glyphs": _GLYPHS,
+        "regions": regions,
+        "letters": letters,
+        "camera": camera_keys(regions, look, duration or 1),
+        "native": native,
+        "manual": manual,
+        "emphasis": (emphasis or {}).get("marks") or [],
+    }
+
+
+def page_fx(slides: list, look: Optional[str] = None) -> list:
+    """Effects the existing transition canvas should still play."""
+    look = film_look_key(look)
+    out = []
+    for s in slides or []:
+        style = kept_fx(s, look)
+        if not style:
+            continue
+        out.append({"id": s.get("id"), "t": s.get("t0"), "dur": s.get("fx_dur"),
+                    "style": style, "amp": s.get("fx_amp") or 1, "why": s.get("fx_reason") or "",
+                    "manual": s.get("fx_origin") == "manual"})
+    return out
+
+
+def look_test_span(compiled: dict, *, seconds: float = LOOK_TEST_SECONDS,
+                   clips: Optional[list] = None, articles: Optional[list] = None) -> dict:
+    """The first stretch of the video, about two minutes, from the start.
+
+    A presenter slide, a clip, an article and a transition that begin just
+    after that window are pulled in when they are close. Ones far later stay
+    in the full video. The hook is the opening. An intro that sits in the
+    window is included.
+    """
+    slides = list((compiled or {}).get("slides") or [])
+    start = float((compiled or {}).get("start") or 0)
+    video_end = float((compiled or {}).get("end") or (compiled or {}).get("duration") or start)
+    if video_end <= start and slides:
+        video_end = max(float(s.get("t1") or start) for s in slides)
+    seconds = max(5.0, float(seconds or LOOK_TEST_SECONDS))
+    end = min(video_end, start + seconds) if video_end > start else start + seconds
+    clip_ids = {c.get("slide") for c in (clips or []) if c.get("slide")}
+    art_ids = {a.get("slide") for a in (articles or []) if a.get("slide")}
+    clock = (compiled or {}).get("clock") or {}
+    intro = clock.get("intro") or {}
+
+    def first(pred):
+        for s in slides:
+            if pred(s):
+                try:
+                    return float(s.get("t0") or 0)
+                except (TypeError, ValueError):
+                    return 0.0
+        return None
+
+    interests = []
+    presenter_t = first(lambda s: s.get("host"))
+    clip_t = first(lambda s: s.get("id") in clip_ids)
+    article_t = first(lambda s: s.get("id") in art_ids)
+    trans_t = first(lambda s: s.get("fx"))
+    if presenter_t is not None:
+        interests.append(presenter_t)
+    if clip_t is not None:
+        interests.append(clip_t)
+    if article_t is not None:
+        interests.append(article_t)
+    if trans_t is not None:
+        interests.append(trans_t)
+    try:
+        intro_t = float(intro.get("wall0"))
+    except (TypeError, ValueError):
+        intro_t = None
+    if intro_t is not None:
+        interests.append(intro_t)
+    limit = start + seconds + 40.0
+    for t in interests:
+        if start <= t < limit:
+            end = max(end, min(video_end or t + 4, t + 6.0))
+    if video_end > start:
+        end = min(video_end, end)
+    end = max(start + min(4.0, max(0.5, (video_end or start + 4) - start)), end)
+
+    def inside(t):
+        return t is not None and start - 0.05 <= t < end + 0.05
+
+    chapter = first(lambda s: s.get("kind") == "chapter")
+    hook = bool(slides) and (chapter is None or chapter > start + 0.2 or float(slides[0].get("t0") or 0) <= start + 0.05)
+    return {
+        "start": round(start, 3),
+        "end": round(end, 3),
+        "seconds": round(max(0.0, end - start), 3),
+        "features": {
+            "hook": hook and start <= float(slides[0].get("t0") or 0) < end if slides else False,
+            "intro": inside(intro_t),
+            "presenter": inside(presenter_t),
+            "clip": inside(clip_t),
+            "article": inside(article_t),
+            "transition": inside(trans_t),
+        },
+    }
+
+
+def _beat(sid, kind, t0, t1, spoken, *, host="", objects="", fx="", origin="", section=""):
+    return {"id": sid, "kind": kind, "t0": t0, "t1": t1, "spoken": spoken, "text": spoken,
+            "host": host, "fx": fx, "fx_origin": origin, "fx_dur": 0.6 if fx else 0,
+            "fx_amp": 1, "fx_reason": origin, "section": section, "idea": spoken,
+            "_objects": objects}
+
+
+def sample_lesson() -> dict:
+    """A bundled two-minute lesson used when no explainer project is open.
+
+    It has a hook, an intro after the hook, a presenter slide, a clip, an
+    article line, and a transition, so the test clip has each of those when
+    the open project does not.
+    """
+    beats = [
+        _beat("s01", "scene", 0.0, 8.0,
+              "A question lands on your phone and the chatbot starts to think.",
+              objects="phone"),
+        _beat("s02", "chapter", 8.0, 12.0, "The path inside the model.", section="Path"),
+        _beat("s03", "slide", 12.0, 28.0,
+              "Here is the short version of how an answer gets made.",
+              host="pip"),
+        _beat("s04", "slide", 28.0, 46.0,
+              "The model breaks the words into tokens and scores the next one.",
+              objects="chart"),
+        _beat("s05", "slide", 46.0, 64.0,
+              "A short clip shows the same steps on a real screen.",
+              fx="glitch", origin="auto"),
+        _beat("s06", "slide", 64.0, 82.0,
+              "The article says the model predicts one token at a time."),
+        _beat("s07", "scene", 82.0, 100.0,
+              "Nvidia builds the chips that run these models.",
+              objects="brand"),
+        _beat("s08", "slide", 100.0, 120.0,
+              "That is the whole loop from question to reply.",
+              fx="pixel", origin="manual"),
+    ]
+    words = []
+    parts = []
+    for b in beats:
+        words.extend(_time_words(b["spoken"], b["t0"], b["t1"]))
+        extra = ""
+        if b["_objects"] == "phone":
+            extra = '<svg class="sc" data-sc="phone" data-depth="1.2" x="1280" y="560" width="200" height="360" viewBox="0 0 82 168"></svg>'
+        elif b["_objects"] == "chart":
+            extra = '<svg class="sc" data-sc="chart" data-depth="1" x="1180" y="420" width="520" height="340" viewBox="0 0 200 130"></svg>'
+        elif b["_objects"] == "brand":
+            extra = ('<svg class="sc sc-brand" data-sc="brand" data-depth="1" x="700" y="280" width="460" height="460" '
+                     'viewBox="0 0 520 520"></svg><div class="sc-pill">Nvidia</div>')
+        host = f' data-host="{b["host"]}"' if b["host"] else ""
+        parts.append(
+            f'<section class="slide kind-{b["kind"]}" id="{b["id"]}" data-kind="{b["kind"]}" '
+            f'data-t0="{b["t0"]:.3f}" data-t1="{b["t1"]:.3f}" data-hud="off" data-transition="cut"{host}>'
+            f'<h1 class="h2">{b["spoken"]}</h1>{extra}</section>')
+    slides = []
+    for b in beats:
+        slides.append({k: v for k, v in b.items() if k != "_objects"})
+    return {
+        "compiled": {"html": "\n".join(parts), "slides": slides, "duration": 120.0,
+                     "start": 0.0, "end": 120.0, "sections": ["Path"], "host_windows": [],
+                     "host_sections": [], "host_on": True,
+                     "clock": {"intro": {"wall0": 8.0, "wall1": 12.0}, "intro_dur": 4.0}},
+        "words": words,
+        "clips": [{"id": "clip1", "slide": "s05", "t0": 46.0, "t1": 64.0, "audio": "mute"}],
+        "articles": [{"id": "art1", "slide": "s06"}],
+        "title": "How a chatbot answers",
+    }
+
+
+def demo_lesson() -> dict:
+    """About twenty seconds of the whiteboard look, for the committed sample."""
+    beats = [
+        _beat("d1", "scene", 0.0, 5.0, "A question lands on the board.", objects="phone"),
+        _beat("d2", "slide", 5.0, 10.5, "Tokens score the next word.", objects="chart"),
+        _beat("d3", "slide", 10.5, 15.5, "One model writes the reply.", host="pip"),
+        _beat("d4", "slide", 15.5, 20.0, "The whole lesson on one board.", fx="glitch", origin="auto"),
+    ]
+    words = []
+    parts = []
+    for b in beats:
+        words.extend(_time_words(b["spoken"], b["t0"], b["t1"]))
+        extra = ""
+        if b["_objects"] == "phone":
+            extra = '<svg class="sc" data-sc="phone" data-depth="1.2" x="1240" y="520" width="220" height="380" viewBox="0 0 82 168"></svg>'
+        elif b["_objects"] == "chart":
+            extra = '<svg class="sc" data-sc="chart" data-depth="1" x="1100" y="400" width="560" height="360" viewBox="0 0 200 130"></svg>'
+        host = f' data-host="{b["host"]}"' if b["host"] else ""
+        parts.append(
+            f'<section class="slide kind-{b["kind"]}" id="{b["id"]}" data-kind="{b["kind"]}" '
+            f'data-t0="{b["t0"]:.3f}" data-t1="{b["t1"]:.3f}" data-hud="off" data-transition="cut"{host}>'
+            f'<h1 class="h2">{b["spoken"]}</h1>{extra}</section>')
+    slides = [{k: v for k, v in b.items() if k != "_objects"} for b in beats]
+    return {"compiled": {"html": "\n".join(parts), "slides": slides, "duration": 20.0,
+                         "start": 0.0, "end": 20.0, "sections": ["Lesson"],
+                         "host_windows": [], "host_sections": [], "host_on": False},
+            "words": words}
+
+
+def _time_words(text: str, t0: float, t1: float) -> list:
+    raw = _tokens(text)
+    if not raw:
+        return []
+    span = max(0.3, (t1 - t0) - 0.35)
+    step = span / len(raw)
+    t = t0 + 0.2
+    out = []
+    for w in raw:
+        dur = min(0.48, max(0.12, step * 0.82))
+        end = min(t1 - 0.05, t + dur)
+        if end <= t:
+            end = t + 0.08
+        out.append({"text": w, "start": round(t, 3), "end": round(end, 3)})
+        t += step
+    return out
+
+
+def sample_raw(lesson: Optional[dict] = None) -> str:
+    """Sections the compiler can time from the bundled lesson's narration."""
+    lesson = lesson or sample_lesson()
+    parts = []
+    html = lesson["compiled"]["html"]
+    for slide in lesson["compiled"]["slides"]:
+        words = _tokens(slide.get("spoken") or "")
+        at = " ".join(words[:3])
+        host = f' data-host="{slide["host"]}"' if slide.get("host") else ""
+        extra = ""
+        m = re.search(r'id="' + re.escape(slide["id"]) + r'"[\s\S]*?</section>', html)
+        if m:
+            objs = _SC_RE.findall(m.group(0))
+            pills = _PILL_RE.findall(m.group(0))
+            for name, x, y, w, h in objs:
+                extra += (f'<svg class="sc" data-sc="{name}" data-depth="1" x="{x}" y="{y}" '
+                          f'width="{w}" height="{h}" viewBox="0 0 200 160"></svg>')
+            if pills:
+                extra += f'<div class="sc-pill">{pills[0]}</div>'
+        parts.append(
+            f'<section id="{slide["id"]}" data-at="{at}" data-kind="{slide.get("kind") or "slide"}"{host}>'
+            f'<h1 class="h2">{slide.get("spoken") or ""}</h1>{extra}</section>')
+    return "\n".join(parts)

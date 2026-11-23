@@ -157,24 +157,8 @@
         ctx.closePath();
     }
     var dpr = 0;
-    function drawBg(t, holes, frame) {
-        var k = window.devicePixelRatio || 1;
-        if (k !== dpr) { dpr = k; canvas.width = 1920 * k; canvas.height = 1080 * k; canvas.style.width = '1920px'; canvas.style.height = '1080px'; }
-        ctx.setTransform(k, 0, 0, k, 0, 0);
-        ctx.fillStyle = '#090c12';
-        ctx.fillRect(0, 0, 1920, 1080);
-        for (var r = 0; r < ROWS.length; r++) {
-            var row = ROWS[r];
-            ctx.fillStyle = 'rgba(' + row.color + ',' + row.alpha.toFixed(3) + ')';
-            var off = ((t * row.drift) % row.gap + row.gap) % row.gap;
-            ctx.beginPath();
-            for (var x = -row.gap + off; x < 1920 + row.gap; x += row.gap) {
-                var y = row.y + Math.sin(x / row.len * 6.283 + t * row.spd + row.phase) * row.amp;
-                ctx.moveTo(x + row.rad, y);
-                ctx.arc(x, y, row.rad, 0, 6.283);
-            }
-            ctx.fill();
-        }
+    var BOARD = !!(window.XVBoard && XVBoard.on);
+    function punchHoles(holes, frame) {
         // Presenter areas: cut out, as far as the slide showing them is faded in.
         // A framed corner cuts the device's screen, not the whole corner.
         for (var name in holes || {}) {
@@ -189,6 +173,31 @@
             ctx.fill();
             ctx.restore();
         }
+    }
+    function drawBg(t, holes, frame) {
+        var k = window.devicePixelRatio || 1;
+        if (k !== dpr) { dpr = k; canvas.width = 1920 * k; canvas.height = 1080 * k; canvas.style.width = '1920px'; canvas.style.height = '1080px'; }
+        ctx.setTransform(k, 0, 0, k, 0, 0);
+        if (BOARD && XVBoard.paint) {
+            XVBoard.paint(ctx, canvas, t);
+            punchHoles(holes, frame);
+            return;
+        }
+        ctx.fillStyle = '#090c12';
+        ctx.fillRect(0, 0, 1920, 1080);
+        for (var r = 0; r < ROWS.length; r++) {
+            var row = ROWS[r];
+            ctx.fillStyle = 'rgba(' + row.color + ',' + row.alpha.toFixed(3) + ')';
+            var off = ((t * row.drift) % row.gap + row.gap) % row.gap;
+            ctx.beginPath();
+            for (var x = -row.gap + off; x < 1920 + row.gap; x += row.gap) {
+                var y = row.y + Math.sin(x / row.len * 6.283 + t * row.spd + row.phase) * row.amp;
+                ctx.moveTo(x + row.rad, y);
+                ctx.arc(x, y, row.rad, 0, 6.283);
+            }
+            ctx.fill();
+        }
+        punchHoles(holes, frame);
     }
 
     // ---- presenter video in the preview (the renderer composites the real footage)
@@ -724,6 +733,10 @@
             if (vis.indexOf(s) < 0) { s.el.classList.remove('on'); s.el.classList.remove('has-article'); }
         });
         var hudW = 0, labelS = null, labelW = -1;
+        // A board look moves the camera instead of pushing the slide.
+        // A hand-picked transition still plays on the slides themselves.
+        var manualBoard = BOARD && !!fx;
+        document.body.classList.toggle('film-show-slides', manualBoard);
         vis.forEach(function (s) {
             prep(s);
             s.el.classList.add('on');
@@ -733,13 +746,15 @@
                 o = XVFx.paint(s, fx);
             } else {
                 if (window.XVFx) XVFx.clear(s);
-                if (t < s.t0 + TR && s.i > 0 && s.trans !== 'cut') {
-                    var q = E.out(clamp((t - s.t0) / TR, 0, 1));
-                    o = q; ty = s.trans === 'push' ? (1 - q) * 70 : 0;
-                }
-                if (t >= s.t1) {
-                    var q2 = E.inout(clamp((t - s.t1) / TR, 0, 1));
-                    o *= 1 - q2; ty -= transitionOf(s) === 'push' ? q2 * 90 : 0;
+                if (!BOARD || manualBoard) {
+                    if (t < s.t0 + TR && s.i > 0 && s.trans !== 'cut') {
+                        var q = E.out(clamp((t - s.t0) / TR, 0, 1));
+                        o = q; ty = s.trans === 'push' ? (1 - q) * 70 : 0;
+                    }
+                    if (t >= s.t1) {
+                        var q2 = E.inout(clamp((t - s.t1) / TR, 0, 1));
+                        o *= 1 - q2; ty -= transitionOf(s) === 'push' ? q2 * 90 : 0;
+                    }
                 }
                 s.el.style.opacity = o >= 1 ? '' : o.toFixed(3);
                 s.el.style.transform = ty ? 'translateY(' + ty.toFixed(2) + 'px)' : '';
@@ -990,7 +1005,8 @@
         }
         empSvg.innerHTML = svg;
         var pens = empSvg.querySelectorAll('[data-pen]');
-        for (var p = 0; p < pens.length; p++) strokePen(pens[p], +pens[p].getAttribute('data-p'), INK, +pens[p].getAttribute('data-sw'));
+        var penInk = (BOARD && window.XVBoard && XVBoard.ink) ? XVBoard.ink : INK;
+        for (var p = 0; p < pens.length; p++) strokePen(pens[p], +pens[p].getAttribute('data-p'), penInk, +pens[p].getAttribute('data-sw'));
     }
 
     function stageScale() { return MODE === 'preview' ? (stage.__k || 1) : 1; }

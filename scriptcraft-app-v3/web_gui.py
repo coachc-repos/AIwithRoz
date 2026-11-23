@@ -10465,6 +10465,8 @@ def _xv_state(p) -> dict:
         "pip_frame": _xv.pip_frame_key(None, ((d.get("host") or {}).get("pip_frame") or d.get("pip_frame"))),
         "bubble": _xv.bubble_mode_key(None, d.get("bubble")),
         "visual_style": _xv.visual_style_key(None, d.get("visual_style")),
+        "film_look": _xv.film_look_key(None, d.get("film_look")),
+        "look_test": d.get("look_test") or None,
         "transition_mode": _xv.transition_mode_key(None, d.get("transition_mode")),
         "gap_fx": _xv.normalize_gaps(d.get("gap_fx")),
         "slide_fx": {k: _xv.slide_fx_key(v) for k, v in (d.get("slide_fx") or {}).items()
@@ -10545,6 +10547,7 @@ def explainer_options():
                     "host_shares": _xv.HOST_SHARES, "pip_frames": list(_xv.PIP_FRAME_MODES),
                     "bubble_modes": list(_xv.BUBBLE_MODES),
                     "visual_styles": list(_xv.VISUAL_STYLES),
+                    "film_looks": list(_xv.FILM_LOOKS),
                     "transition_modes": list(_xv.TRANSITION_MODES),
                     "transition_styles": list(_xv.TRANSITION_STYLES),
                     "chrome": bool(_xv.find_chrome()), "claude": bool((os.getenv("ANTHROPIC_API_KEY") or "").strip()),
@@ -10633,6 +10636,7 @@ def explainer_start():
     bubble = _xv.bubble_mode_key(data.get("bubble"))
     visual_style = _xv.visual_style_key(data.get("visual_style"))
     transition_mode = _xv.transition_mode_key(data.get("transition_mode"))
+    film_look = _xv.film_look_key(data.get("film_look"))
     pid = _xv.new_project_id()
     folder = _get_run_output_dir(title) / "explainer" / pid
     folder.mkdir(parents=True, exist_ok=True)
@@ -10641,7 +10645,8 @@ def explainer_start():
     project.write("spoken.txt", spoken)
     project.data.update(title=title, created=time.time(), voiceover=voiceover, text_source=source,
                         model=_xv.MODEL, status="running", pip_frame=pip_frame, bubble=bubble,
-                        visual_style=visual_style, transition_mode=transition_mode)
+                        visual_style=visual_style, transition_mode=transition_mode,
+                        film_look=film_look)
     project.save()
     counts = _xv.production_counts(script)
     logger.info(f"🎞️ Explainer video for {title[:60]!r}: {voiceover}, {len(spoken.split()):,} spoken words "
@@ -10691,6 +10696,7 @@ def explainer_preview(pid):
                                   f"&path={urllib.parse.quote(host['proxy'])}&v={int(host.get('created') or 0)}")}
     compiled = p.compile(n)
     visual_style = _xv.visual_style_key(None, p.data.get("visual_style"))
+    film_look = _xv.film_look_key(None, p.data.get("film_look"))
     quote_title = urllib.parse.quote(p.data.get("title") or "")
 
     def _clip_url(rel, _pid=pid, _title=quote_title):
@@ -10710,6 +10716,7 @@ def explainer_preview(pid):
     page = _xv.page_html(compiled, mode="preview", title=p.data.get("title") or "Explainer", host=host,
                          pip_frame=frame, bubble=bubble, clips=_xv.preview_clip_payloads(p, compiled, _clip_url),
                          media_origin=origin, visual={"style": visual_style},
+                         film_look=film_look, words=_xv.load_words(p),
                          articles=article_layer, emphasis=emphasis_layer,
                          demos=_xv.demo_payloads(compiled, _xv.load_youtube(p.data)["clips"], "preview"),
                          bookends=books)
@@ -11030,6 +11037,56 @@ def explainer_revise(pid):
     return jsonify({"success": True, **_xv_state(p)})
 
 
+def _explainer_look_test(pid):
+    """Draw about two minutes of the selected look. Does not start a full render."""
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or request.args.get("title") or "").strip() or "Sample explainer"
+    raw = (data.get("film_look") or data.get("look") or "").strip()
+    if raw and raw not in _xv.FILM_LOOKS:
+        return jsonify({"success": False, "error": "Unknown look."}), 400
+    look = raw or _xv.FILM_LOOK_DEFAULT
+    p = _xv_project(title, pid) if pid else None
+    used_sample = False
+    if p is None or not p.data.get("current"):
+        p = _xv.ensure_sample_project(_get_run_output_dir(title), title)
+        used_sample = True
+    if _xv.job_running(p.id):
+        return jsonify({"success": False, "error": "Something is already running for this video."}), 409
+    try:
+        seconds = float(data["seconds"]) if data.get("seconds") is not None else _xv.LOOK_TEST_SECONDS
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "The test length must be a number."}), 400
+    seconds = min(180.0, max(1.0, seconds))
+    with p.lock:
+        approved = p.data.get("approved")
+        renders = list(p.data.get("renders") or [])
+        p.data["film_look"] = look
+    p.save()
+
+    def job(proj, cancel, status):
+        result = _xv.run_look_test(proj, look, status, cancel, seconds=seconds)
+        with proj.lock:
+            proj.data["approved"] = approved
+            proj.data["renders"] = renders
+        proj.save()
+        return result
+
+    if not _xv.start_job(p, "look-test", job, _xv_log):
+        return jsonify({"success": False, "error": "Something is already running for this video."}), 409
+    state = _xv_state(p)
+    return jsonify({"success": True, "sample": used_sample, "pid": p.id, **state})
+
+
+@app.route("/api/explainer/look-test", methods=["POST"])
+def explainer_look_test_open():
+    return _explainer_look_test(None)
+
+
+@app.route("/api/explainer/<pid>/look-test", methods=["POST"])
+def explainer_look_test(pid):
+    return _explainer_look_test(pid)
+
+
 @app.route("/api/explainer/<pid>/render", methods=["POST"])
 def explainer_render(pid):
     """sample (1080p clip), review (whole 1080p cut) or final (4K + phone copy + asset PNG)."""
@@ -11124,19 +11181,23 @@ def explainer_host(pid):
     if _xv.job_running(p.id):
         return jsonify({"success": False, "error": "Wait for the running job to finish."}), 409
     host = p.host()
-    if "pip_frame" in data or "bubble" in data or "visual_style" in data:
+    if "pip_frame" in data or "bubble" in data or "visual_style" in data or "film_look" in data:
         if "pip_frame" in data and data.get("pip_frame") not in _xv.PIP_FRAME_MODES:
             return jsonify({"success": False, "error": "Unknown corner frame."}), 400
         if "bubble" in data and data.get("bubble") not in _xv.BUBBLE_MODES:
             return jsonify({"success": False, "error": "Unknown guide setting."}), 400
         if "visual_style" in data and data.get("visual_style") not in _xv.VISUAL_STYLES:
             return jsonify({"success": False, "error": "Unknown picture style."}), 400
+        if "film_look" in data and data.get("film_look") not in _xv.FILM_LOOKS:
+            return jsonify({"success": False, "error": "Unknown look."}), 400
         if not any(k in data for k in ("focus", "share", "remove", "source")):
             with p.lock:
                 if "bubble" in data:
                     p.data["bubble"] = data["bubble"]
                 if "visual_style" in data:
                     p.data["visual_style"] = data["visual_style"]
+                if "film_look" in data:
+                    p.data["film_look"] = data["film_look"]
                 if "pip_frame" in data:
                     p.data["pip_frame"] = data["pip_frame"]
                     if host:

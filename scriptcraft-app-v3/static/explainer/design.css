@@ -119,4 +119,10 @@ body.mode-preview .ph-pending { outline: 3px dashed var(--amber); outline-offset
 #article-layer img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 #article-layer svg.ink { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 #emphasis-ink { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; z-index: 920; pointer-events: none; overflow: visible; }
+/* A board look draws the words. The slide markup stays so emphasis, clips
+   and the presenter still have something to measure. A hand-picked transition
+   shows the slides again for the length of that chip. */
+body.film-board #slides section.slide > * { visibility: hidden; }
+body.film-board.film-show-slides #slides section.slide > * { visibility: visible; }
+body.film-board #hud-left, body.film-board #hud-right { opacity: 0; }
 section.slide.has-article > * { visibility: hidden; }
