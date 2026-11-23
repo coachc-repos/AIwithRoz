@@ -175,8 +175,9 @@ def test_committed_samples():
     player = SAMPLES / "picker_player.png"
     tiles = SAMPLES / "whiteboard_tiles.png"
     three = SAMPLES / "3d_tiles.png"
+    compared = SAMPLES / "3d_color_before_after.png"
     demos = [demo] + [SAMPLES / f"{name}_demo.mp4" for name in ("tilt", "island", "tabletop", "popup")]
-    for path in (sheet, picker, player, tiles, three, *demos):
+    for path in (sheet, picker, player, tiles, three, compared, *demos):
         assert path.is_file() and path.stat().st_size > 1000, path
     for path in demos:
         probe = subprocess.run(

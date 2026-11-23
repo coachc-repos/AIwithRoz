@@ -5751,7 +5751,9 @@ async def _look_clip_async(page, out, start, n, fps, scale, crf, chrome, status,
            "-framerate", str(fps), "-c:v", "png", "-i", "-",
            "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
            "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
-           "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)]
+           "-pix_fmt", "yuv420p",
+           "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+           "-movflags", "+faststart", str(out)]
     ff = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=errlog)
     try:
         async with _Chrome(exe, headless_new) as ch:

@@ -46,30 +46,39 @@
         return s;
     }
     function lerp(a, b, u) { return a + (b - a) * u; }
+    function srgb(hex) {
+        var c = new T.Color(hex);
+        if (c.convertSRGBToLinear) c.convertSRGBToLinear();
+        return c;
+    }
     function mat(color, rough, metal, flat) {
         return new T.MeshStandardMaterial({
-            color: color, roughness: rough == null ? 0.55 : rough,
+            color: srgb(color), roughness: rough == null ? 0.46 : rough,
             metalness: metal || 0, flatShading: !!flat
         });
+    }
+    function markSRGB(tex) {
+        if (T.sRGBEncoding) tex.encoding = T.sRGBEncoding;
+        if (T.SRGBColorSpace && Object.prototype.hasOwnProperty.call(tex, 'colorSpace')) tex.colorSpace = T.SRGBColorSpace;
+        tex.needsUpdate = true;
+        return tex;
     }
     function texCanvas(w, h, draw) {
         var c = document.createElement('canvas');
         c.width = w; c.height = h;
         draw(c.getContext('2d'), w, h);
-        var tex = new T.CanvasTexture(c);
-        tex.needsUpdate = true;
-        return tex;
+        return markSRGB(new T.CanvasTexture(c));
     }
     function woodTex() {
         return texCanvas(256, 256, function (g) {
-            g.fillStyle = '#7a4e2d';
+            g.fillStyle = '#8a4a22';
             g.fillRect(0, 0, 256, 256);
-            for (var y = 0; y < 256; y += 22) {
-                g.fillStyle = (y / 22) % 2 ? '#8d5b34' : '#643c22';
-                g.fillRect(0, y, 256, 20);
-                g.strokeStyle = 'rgba(40,18,8,0.35)';
+            for (var y = 0; y < 256; y += 18) {
+                g.fillStyle = (y / 18) % 2 ? '#c47a34' : '#5c3014';
+                g.fillRect(0, y, 256, 16);
+                g.strokeStyle = 'rgba(40,16,4,0.55)';
                 g.beginPath();
-                for (var x = 0; x < 260; x += 6) g.lineTo(x, y + 10 + Math.sin(x * 0.05 + y) * 4);
+                for (var x = 0; x < 260; x += 6) g.lineTo(x, y + 8 + Math.sin(x * 0.05 + y) * 3);
                 g.stroke();
             }
         });
@@ -78,8 +87,8 @@
         return texCanvas(128, 128, function (g) {
             g.fillStyle = hex;
             g.fillRect(0, 0, 128, 128);
-            g.fillStyle = 'rgba(90,60,30,0.12)';
-            for (var i = 0; i < 500; i++) g.fillRect((i * 19) % 128, (i * 47) % 128, 1, 2);
+            g.fillStyle = 'rgba(90,40,12,0.22)';
+            for (var i = 0; i < 700; i++) g.fillRect((i * 19) % 128, (i * 47) % 128, 1, 2);
         });
     }
     function screenTex() {
@@ -124,8 +133,8 @@
         var g = new T.Group();
         box(0.82, 1.68, 0.11, 0x2a3038, 0, 0, 0, g);
         var screen = new T.Mesh(new T.BoxGeometry(0.68, 1.4, 0.02), new T.MeshStandardMaterial({
-            map: screenTex(), emissive: 0xffffff, emissiveMap: screenTex(), emissiveIntensity: 0.85,
-            roughness: 0.35, metalness: 0.05
+            color: srgb(0xffffff), map: screenTex(), emissive: srgb(0xffffff),
+            emissiveMap: screenTex(), emissiveIntensity: 0.72, roughness: 0.32, metalness: 0.02
         }));
         screen.position.set(0, 0.02, 0.065);
         screen.castShadow = true;
@@ -167,7 +176,7 @@
         glass.closePath();
         var gGeo = new T.ExtrudeGeometry(glass, { depth: 0.04, bevelEnabled: false });
         var glassMat = new T.MeshStandardMaterial({
-            color: 0x9ec9e8, roughness: 0.12, metalness: 0.25, transparent: true, opacity: 0.82
+            color: srgb(0x7ec8ea), roughness: 0.08, metalness: 0.15, transparent: true, opacity: 0.88
         });
         [-0.60, 0.56].forEach(function (z) {
             var band = new T.Mesh(gGeo, glassMat);
@@ -209,8 +218,8 @@
         [[-0.38, 0.72], [0.38, 0.72]].forEach(function (w) {
             var win = box(0.22, 0.22, 0.04, 0xffe1a8, w[0], w[1], 0.58, g, flat);
             win.material = win.material.clone();
-            win.material.emissive = new T.Color(0xffc56a);
-            win.material.emissiveIntensity = 0.55;
+            win.material.emissive = srgb(0xffb703);
+            win.material.emissiveIntensity = 0.85;
         });
         parent.add(g);
         return g;
@@ -218,7 +227,7 @@
     function makeTree(parent, x, z, flat) {
         var g = new T.Group();
         box(0.12, 0.45, 0.12, 0x6b4630, 0, 0.22, 0, g, flat);
-        var leaf = new T.Mesh(new T.ConeGeometry(0.38, 0.85, flat ? 5 : 8), mat(0x2f6b3a, 0.8, 0, flat));
+        var leaf = new T.Mesh(new T.ConeGeometry(0.38, 0.85, flat ? 5 : 8), mat(0x168a32, 0.72, 0, flat));
         leaf.position.y = 0.78;
         leaf.castShadow = true;
         g.add(leaf);
@@ -239,20 +248,21 @@
         parent.add(g);
         return g;
     }
-    function makeCity(parent, flat) {
+    function makeCity(parent, flat, a, b) {
         var g = new T.Group();
+        var colors = [a || 0xf4efe6, b || 0x8d8a9a];
         [0.8, 1.35, 1.05, 1.7, 0.95].forEach(function (h, i) {
-            var b = box(0.42, h, 0.42, i % 2 ? 0xc9bfb0 : 0x8d8478, i * 0.52, h / 2, 0, g, flat);
-            b.material = b.material.clone();
-            b.material.emissive = new T.Color(0xf2c14e);
-            b.material.emissiveIntensity = LOOK === 'island' ? 0.35 : 0.08;
+            var bld = box(0.42, h, 0.42, i % 2 ? colors[0] : colors[1], i * 0.52, h / 2, 0, g, flat);
+            bld.material = bld.material.clone();
+            bld.material.emissive = srgb(0xffb703);
+            bld.material.emissiveIntensity = LOOK === 'island' ? 0.45 : 0.1;
         });
         parent.add(g);
         return g;
     }
     function makeChart(barColor, win, parent, flat) {
         var g = new T.Group();
-        box(3.2, 0.08, 1.05, 0xe7e0d4, 0, 0.04, 0, g, flat);
+        box(3.2, 0.08, 1.05, 0xfff6ea, 0, 0.04, 0, g, flat);
         var heights = [0.85, 1.35, 0.62, 2.05];
         var names = ['a', 'the', 'on', 'mat'];
         var made = heights.map(function (h, i) {
@@ -266,10 +276,10 @@
         parent.add(g);
         return { group: g, bars: made };
     }
-    function makeChips(parent, flat) {
+    function makeChips(parent, flat, color) {
         var g = new T.Group();
         ['The', 'cat', 'sat', 'on'].forEach(function (word, i) {
-            var chip = box(0.78, 0.42, 0.28, 0xf6e7c1, i * 0.92, 0.21, 0, g, flat);
+            var chip = box(0.78, 0.42, 0.28, color || 0xffd15c, i * 0.92, 0.21, 0, g, flat);
             chip.userData.label = word;
         });
         parent.add(g);
@@ -291,13 +301,14 @@
         renderer.setSize(1920, 1080, false);
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = T.PCFSoftShadowMap;
+        // r149 reads outputEncoding. SRGBColorSpace exists, outputColorSpace does not.
         if (T.sRGBEncoding) renderer.outputEncoding = T.sRGBEncoding;
         if (T.ACESFilmicToneMapping != null) {
             renderer.toneMapping = T.ACESFilmicToneMapping;
-            renderer.toneMappingExposure = 1.08;
+            renderer.toneMappingExposure = 1.1;
         }
-        var key = new T.DirectionalLight(0xfff3e4, 1.25);
-        key.position.set(-5, 10, 6);
+        var key = new T.DirectionalLight(0xfff1dc, 2.7);
+        key.position.set(-6, 12, 7);
         key.castShadow = true;
         key.shadow.mapSize.set(2048, 2048);
         key.shadow.camera.near = 0.4;
@@ -306,85 +317,100 @@
         key.shadow.camera.right = 12;
         key.shadow.camera.top = 12;
         key.shadow.camera.bottom = -12;
-        key.shadow.bias = -0.0006;
+        key.shadow.bias = -0.0008;
+        if ('normalBias' in key.shadow) key.shadow.normalBias = 0.02;
         scene.add(key);
-        scene.add(new T.HemisphereLight(LOOK === 'island' ? 0x6a5a88 : 0xfff6ea, LOOK === 'island' ? 0x3a2a18 : 0x6a8f62, 0.55));
-        scene.add(new T.AmbientLight(0xffffff, 0.18));
+        var hemiSky = LOOK === 'island' ? 0x8eb4ff : (LOOK === 'popup' ? 0xffd7a8 : 0xb7e6ff);
+        scene.add(new T.HemisphereLight(hemiSky, 0x1a120c, 0.2));
+        scene.add(new T.AmbientLight(0xffffff, 0.045));
+        function groundShadow(x, y, z, rx, rz) {
+            var geo = new T.CircleGeometry(1, 24);
+            geo.rotateX(-Math.PI / 2);
+            var m = new T.Mesh(geo, new T.MeshBasicMaterial({
+                color: 0x000000, transparent: true, opacity: 0.4, depthWrite: false
+            }));
+            m.position.set(x, y, z);
+            m.scale.set(rx, 1, rz);
+            m.renderOrder = 2;
+            scene.add(m);
+        }
 
         if (LOOK === 'tilt') {
-            scene.background = new T.Color(0x7ec8ea);
-            var ground = box(20, 0.3, 14, 0x3dbe62, 0, -0.15, 0, scene);
+            scene.background = new T.Color(0x1aa7e6);
+            var ground = box(20, 0.3, 14, 0x18b84a, 0, -0.15, 0, scene);
             ground.receiveShadow = true;
-            box(18, 0.05, 1.7, 0x6a717c, 0, 0.03, 0.9, scene);
-            for (var dash = -6; dash <= 6; dash += 1.1) box(0.55, 0.02, 0.08, 0xf4f1ea, dash, 0.07, 0.9, scene);
+            box(18, 0.05, 1.7, 0x3d4452, 0, 0.03, 0.9, scene);
+            for (var dash = -6; dash <= 6; dash += 1.1) box(0.55, 0.02, 0.08, 0xfff6ea, dash, 0.07, 0.9, scene);
             phone = makePhone(scene);
             phone.position.set(-2.4, 0.84, -0.55);
             trackDrop(phone, 0.84, 0.15);
+            groundShadow(-2.4, 0.035, -0.55, 0.55, 0.38);
             chips = makeChips(scene);
             chips.position.set(-3.5, 0, 1.55);
             chips.children.forEach(function (chip, i) { trackDrop(chip, 0.21, 0.8 + i * 0.28); });
-            var built = makeSedan(0x2f6fed, scene);
+            var built = makeSedan(0x1d6bff, scene);
             car = built.group;
             wheels = built.wheels;
             car.position.set(-2.6, 0, 0.85);
             trackDrop(car, 0, 1.1);
-            var house = makeHouse(0xfff6ea, 0xe23b2e, scene);
+            groundShadow(-1.8, 0.035, 0.85, 1.15, 0.55);
+            var house = makeHouse(0xfff3d0, 0xff3b30, scene);
             house.position.set(1.6, 0, -2.15);
             trackDrop(house, 0, 0.4);
-            makeHouse(0xf7e1c8, 0x2a6f4e, scene).position.set(-4.2, 0, -2.0);
-            makeCity(scene).position.set(4.0, 0, -2.3);
+            makeHouse(0xfff3d0, 0x1f9d55, scene).position.set(-4.2, 0, -2.0);
+            makeCity(scene, false, 0xfff6ea, 0x6d7a90).position.set(4.0, 0, -2.3);
             [-3.2, -0.4, 3.2].forEach(function (x, i) { makeTree(scene, x, -2.6 + (i % 2) * 0.3); });
-            [[-1.2, 1.7, 0xe23b2e], [2.4, 1.8, 0x2a6f4e], [3.6, 2.0, 0xf2c14e], [-4.6, 1.5, 0x2456d6]].forEach(function (p) {
+            [[-1.2, 1.7, 0xff3b30], [2.4, 1.8, 0x1f9d55], [3.6, 2.0, 0xffc107], [-4.6, 1.5, 0x2456d6]].forEach(function (p) {
                 makePerson(scene, p[0], p[1], p[2]);
             });
-            var ch = makeChart(0x1aa6a6, 0xff6b3d, scene);
+            var ch = makeChart(0x14d2c8, 0xff4d1a, scene);
             chart = ch.group;
             bars = ch.bars;
             chart.position.set(3.1, 0, 0.15);
             hero = phone;
         } else if (LOOK === 'island') {
-            scene.background = new T.Color(0x120e22);
-            scene.fog = new T.Fog(0x120e22, 18, 36);
-            var water = new T.Mesh(new T.CylinderGeometry(9.2, 9.2, 0.25, 28), mat(0x2a6ea0, 0.18, 0.55));
+            scene.background = new T.Color(0x0c1428);
+            var water = new T.Mesh(new T.CylinderGeometry(9.2, 9.2, 0.25, 28), mat(0x0b7f86, 0.28, 0.08));
             water.position.y = -0.55;
             water.receiveShadow = true;
             scene.add(water);
             [[0.2, -1.8, 0.85, 1.35], [-2.4, -1.2, 0.6, 1.05], [2.1, -1.4, 0.7, 1.2], [1.6, 1.6, 0.5, 0.85], [-2.2, 1.4, 0.45, 0.8], [-3.6, -2.3, 0.4, 0.55], [3.6, -2.0, 0.48, 0.62], [0.15, -2.9, 0.36, 0.48]].forEach(function (h) {
-                var hex = new T.Mesh(new T.CylinderGeometry(h[2], h[2] + 0.18, h[3], 6), mat(h[3] > 1.8 ? 0x6a8f4a : 0x3e6b42, 0.9, 0, true));
+                var hex = new T.Mesh(new T.CylinderGeometry(h[2], h[2] + 0.18, h[3], 6), mat(h[3] > 1.05 ? 0x2f9e44 : 0x1b7a3a, 0.82, 0, true));
                 hex.position.set(h[0], h[3] / 2 - 0.85, h[1]);
                 hex.castShadow = true;
                 hex.receiveShadow = true;
                 scene.add(hex);
             });
-            var pad = box(4.6, 0.12, 3.6, 0xd7c39a, 0.1, 0.42, 0.15, scene, true);
+            var pad = box(4.6, 0.12, 3.6, 0xe0a84a, 0.1, 0.42, 0.15, scene, true);
             pad.receiveShadow = true;
             phone = makePhone(scene);
             phone.position.set(-1.55, 1.35, 0.15);
-            chips = makeChips(scene, true);
+            chips = makeChips(scene, true, 0xf0c14a);
+            groundShadow(-1.55, 0.5, 0.15, 0.5, 0.36);
             chips.position.set(-2.85, 0.48, -1.15);
-            var builtI = makeSedan(0x6ea0d4, scene);
+            var builtI = makeSedan(0x3d8bfd, scene);
             car = builtI.group;
             wheels = builtI.wheels;
             car.position.set(0.85, 0.48, -0.35);
             car.scale.set(0.5, 0.5, 0.5);
-            makeHouse(0xf4f1de, 0xd97757, scene, true).position.set(2.15, 0.48, 0.85);
-            var cityI = makeCity(scene, true);
+            makeHouse(0xfff3d0, 0xe25b2a, scene, true).position.set(2.15, 0.48, 0.85);
+            var cityI = makeCity(scene, true, 0xffe8b0, 0xd08a45);
             cityI.scale.set(0.62, 0.62, 0.62);
             cityI.position.set(0.7, 0.48, -1.45);
             makeTree(scene, -2.6, -0.2, true);
             makeTree(scene, 2.4, -1.5, true);
-            var warm = new T.PointLight(0xf2c14e, 1.6, 10, 2);
+            var warm = new T.PointLight(0xffb703, 2.4, 12, 2);
             warm.position.set(0.2, 2.2, 0.2);
             scene.add(warm);
-            var chI = makeChart(0x7dba9a, 0xe07a5f, scene, true);
+            var chI = makeChart(0x2fbf71, 0xff5a36, scene, true);
             chart = chI.group;
             bars = chI.bars;
             chart.position.set(0.05, 0.48, 1.55);
             hero = phone;
         } else if (LOOK === 'tabletop') {
-            scene.background = new T.Color(0xd9d0c4);
+            scene.background = new T.Color(0x6e5344);
             var table = new T.Mesh(new T.BoxGeometry(16, 0.28, 10), new T.MeshStandardMaterial({
-                map: woodTex(), roughness: 0.78, metalness: 0.02, color: 0xffffff
+                map: woodTex(), roughness: 0.62, metalness: 0.02, color: srgb(0xffffff)
             }));
             table.position.y = -0.14;
             table.receiveShadow = true;
@@ -392,27 +418,27 @@
             phone = makePhone(scene);
             phone.position.set(-1.15, 0.84, 0.1);
             trackDrop(phone, 0.84, 0.2, 2.7);
-            chips = makeChips(scene);
-            chips.position.set(-2.2, 0, 1.25);
+            groundShadow(-1.15, 0.04, 0.1, 0.5, 0.36);
+            chips = makeChips(scene, false, 0xffd56a);
+            chips.position.set(-3.35, 0, 1.5);
             chips.children.forEach(function (chip, i) { trackDrop(chip, 0.21, 2.55 + i * 0.32, 1.35); });
-            var builtT = makeSedan(0xc5ccd4, scene);
+            var builtT = makeSedan(0x2f6fe0, scene);
             car = builtT.group;
             wheels = builtT.wheels;
             car.scale.set(0.42, 0.42, 0.42);
             car.position.set(0.4, 0, -1.35);
             trackDrop(car, 0, 3.15, 1.55);
-            makeHouse(0xf7f4ee, 0xd97757, scene).position.set(-2.6, 0, -1.2);
-            makeCity(scene).position.set(2.6, 0, -1.45);
-            var chT = makeChart(0x4c6cb3, 0xd97757, scene);
+            makeHouse(0xfff8ee, 0xe25b2a, scene).position.set(-2.6, 0, -1.2);
+            makeCity(scene, false, 0xfff3d6, 0xc47a3a).position.set(2.6, 0, -1.45);
+            var chT = makeChart(0x2f6fe0, 0xff5a36, scene);
             chart = chT.group;
             bars = chT.bars;
             chart.position.set(1.7, 0, 0.35);
             trackDrop(chart, 0, 7.5, 2.6, 7);
             hero = phone;
         } else {
-            scene.background = new T.Color(0xe4d5bf);
-            scene.add(new T.HemisphereLight(0xfff4e6, 0xa88462, 0.65));
-            var sheet = new T.MeshStandardMaterial({ map: paperTex('#f6efe2'), roughness: 0.92, metalness: 0, color: 0xffffff });
+            scene.background = new T.Color(0xc47a3a);
+            var sheet = new T.MeshStandardMaterial({ map: paperTex('#fff6e4'), roughness: 0.84, metalness: 0, color: srgb(0xffffff) });
             var left = addMesh(new T.BoxGeometry(3.7, 0.07, 5.0), sheet, -1.95, 0.04, 0, scene);
             var right = addMesh(new T.BoxGeometry(3.7, 0.07, 5.0), sheet, 1.95, 0.04, 0, scene);
             left.receiveShadow = true;
@@ -441,13 +467,13 @@
                 return mesh;
             }
             phone = pop(makePhone(new T.Group()), -2.05, -0.15, 0.2, 0.92, 6.8);
-            chips = pop(makeChips(new T.Group()), -2.35, 1.45, 2.15, 0.72, 2.3);
-            var builtP = makeSedan(0xd97757, new T.Group());
+            chips = pop(makeChips(new T.Group(), false, 0xffd15c), -2.35, 1.45, 2.15, 0.72, 2.3);
+            var builtP = makeSedan(0xe23b2e, new T.Group());
             car = pop(builtP.group, -0.45, 0.15, 2.5, 0.4, 2.2);
             wheels = builtP.wheels;
-            pop(makeHouse(0xfffaf3, 0xc45c26, new T.Group()), 1.15, -1.25, 6.9, 0.62, 3.4);
-            pop(makeCity(new T.Group()), 2.7, -0.7, 8.2, 0.46, 2.8);
-            var chP = makeChart(0x7d9a78, 0xd97757, new T.Group());
+            pop(makeHouse(0xfff6e8, 0xf0a202, new T.Group()), 1.15, -1.25, 6.9, 0.62, 3.4);
+            pop(makeCity(new T.Group(), false, 0xffe08a, 0xf08a24), 2.7, -0.7, 8.2, 0.46, 2.8);
+            var chP = makeChart(0x1f9d6a, 0xe23b2e, new T.Group());
             chart = pop(chP.group, 1.7, 1.05, 7.5, 0.58, 3.6);
             bars = chP.bars;
             hero = phone;
@@ -502,6 +528,7 @@
             cam.updateProjectionMatrix();
         }
         pack.aim = at;
+        pack.aimCam = cam;
         return cam;
     }
 
@@ -568,14 +595,14 @@
 
     function drawType(ctx, t) {
         var f = focusAt(t);
-        var ink = LOOK === 'island' ? '#f4efe4' : '#1c1612';
+        var ink = (LOOK === 'island' || LOOK === 'tabletop') ? '#fff6e8' : '#1a120c';
         var head = 92;
         var body = 52;
         ctx.save();
         ctx.textBaseline = 'top';
         ctx.textAlign = 'left';
         ctx.fillStyle = ink;
-        ctx.shadowColor = LOOK === 'island' ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.35)';
+        ctx.shadowColor = (LOOK === 'island' || LOOK === 'tabletop') ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.72)';
         ctx.shadowBlur = 6;
         var mx = 1920 * 0.06;
         var my = 1080 * 0.06;
@@ -597,17 +624,60 @@
         } else {
             title('The scores', mx, my, head);
             title('Taller bar wins', mx, my + 108, body);
-            ['a', 'the', 'on', 'mat'].forEach(function (word, i) {
-                title(word, mx, my + 186 + i * 58, body);
-            });
         }
+        if (f.travel >= 0.45 || f.reveal > 0.5) labelUnderBars(ctx, pack.aimCam);
         ctx.restore();
+    }
+
+    function labelUnderBars(ctx, cam) {
+        if (!cam) return;
+        var size = 48;
+        var mx = 1920 * 0.06, my = 1080 * 0.06;
+        var right = 1920 - mx, bottom = 1080 - my;
+        ctx.font = '700 ' + size + 'px Kalam, cursive';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        var placed = [];
+        bars.forEach(function (b) {
+            var center = new T.Vector3();
+            b.getWorldPosition(center);
+            if (center.y < 0.05) return;
+            var half = (b.userData.full * Math.abs(b.scale.y)) / 2;
+            var foot = b.localToWorld(new T.Vector3(0, -half, 0.24));
+            var p = foot.clone().project(cam);
+            if (p.z > 1) return;
+            var text = b.userData.label || '';
+            var w = Math.ceil(ctx.measureText(text).width);
+            var x = (p.x * 0.5 + 0.5) * 1920;
+            var y = (-p.y * 0.5 + 0.5) * 1080 + 28;
+            if (LOOK === 'tilt' && y > 752) y = 752;
+            if (x - w / 2 < mx) x = mx + w / 2;
+            if (x + w / 2 > right) x = right - w / 2;
+            if (y < my) y = my;
+            if (y + size > bottom) y = bottom - size;
+            var box = { x: x - w / 2, y: y, w: w, h: size };
+            for (var i = 0; i < placed.length; i++) {
+                var o = placed[i];
+                var overlap = box.x < o.x + o.w + 6 && box.x + box.w + 6 > o.x && box.y < o.y + o.h + 4 && box.y + box.h + 4 > o.y;
+                if (overlap && LOOK !== 'tilt' && box.y + size + 4 <= bottom) {
+                    box.y = o.y + o.h + 6;
+                    y = box.y;
+                }
+            }
+            if (box.x < mx - 1 || box.x + box.w > right + 1 || box.y + box.h > bottom + 1) return;
+            placed.push(box);
+            ctx.lineWidth = 7;
+            ctx.strokeStyle = 'rgba(255,255,255,0.94)';
+            ctx.strokeText(text, x, y);
+            ctx.fillStyle = '#1a120c';
+            ctx.fillText(text, x, y);
+        });
     }
 
     function blurBands(ctx, gl, strong) {
         var bands = strong
-            ? [[0, 72, 12], [990, 90, 14]]
-            : [[0, 64, 8], [1000, 80, 9]];
+            ? [[0, 150, 22], [790, 290, 34]]
+            : [[0, 80, 10], [960, 120, 14]];
         bands.forEach(function (b) {
             ctx.save();
             ctx.filter = 'blur(' + b[2] + 'px)';
@@ -641,7 +711,7 @@
                 });
             }
             pack.renderer.render(pack.scene, cam);
-            var bg = LOOK === 'island' ? '#1a1430' : (LOOK === 'tilt' ? '#7ec8ea' : (LOOK === 'popup' ? '#e4d5bf' : '#d9d0c4'));
+            var bg = LOOK === 'island' ? '#0c1428' : (LOOK === 'tilt' ? '#1aa7e6' : (LOOK === 'popup' ? '#c47a3a' : '#6e5344'));
             ctx.fillStyle = bg;
             ctx.fillRect(0, 0, 1920, 1080);
             ctx.drawImage(pack.gl, 0, 0, 1920, 1080);
