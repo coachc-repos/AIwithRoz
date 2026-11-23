@@ -203,6 +203,7 @@ from explainer_styles import (  # noqa: E402
     FILM_LOOKS,
     LOOK_TEST_ID,
     LOOK_TEST_SECONDS,
+    THREE_LOOKS,
     film_look_key,
     film_payload,
     look_test_span,
@@ -3721,8 +3722,12 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
            "script-src 'unsafe-inline'; font-src data:"
            + (("; media-src 'self'" + (f" {origin}" if origin else "")) if media else ""))
     cls = f"mode-{mode}" + (" host-on" if host_on else "") + (" film-board" if look != "waves" else "")
+    drawjs = boardjs
     if look != "waves":
         css = css + _kalam_face()
+    if look in THREE_LOOKS:
+        drawjs = ((ASSET_DIR / "three.min.js").read_text(encoding="utf-8") + "\n"
+                  + (ASSET_DIR / "scene3d.js").read_text(encoding="utf-8"))
     return (f"<!doctype html><html class=\"{cls}\"><head><meta charset=\"utf-8\">"
             f"<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">"
             f"<title>{_html.escape(title)}</title><style>{css}</style></head>"
@@ -3734,7 +3739,7 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
             "<div id=\"hud-left\"></div><div id=\"hud-right\"></div></div>"
             "<canvas id=\"fx\" width=\"1920\" height=\"1080\"></canvas>"
             "</div></div>"
-            f"<script>window.__EXPLAINER = {cfg};</script><script>{boardjs}</script>"
+            f"<script>window.__EXPLAINER = {cfg};</script><script>{drawjs}</script>"
             f"<script>{fxjs}</script><script>{js}</script></body></html>")
 
 
@@ -5382,7 +5387,9 @@ class _Chrome:
         self.ud = tempfile.mkdtemp(prefix="xv-chrome-")
         args = [self.exe, "--remote-debugging-port=0", f"--user-data-dir={self.ud}", "--hide-scrollbars",
                 "--force-color-profile=srgb", "--mute-audio", "--no-first-run", "--no-default-browser-check",
-                "--disable-extensions", "--disable-background-networking", "--disable-gpu",
+                "--disable-extensions", "--disable-background-networking",
+                "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--enable-webgl",
+                "--ignore-gpu-blocklist",
                 "--allow-file-access-from-files", "about:blank"]
         if self.headless_new:
             args.insert(1, "--headless=new")

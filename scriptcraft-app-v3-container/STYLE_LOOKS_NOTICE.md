@@ -21,3 +21,8 @@ stroke-by-stroke writing, and what each look is not.
 Board lettering uses Kalam Bold by the Indian Type Foundry, under the
 SIL Open Font License 1.1. The file is `static/explainer/fonts/Kalam-Bold.ttf`
 (a basic-Latin subset). It is not part of Lemo-Opuscar.
+
+Tilt-shift miniature, low-poly island, tabletop flythrough, and paper pop-up
+are original scenes in `static/explainer/scene3d.js`. They are not copied
+from Lemo-Opuscar. Rendering uses Three.js r149
+(`static/explainer/three.min.js`), which is MIT licensed.

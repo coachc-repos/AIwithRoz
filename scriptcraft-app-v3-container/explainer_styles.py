@@ -15,9 +15,13 @@ import math
 import re
 from typing import Optional
 
-FILM_LOOKS = ("waves", "whiteboard", "chalkboard", "sketchnote", "marker")
+FILM_LOOKS = ("waves", "whiteboard", "chalkboard", "sketchnote", "marker",
+               "tilt", "island", "tabletop", "popup")
 FILM_LOOK_DEFAULT = "waves"
 BOARD_LOOKS = ("whiteboard", "chalkboard", "sketchnote", "marker")
+THREE_LOOKS = ("tilt", "island", "tabletop", "popup")
+# 6% of the 1920x1080 frame stays clear of type while the camera moves.
+FRAME_MARGIN = 0.06
 LOOK_TEST_SECONDS = 120.0
 # Hidden project that holds a bundled sample when no explainer is open.
 # list_projects skips it so it never shows up as one of the user's videos.
@@ -516,6 +520,149 @@ def _layout_region(slide: dict, index: int, look: str, spoken: list, html: str) 
             "host": host, "lines": lines, "letters": letters, "objects": objs}
 
 
+def _box_hits(a: dict, b: dict, pad: float = 0.0) -> bool:
+    return (a["x"] < b["x"] + b["w"] + pad and a["x"] + a["w"] + pad > b["x"]
+            and a["y"] < b["y"] + b["h"] + pad and a["y"] + a["h"] + pad > b["y"])
+
+
+def chart_label_layout(chart: dict) -> list:
+    """Bar rects and the label under each one, in world pixels.
+
+    Each label is sized to the slot, with padding, so it stays inside its
+    own column and does not touch the bar or the next label.
+    """
+    x, y = float(chart["x"]), float(chart["y"])
+    w, h = float(chart["w"]), float(chart["h"])
+    bars = [float(v) for v in (chart.get("bars") or [])]
+    labels = [str(s) for s in (chart.get("labels") or [])]
+    n = len(bars)
+    if n == 0 or h < 40 or w < 40:
+        return []
+    gap = w / (n + 0.4)
+    band = min(72.0, h * 0.22)
+    pad = 8.0
+    out = []
+    for i, frac in enumerate(bars):
+        slot_x = x + gap * 0.15 + i * gap
+        slot_w = gap * 0.92
+        bw = max(10.0, slot_w - 2 * pad)
+        bx = slot_x + (slot_w - bw) / 2
+        bar_bottom = y + h - band
+        bar_top = y + 18.0
+        bh = max(10.0, (bar_bottom - bar_top) * max(0.08, min(1.0, frac)))
+        by = bar_bottom - bh
+        text = labels[i] if i < len(labels) else ""
+        size = 30.0
+        if text:
+            size = min(30.0, (slot_w - 2 * pad) / max(1.0, len(text) * 0.62))
+            size = max(14.0, size)
+        tw = len(text) * size * 0.62 if text else 0.0
+        th = size * 1.1 if text else 0.0
+        while text and tw > slot_w - 2 * pad and size > 12:
+            size = round(size * 0.9, 2)
+            tw = len(text) * size * 0.62
+            th = size * 1.1
+        lx = slot_x + (slot_w - tw) / 2.0
+        ly = bar_bottom + pad
+        if ly + th > y + h - 2:
+            ly = y + h - 2 - th
+        out.append({
+            "text": text,
+            "size": round(size, 2),
+            "bar": {"x": round(bx, 2), "y": round(by, 2), "w": round(bw, 2), "h": round(bh, 2)},
+            "slot": {"x": round(slot_x, 2), "y": round(y, 2), "w": round(slot_w, 2), "h": round(h, 2)},
+            "label": {"x": round(lx, 2), "y": round(ly, 2), "w": round(tw, 2), "h": round(th, 2)},
+        })
+    return out
+
+
+def labels_clear_of_bars(layout: list) -> bool:
+    """True when every label is inside its slot and misses every bar and neighbour."""
+    for i, item in enumerate(layout):
+        lab, slot, bar = item["label"], item["slot"], item["bar"]
+        if lab["w"] <= 0:
+            continue
+        if lab["x"] < slot["x"] + 4 or lab["x"] + lab["w"] > slot["x"] + slot["w"] - 4:
+            return False
+        if lab["y"] < slot["y"] or lab["y"] + lab["h"] > slot["y"] + slot["h"] + 0.5:
+            return False
+        if _box_hits(lab, bar, pad=1):
+            return False
+        for j, other in enumerate(layout):
+            if i == j:
+                continue
+            if _box_hits(lab, other["label"], pad=1) or _box_hits(lab, other["bar"], pad=1):
+                return False
+    return True
+
+
+def _text_box(text: str, x: float, y: float, size: float) -> dict:
+    width = max(float(size), len(text) * float(size) * 0.62)
+    return {"x": float(x), "y": float(y), "w": width, "h": float(size) * 1.2}
+
+
+def framed_text_boxes(ops: list) -> list:
+    """Every string the camera has to keep on screen."""
+    boxes = []
+    for op in ops or []:
+        kind = op.get("op")
+        if kind == "text":
+            boxes.append(_text_box(op["text"], op["x"], op["y"], op["size"]))
+        elif kind == "chip":
+            boxes.append(_text_box(op.get("text") or "", op["x"] + 12, op["y"] + 8, 54))
+        elif kind == "step" and op.get("label"):
+            boxes.append(_text_box(op["label"], op["x"] + 52, op["y"] - 26, 52))
+        elif kind == "callout":
+            boxes.append(_text_box(op.get("text") or "", op["x"] + 16, op["y"] + 8, 48))
+        elif kind == "chart":
+            for item in op.get("labelLayout") or chart_label_layout(op):
+                lab = item["label"]
+                if lab["w"] > 0:
+                    boxes.append(dict(lab))
+    return boxes
+
+
+def _project_box(box: dict, cam: dict) -> dict:
+    z = float(cam["z"])
+    x = 960.0 + (box["x"] - float(cam["x"])) * z
+    y = 540.0 + (box["y"] - float(cam["y"])) * z
+    return {"x": x, "y": y, "w": box["w"] * z, "h": box["h"] * z}
+
+
+def texts_to_draw(ops: list, cam: dict, margin: float = FRAME_MARGIN) -> list:
+    """Text blocks the renderer may paint. A block that would be sliced is left out."""
+    safe = {"x": 1920 * margin, "y": 1080 * margin, "w": 1920 * (1 - 2 * margin), "h": 1080 * (1 - 2 * margin)}
+    frame = {"x": -2, "y": -2, "w": 1924, "h": 1084}
+    kept = []
+    for box in framed_text_boxes(ops):
+        screen = _project_box(box, cam)
+        if not _box_hits(screen, frame):
+            continue
+        if (screen["x"] >= safe["x"] - 0.5 and screen["y"] >= safe["y"] - 0.5
+                and screen["x"] + screen["w"] <= safe["x"] + safe["w"] + 0.5
+                and screen["y"] + screen["h"] <= safe["y"] + safe["h"] + 0.5):
+            kept.append(screen)
+    return kept
+
+
+def text_fits_frame(ops: list, cam: dict, margin: float = FRAME_MARGIN) -> bool:
+    """Text that meets the frame is fully inside the safe margin.
+
+    A block that is completely off screen is fine. One sliced by the edge is not.
+    """
+    safe = {"x": 1920 * margin, "y": 1080 * margin, "w": 1920 * (1 - 2 * margin), "h": 1080 * (1 - 2 * margin)}
+    frame = {"x": -1, "y": -1, "w": 1922, "h": 1082}
+    for box in framed_text_boxes(ops):
+        screen = _project_box(box, cam)
+        if not _box_hits(screen, frame):
+            continue
+        if (screen["x"] < safe["x"] or screen["y"] < safe["y"]
+                or screen["x"] + screen["w"] > safe["x"] + safe["w"]
+                or screen["y"] + screen["h"] > safe["y"] + safe["h"]):
+            return False
+    return True
+
+
 def _letters_for_text(text: str, x: float, y: float, size: float, color: str,
                       t0: float, t1: float, region: int) -> list:
     letters = []
@@ -566,38 +713,40 @@ def compose_token_board(words: list, look: str, duration: float) -> dict:
         {"op": "plate", "x": 48, "y": 70, "w": 1080, "h": 940, "t0": 0.15, "t1": 0.55,
          "color": {"whiteboard": "rgba(42,92,179,0.13)", "sketchnote": "rgba(31,138,138,0.12)",
                    "chalkboard": "rgba(244,241,234,0.05)", "marker": "#f0e4d6"}[look], "region": 0},
-        {"op": "plate", "x": 1160, "y": 70, "w": 900, "h": 940, "t0": 9.05, "t1": 9.45,
+        {"op": "plate", "x": 1480, "y": 150, "w": 560, "h": 820, "t0": 9.05, "t1": 9.45,
          "color": {"whiteboard": "rgba(217,119,87,0.14)", "sketchnote": "rgba(226,176,0,0.16)",
                    "chalkboard": "rgba(227,155,74,0.10)", "marker": "#f6e1d2"}[look], "region": 1},
-        text("Next token", 90, 100, 96, accent if look != "marker" else ink, 0.25, 1.45),
-        text("Reads the prompt", 90, 220, 56, ink, 1.45, 3.05),
-        {"op": "step", "n": "1", "x": 92, "y": 390, "label": "Read the words", "t0": 2.3, "t1": 3.3,
+        text("Next token", 110, 210, 96, accent if look != "marker" else ink, 0.25, 1.45),
+        text("Reads the prompt", 110, 340, 56, ink, 1.45, 3.05),
+        {"op": "step", "n": "1", "x": 92, "y": 470, "label": "Read the words", "t0": 2.3, "t1": 3.3,
          "color": ink, "fill": accent, "region": 0},
-        {"op": "step", "n": "2", "x": 92, "y": 500, "label": "Cut into tokens", "t0": 3.2, "t1": 4.3,
+        {"op": "step", "n": "2", "x": 92, "y": 590, "label": "Cut into tokens", "t0": 3.2, "t1": 4.3,
          "color": ink, "fill": second, "region": 0},
         {"op": "phone", "x": 760, "y": 150, "w": phone_w, "h": phone_h, "t0": 0.45, "t1": 2.5,
          "magnet": look == "whiteboard", "color": ink,
          "fill": {"whiteboard": "rgba(42,92,179,0.82)", "sketchnote": "rgba(31,138,138,0.45)",
                   "chalkboard": "rgba(244,241,234,0.22)", "marker": "rgba(27,28,32,0.10)"}[look],
          "region": 0},
-        {"op": "chip", "text": "The", "x": 70, "y": 760, "w": 150, "h": 78, "t0": 3.6, "t1": 4.2, "color": ink, "region": 0},
-        {"op": "chip", "text": "cat", "x": 240, "y": 760, "w": 140, "h": 78, "t0": 4.2, "t1": 4.8, "color": ink, "region": 0},
-        {"op": "chip", "text": "sat", "x": 400, "y": 760, "w": 140, "h": 78, "t0": 4.8, "t1": 5.4, "color": ink, "region": 0},
-        {"op": "chip", "text": "on", "x": 560, "y": 760, "w": 120, "h": 78, "t0": 5.4, "t1": 6.0, "color": ink, "region": 0},
+        {"op": "chip", "text": "The", "x": 120, "y": 760, "w": 150, "h": 78, "t0": 3.6, "t1": 4.2, "color": ink, "region": 0},
+        {"op": "chip", "text": "cat", "x": 290, "y": 760, "w": 140, "h": 78, "t0": 4.2, "t1": 4.8, "color": ink, "region": 0},
+        {"op": "chip", "text": "sat", "x": 450, "y": 760, "w": 140, "h": 78, "t0": 4.8, "t1": 5.4, "color": ink, "region": 0},
+        {"op": "chip", "text": "on", "x": 610, "y": 760, "w": 120, "h": 78, "t0": 5.4, "t1": 6.0, "color": ink, "region": 0},
         {"op": "arrow", "x1": 700, "y1": 800, "x2": 860, "y2": 800, "t0": 5.8, "t1": 6.4, "color": second, "region": 0},
         text("token", 470, 860, 56, accent, float(token["start"]), float(token["end"])),
-        {"op": "arrow", "x1": 1080, "y1": 540, "x2": 1280, "y2": 420, "t0": 8.3, "t1": 9.3, "color": second, "region": 0},
-        text("Score the next word", 1220, 110, 84, accent if look != "marker" else ink, 9.3, 10.6, 1),
-        text("Taller bar, likelier word", 1220, 220, 56, ink, 10.5, 12.0, 1),
-        {"op": "chart", "x": 1240, "y": 340, "w": 760, "h": 460, "t0": 10.2, "t1": 13.4,
+        {"op": "arrow", "x1": 1120, "y1": 520, "x2": 1460, "y2": 460, "t0": 8.3, "t1": 9.3, "color": second, "region": 0},
+        text("The scores", 1560, 200, 72, accent if look != "marker" else ink, 9.3, 10.6, 1),
+        text("Taller bar wins", 1560, 300, 48, ink, 10.5, 12.0, 1),
+        {"op": "chart", "x": 1540, "y": 400, "w": 500, "h": 400, "t0": 10.2, "t1": 13.4,
          "bars": [0.42, 0.62, 0.34, 0.96], "labels": ["a", "the", "on", "mat"],
          "color": ink, "fill": accent, "magnet": look == "whiteboard", "region": 1},
-        {"op": "step", "n": "3", "x": 1240, "y": 860, "label": "Score them", "t0": 12.2, "t1": 13.2,
+        {"op": "step", "n": "3", "x": 1560, "y": 860, "label": "Score", "t0": 12.2, "t1": 13.2,
          "color": ink, "fill": third, "region": 1},
-        {"op": "step", "n": "4", "x": 1680, "y": 860, "label": "Pick one", "t0": 13.2, "t1": 14.3,
+        {"op": "step", "n": "4", "x": 1780, "y": 860, "label": "Pick", "t0": 13.2, "t1": 14.3,
          "color": ink, "fill": accent, "region": 1},
-        {"op": "callout", "text": "the", "x": 1860, "y": 470, "t0": 14.2, "t1": 15.1, "color": accent, "region": 1},
     ]
+    for op in ops:
+        if op.get("op") == "chart":
+            op["labelLayout"] = chart_label_layout(op)
     letters = []
     for op in ops:
         if op.get("op") == "text":
@@ -610,16 +759,14 @@ def compose_token_board(words: list, look: str, duration: float) -> dict:
         {"id": "prompt", "i": 0, "x": 30, "y": 60, "w": 1100, "h": 960, "t0": 0.0, "t1": 9.0, "kind": "scene", "host": ""},
         {"id": "score", "i": 1, "x": 1160, "y": 60, "w": 920, "h": 960, "t0": 9.0, "t1": duration, "kind": "slide", "host": ""},
     ]
-    z_tight, z_back = 1.22, 0.90
     camera = [
-        {"t": 0.0, "x": 620, "y": 530, "z": z_tight},
-        {"t": 8.2, "x": 620, "y": 530, "z": z_tight},
-        {"t": 8.6, "x": 1080, "y": 560, "z": 1.08},
-        {"t": 9.5, "x": 1320, "y": 500, "z": 1.08},
-        {"t": 10.0, "x": 1560, "y": 500, "z": 1.38},
-        {"t": 16.4, "x": 1560, "y": 500, "z": 1.38},
-        {"t": 18.5, "x": 1080, "y": 540, "z": z_back},
-        {"t": round(duration, 3), "x": 1080, "y": 540, "z": z_back},
+        {"t": 0.0, "x": 640, "y": 530, "z": 1.10},
+        {"t": 7.4, "x": 640, "y": 530, "z": 1.10},
+        {"t": 9.2, "x": 1058, "y": 560, "z": 0.78},
+        {"t": 10.6, "x": 1800, "y": 530, "z": 1.10},
+        {"t": 16.0, "x": 1800, "y": 530, "z": 1.10},
+        {"t": 18.6, "x": 1058, "y": 560, "z": 0.78},
+        {"t": round(duration, 3), "x": 1058, "y": 560, "z": 0.78},
     ]
     return {"ops": ops, "letters": letters, "regions": regions, "camera": camera,
             "board": {"w": 2100, "h": 1080}}
@@ -632,6 +779,19 @@ def film_payload(compiled: dict, words: Optional[list] = None, look: Optional[st
     look = film_look_key(look)
     if look == "waves":
         return {"look": "waves"}
+    if look in THREE_LOOKS:
+        duration = float((compiled or {}).get("end") or (compiled or {}).get("duration") or 20)
+        return {
+            "look": look,
+            "mode": "3d",
+            "duration": duration,
+            "ideas": [
+                {"t0": 0.0, "t1": min(9.0, duration * 0.45), "title": "Next token",
+                 "body": "ChatGPT reads the prompt"},
+                {"t0": min(9.0, duration * 0.45), "t1": duration, "title": "The scores",
+                 "body": "A taller bar is a likelier word"},
+            ],
+        }
     if (compiled or {}).get("packed") == "token":
         duration = float((compiled or {}).get("end") or (compiled or {}).get("duration") or 20)
         packed = compose_token_board(words or [], look, duration)

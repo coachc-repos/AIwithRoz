@@ -119,11 +119,53 @@ def test_sample_window_includes_hook_intro_and_the_other_pieces():
         assert span["features"][name], name
 
 
+def test_chart_labels_stay_inside_their_slots():
+    xv = load("styles_labels", APPS[0])
+    st = xv._styles
+    film = st.film_payload(st.demo_lesson()["compiled"], st.demo_lesson()["words"], "whiteboard")
+    chart = next(op for op in film["ops"] if op["op"] == "chart")
+    layout = chart["labelLayout"]
+    assert st.labels_clear_of_bars(layout)
+    assert [item["text"] for item in layout] == ["a", "the", "on", "mat"]
+    # The same layout is what the canvas draws.
+    assert all(item["label"]["w"] < item["slot"]["w"] for item in layout)
+
+
+def test_camera_keeps_a_margin_on_the_holds():
+    xv = load("styles_margin", APPS[0])
+    st = xv._styles
+    lesson = st.demo_lesson()
+    film = st.film_payload(lesson["compiled"], lesson["words"], "whiteboard")
+    for t in (1.0, 4.0, 7.2, 9.0, 12.0, 15.0, 19.6):
+        cam = st.camera_at(t, film["camera"])
+        assert st.text_fits_frame(film["ops"], cam), t
+        drawn = st.texts_to_draw(film["ops"], cam)
+        assert len(drawn) >= 2, t
+    # Travel can pass a cluster off the edge. Anything still painted stays inside the margin.
+    for step in range(0, 81):
+        cam = st.camera_at(step * 0.25, film["camera"])
+        for box in st.texts_to_draw(film["ops"], cam):
+            assert box["x"] >= 1920 * st.FRAME_MARGIN - 1
+            assert box["y"] >= 1080 * st.FRAME_MARGIN - 1
+            assert box["x"] + box["w"] <= 1920 * (1 - st.FRAME_MARGIN) + 1
+            assert box["y"] + box["h"] <= 1080 * (1 - st.FRAME_MARGIN) + 1
+    assert xv.film_look_key("clay", "waves") == "waves"
+    assert "clay" not in xv.FILM_LOOKS
+    for key in ("tilt", "island", "tabletop", "popup"):
+        assert key in xv.FILM_LOOKS
+        assert xv.film_look_key(key, "waves") == key
+    three = st.film_payload(lesson["compiled"], lesson["words"], "island")
+    assert three["mode"] == "3d"
+    assert three["ideas"] and three["ideas"][0]["title"]
+
+
 def test_copies_match():
     local = (ROOT / APPS[0] / "static" / "explainer" / "board.js").read_bytes()
     other = (ROOT / APPS[1] / "static" / "explainer" / "board.js").read_bytes()
     assert local == other
     assert (ROOT / APPS[0] / "explainer_styles.py").read_bytes() == (ROOT / APPS[1] / "explainer_styles.py").read_bytes()
+    assert (ROOT / APPS[0] / "static" / "explainer" / "scene3d.js").read_bytes() == (
+        ROOT / APPS[1] / "static" / "explainer" / "scene3d.js").read_bytes()
 
 
 def test_committed_samples():
@@ -132,13 +174,16 @@ def test_committed_samples():
     picker = SAMPLES / "picker.png"
     player = SAMPLES / "picker_player.png"
     tiles = SAMPLES / "whiteboard_tiles.png"
-    for path in (demo, sheet, picker, player, tiles):
+    three = SAMPLES / "3d_tiles.png"
+    demos = [demo] + [SAMPLES / f"{name}_demo.mp4" for name in ("tilt", "island", "tabletop", "popup")]
+    for path in (sheet, picker, player, tiles, three, *demos):
         assert path.is_file() and path.stat().st_size > 1000, path
-    probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(demo)],
-        capture_output=True, text=True, check=True)
-    dur = float(json.loads(probe.stdout)["format"]["duration"])
-    assert 16 <= dur <= 24, dur
+    for path in demos:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)],
+            capture_output=True, text=True, check=True)
+        dur = float(json.loads(probe.stdout)["format"]["duration"])
+        assert 16 <= dur <= 24, (path.name, dur)
 
 
 def test_render_smoke_and_presenter_hole():
@@ -158,6 +203,14 @@ def test_render_smoke_and_presenter_hole():
     async def run():
         async with xv._Chrome(*xv.find_chrome()) as ch:
             counts = {}
+            varied = {}
+            for look in ("tilt", "island", "tabletop", "popup"):
+                page = Path(tempfile.mkdtemp()) / f"{look}.html"
+                page.write_text(xv.page_html(lesson["compiled"], mode="render", bubble="off",
+                                            film_look=look, words=lesson["words"]), encoding="utf-8")
+                await ch.open(page, 0.5, transparent=False)
+                png = await ch.frame(6.0)
+                varied[look] = _kinds(png)
             for look in ("whiteboard", "chalkboard", "sketchnote", "marker"):
                 page = Path(tempfile.mkdtemp()) / f"{look}.html"
                 page.write_text(xv.page_html(lesson["compiled"], mode="render", bubble="off",
@@ -181,13 +234,27 @@ def test_render_smoke_and_presenter_hole():
                 const board = [...g.getImageData(180, 160, 1, 1).data];
                 return {pip: pip, board: board};
             })()""")
-            return counts, hole
+            return counts, hole, varied
 
-    counts, hole = asyncio.run(run())
+    counts, hole, varied = asyncio.run(run())
     for look, (a, b) in counts.items():
         assert b > a + 20, (look, a, b)
+    for look, n in varied.items():
+        assert n > 12, (look, n)
     assert hole["pip"][3] == 0
     assert hole["board"][3] == 255
+
+
+def _kinds(png: bytes) -> int:
+    from PIL import Image
+    import io
+    im = Image.open(io.BytesIO(png)).convert("RGB")
+    px = im.load()
+    colors = set()
+    for y in range(0, im.size[1], 8):
+        for x in range(0, im.size[0], 8):
+            colors.add(px[x, y])
+    return len(colors)
 
 
 def _ink(png: bytes, look: str) -> int:

@@ -159,6 +159,7 @@
         ctx.lineWidth = Math.max(4, size * 0.045);
         ctx.lineJoin = 'round';
         var width = ctx.measureText(o.text).width;
+        if (!inSafe(at[0], at[1], width, size * 1.15)) { ctx.restore(); return; }
         var grow = width * p + (p > 0.98 ? size * 0.12 : 0);
         ctx.beginPath();
         ctx.rect(at[0] - 4, at[1] - size * 0.15, Math.max(6, grow), size * 1.35);
@@ -205,6 +206,11 @@
         if (o.magnet && p > 0.8 && INK.magnets) drawMagnet(ctx, box.x + box.w / 2, box.y - 8, cam, (p - 0.8) / 0.2);
     }
 
+    function inSafe(x, y, w, h) {
+        var mx = 1920 * 0.06, my = 1080 * 0.06;
+        return x >= mx && y >= my && x + w <= 1920 - mx && y + h <= 1080 - my;
+    }
+
     function drawChart(ctx, o, t, cam) {
         if (t < o.t0) return;
         var p = progOf(o, t);
@@ -219,41 +225,47 @@
         ctx.lineTo(box.x + 8, box.y + box.h - 8);
         ctx.lineTo(box.x + box.w, box.y + box.h - 8);
         ctx.stroke();
-        var bars = o.bars || [0.4, 0.6, 0.3, 0.9];
-        var labels = o.labels || [];
-        var gap = box.w / (bars.length + 0.4);
-        ctx.font = '700 ' + Math.max(28, 56 * cam.z).toFixed(0) + 'px Kalam, cursive';
-        ctx.textAlign = 'center';
-        for (var i = 0; i < bars.length; i++) {
-            var local = clamp((p * bars.length) - i, 0, 1);
+        var layout = o.labelLayout || [];
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        for (var i = 0; i < layout.length; i++) {
+            var item = layout[i];
+            var local = clamp((p * layout.length) - i, 0, 1);
             if (local <= 0) continue;
-            var bh = (box.h - 36) * bars[i] * local;
-            var x = box.x + gap * 0.6 + i * gap;
-            var y = box.y + box.h - 14 - bh;
-            var bw = gap * 0.55;
-            ctx.fillStyle = i === bars.length - 1 ? (o.fill || PAL.accent) : 'rgba(35,38,44,0.18)';
-            if (LOOK === 'chalkboard') ctx.fillStyle = i === bars.length - 1 ? (PAL.accent || '#e39b4a') : 'rgba(244,241,234,0.35)';
-            ctx.fillRect(x, y, bw, bh);
+            var bar = worldBox(item.bar.x, item.bar.y + item.bar.h * (1 - local), item.bar.w, item.bar.h * local, cam);
+            var last = i === layout.length - 1;
+            ctx.fillStyle = last ? (o.fill || PAL.accent) : 'rgba(35,38,44,0.18)';
+            if (LOOK === 'chalkboard') ctx.fillStyle = last ? (PAL.accent || '#e39b4a') : 'rgba(244,241,234,0.35)';
+            ctx.fillRect(bar.x, bar.y, bar.w, bar.h);
             ctx.strokeStyle = o.color || PAL.ink;
-            ctx.strokeRect(x, y, bw, bh);
-            if (i === bars.length - 1 && local > 0.4) {
+            ctx.strokeRect(bar.x, bar.y, bar.w, bar.h);
+            if (last && local > 0.4) {
                 ctx.save();
                 ctx.beginPath();
-                ctx.rect(x, y, bw, bh);
+                ctx.rect(bar.x, bar.y, bar.w, bar.h);
                 ctx.clip();
-                ctx.strokeStyle = PAL.ink || '#23262c';
                 ctx.globalAlpha = 0.45;
-                for (var hy = y; hy < y + bh; hy += 8) {
-                    ctx.beginPath(); ctx.moveTo(x, hy); ctx.lineTo(x + bw, hy + 10); ctx.stroke();
+                for (var hy = bar.y; hy < bar.y + bar.h; hy += 8) {
+                    ctx.beginPath(); ctx.moveTo(bar.x, hy); ctx.lineTo(bar.x + bar.w, hy + 10); ctx.stroke();
                 }
                 ctx.restore();
             }
-            if (labels[i] && local > 0.7) {
-                ctx.fillStyle = o.color || PAL.ink;
-                ctx.fillText(labels[i], x + bw / 2, box.y + box.h + 8);
+            if (item.text && local > 0.7) {
+                var lab = worldBox(item.label.x, item.label.y, item.label.w, item.label.h, cam);
+                if (inSafe(lab.x, lab.y, lab.w, lab.h)) {
+                    var fontPx = Math.max(12, item.size * cam.z);
+                    ctx.font = '700 ' + fontPx.toFixed(1) + 'px Kalam, cursive';
+                    var measured = ctx.measureText(item.text).width;
+                    if (measured > lab.w && measured > 0) {
+                        fontPx = Math.max(12, fontPx * (lab.w / measured));
+                        ctx.font = '700 ' + fontPx.toFixed(1) + 'px Kalam, cursive';
+                    }
+                    ctx.fillStyle = last ? (o.fill || PAL.accent) : (o.color || PAL.ink);
+                    ctx.fillText(item.text, lab.x, lab.y);
+                }
             }
-            if (o.magnet && i === bars.length - 1 && local > 0.85 && INK.magnets) {
-                drawMagnet(ctx, x + bw / 2, y - 6, cam, (local - 0.85) / 0.15);
+            if (o.magnet && last && local > 0.85 && INK.magnets) {
+                drawMagnet(ctx, bar.x + bar.w / 2, bar.y - 6, cam, (local - 0.85) / 0.15);
             }
         }
         ctx.restore();
@@ -338,12 +350,8 @@
         var box = worldBox(o.x, o.y, o.w * p, o.h, cam);
         ctx.save();
         ctx.fillStyle = o.color || 'rgba(42,92,179,0.08)';
-        round(ctx, box.x, box.y, box.w, box.h, 28);
+        round(ctx, box.x, box.y, box.w, box.h, 36);
         ctx.fill();
-        ctx.strokeStyle = PAL.ink || '#23262c';
-        ctx.globalAlpha = 0.35;
-        ctx.lineWidth = Math.max(4, 5 * cam.z);
-        ctx.stroke();
         ctx.restore();
     }
 
