@@ -17,3 +17,7 @@ copy Lemo-Opuscar code, fonts, films, or other assets. The drawing code in
 `static/explainer/board.js` and `explainer_styles.py` is original. It follows
 only the published descriptions: materials, colours, a travelling camera,
 stroke-by-stroke writing, and what each look is not.
+
+Board lettering uses Kalam Bold by the Indian Type Foundry, under the
+SIL Open Font License 1.1. The file is `static/explainer/fonts/Kalam-Bold.ttf`
+(a basic-Latin subset). It is not part of Lemo-Opuscar.

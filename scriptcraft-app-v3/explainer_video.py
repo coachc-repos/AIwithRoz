@@ -3657,6 +3657,14 @@ def _page_bookends(compiled: dict, urls: Optional[dict], mode: str) -> dict:
     return {k: v for k, v in (("intro", intro), ("end", end)) if v}
 
 
+def _kalam_face() -> str:
+    """Kalam Bold (OFL, Indian Type Foundry) as a data-URI face for board lettering."""
+    raw = (ASSET_DIR / "fonts" / "Kalam-Bold.ttf").read_bytes()
+    b64 = base64.b64encode(raw).decode("ascii")
+    return ("@font-face{font-family:Kalam;font-weight:700;font-display:block;"
+            f"src:url(data:font/ttf;base64,{b64}) format('truetype');}}")
+
+
 def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer",
               host: Optional[dict] = None, pip_frame: Optional[str] = None,
               bubble: Optional[str] = None, clips: Optional[list] = None,
@@ -3713,6 +3721,8 @@ def page_html(compiled: dict, *, mode: str = "preview", title: str = "Explainer"
            "script-src 'unsafe-inline'; font-src data:"
            + (("; media-src 'self'" + (f" {origin}" if origin else "")) if media else ""))
     cls = f"mode-{mode}" + (" host-on" if host_on else "") + (" film-board" if look != "waves" else "")
+    if look != "waves":
+        css = css + _kalam_face()
     return (f"<!doctype html><html class=\"{cls}\"><head><meta charset=\"utf-8\">"
             f"<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">"
             f"<title>{_html.escape(title)}</title><style>{css}</style></head>"

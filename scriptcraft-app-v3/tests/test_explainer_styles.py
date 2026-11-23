@@ -64,16 +64,18 @@ def test_word_strokes_finish_on_the_spoken_word():
     assert st.stroke_progress(1.20 + 0.125, 1.20, 1.70) < 0.25
     lesson = st.demo_lesson()
     film = st.film_payload(lesson["compiled"], lesson["words"], "whiteboard")
-    # The narration word "question" is fully drawn at its end and not before it starts.
-    question = next(w for w in lesson["words"] if w["text"].lower() == "question")
+    # The narration word "token" is fully drawn when it is spoken.
+    spoken = next(w for w in lesson["words"] if w["text"].lower() == "token")
     strokes = []
     for letter in film["letters"]:
         for stroke in letter["strokes"]:
-            if question["start"] - 0.02 <= stroke["t0"] <= question["end"] + 0.02:
+            if spoken["start"] - 0.02 <= stroke["t0"] <= spoken["end"] + 0.02:
                 strokes.append(stroke)
     assert strokes
-    assert max(s["t1"] for s in strokes) <= question["end"] + 0.02
-    assert abs(max(s["t1"] for s in strokes) - question["end"]) < 0.05
+    assert max(s["t1"] for s in strokes) <= spoken["end"] + 0.02
+    assert abs(max(s["t1"] for s in strokes) - spoken["end"]) < 0.05
+    phone = next(op for op in film["ops"] if op["op"] == "phone")
+    assert abs(phone["h"] / phone["w"] - st.PHONE_RATIO) < 0.02
 
 
 def test_camera_travels_and_pulls_back_and_manual_chips_stay():
@@ -81,9 +83,9 @@ def test_camera_travels_and_pulls_back_and_manual_chips_stay():
     st = xv._styles
     lesson = st.demo_lesson()
     film = st.film_payload(lesson["compiled"], lesson["words"], "whiteboard")
-    early = st.camera_at(1.0, film["camera"])
-    mid = st.camera_at(7.0, film["camera"])
-    end = st.camera_at(20.0, film["camera"])
+    early = st.camera_at(2.0, film["camera"])
+    mid = st.camera_at(12.0, film["camera"])
+    end = st.camera_at(19.8, film["camera"])
     assert abs(early["x"] - mid["x"]) > 50
     assert end["z"] < early["z"]
     chalk = st.film_payload(lesson["compiled"], lesson["words"], "chalkboard")
@@ -129,7 +131,8 @@ def test_committed_samples():
     sheet = SAMPLES / "styles_sheet.png"
     picker = SAMPLES / "picker.png"
     player = SAMPLES / "picker_player.png"
-    for path in (demo, sheet, picker, player):
+    tiles = SAMPLES / "whiteboard_tiles.png"
+    for path in (demo, sheet, picker, player, tiles):
         assert path.is_file() and path.stat().st_size > 1000, path
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(demo)],
@@ -165,12 +168,13 @@ def test_render_smoke_and_presenter_hole():
                 counts[look] = (_ink(early, look), _ink(later, look))
             comp = dict(lesson["compiled"])
             comp["host_on"] = True
+            comp["html"] = comp["html"].replace('id="d2"', 'id="d2" data-host="pip"', 1)
             host_page = Path(tempfile.mkdtemp()) / "host.html"
             host_page.write_text(xv.page_html(comp, mode="render", bubble="off", film_look="whiteboard",
                                              words=lesson["words"], host={"focus": 0.45}, pip_frame="off"),
                                  encoding="utf-8")
             await ch.open(host_page, 1.0, transparent=True)
-            await ch.frame(12.5)
+            await ch.frame(12.0)
             hole = await ch.evaluate("""(() => {
                 const g = document.getElementById('bg').getContext('2d');
                 const pip = [...g.getImageData(1568, 847, 1, 1).data];

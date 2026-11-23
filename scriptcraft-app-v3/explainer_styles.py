@@ -24,8 +24,10 @@ LOOK_TEST_SECONDS = 120.0
 LOOK_TEST_ID = "20000101_000000_a11c"
 
 # A cell on the big board, in the same pixel space the camera travels.
-CELL_W, CELL_H = 2100.0, 1280.0
-CELL_GAP_X, CELL_GAP_Y = 320.0, 380.0
+CELL_W, CELL_H = 1860.0, 1040.0
+CELL_GAP_X, CELL_GAP_Y = 160.0, 180.0
+# The approved phone symbol is 82 by 168, about 1:2.05.
+PHONE_RATIO = 168 / 82
 
 
 def film_look_key(choice: Optional[str] = None, saved: Optional[str] = None) -> str:
@@ -244,9 +246,9 @@ PALETTES = {
         "wall": "#efe6d6", "emphasis": "#e39b4a",
     },
     "sketchnote": {
-        "board": "#fbfaf6", "board2": "#f3f1ea", "ink": "#1e1e22", "blue": "#5b5852",
-        "accent": "#e2b000", "ghost": "#e4e0d6", "sheen": "#000000", "frame": "#fbfaf6",
-        "emphasis": "#e2b000",
+        "board": "#fbfaf6", "board2": "#f3f1ea", "ink": "#1e1e22", "blue": "#1f8a8a",
+        "accent": "#e2b000", "accent2": "#e07a2f", "ghost": "#e4e0d6", "sheen": "#000000",
+        "frame": "#fbfaf6", "emphasis": "#e2b000",
     },
     "marker": {
         "board": "#faf9f5", "board2": "#f3f1ea", "ink": "#1b1c20", "blue": "#2456d6",
@@ -307,7 +309,7 @@ def camera_keys(regions: list, look: str, duration: float) -> list:
     if look in ("chalkboard", "marker"):
         r = regions[0]
         cx, cy = r["x"] + r["w"] / 2, r["y"] + r["h"] / 2
-        z = 1680.0 / r["w"]
+        z = 1780.0 / max(1.0, r["w"])
         keys = [{"t": 0.0, "x": round(cx, 1), "y": round(cy, 1), "z": round(z, 4)}]
         if look == "chalkboard":
             # Once, late, the frame opens enough to show the wood around the slate.
@@ -319,7 +321,7 @@ def camera_keys(regions: list, look: str, duration: float) -> list:
     keys = []
     for i, r in enumerate(regions):
         cx, cy = r["x"] + r["w"] / 2, r["y"] + r["h"] / 2
-        z = 1680.0 / r["w"]
+        z = 1780.0 / max(1.0, r["w"])
         arrive = float(r["t0"]) + (0.05 if i == 0 else 0.55)
         depart = float(r["t0"]) - 0.05
         if i == 0:
@@ -333,7 +335,9 @@ def camera_keys(regions: list, look: str, duration: float) -> list:
         xs = [r["x"] for r in regions] + [r["x"] + r["w"] for r in regions]
         ys = [r["y"] for r in regions] + [r["y"] + r["h"] for r in regions]
         cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
-        z = min(1760.0 / max(1.0, max(xs) - min(xs)), 960.0 / max(1.0, max(ys) - min(ys)))
+        z_fit = min(1840.0 / max(1.0, max(xs) - min(xs)), 1000.0 / max(1.0, max(ys) - min(ys)))
+        # Do not pull back so far that a 64px label becomes a speck.
+        z = max(z_fit, 0.55)
         t_back = max(keys[-1]["t"] + 0.2, duration - 2.2)
         keys.append({"t": round(min(duration, t_back), 3), "x": keys[-1]["x"], "y": keys[-1]["y"], "z": keys[-1]["z"]})
         keys.append({"t": round(duration, 3), "x": round(cx, 1), "y": round(cy, 1), "z": round(z, 4)})
@@ -435,8 +439,8 @@ def _layout_region(slide: dict, index: int, look: str, spoken: list, html: str) 
     text_w = CELL_W * (0.56 if host == "pip" else 0.86)
     lines = []
     letters = []
-    size_title = 92.0 if slide.get("kind") == "chapter" else 64.0
-    size_body = 46.0
+    size_title = 120.0 if slide.get("kind") == "chapter" else 108.0
+    size_body = 64.0
     cx, cy = x + 90.0, y + 110.0
     # First line is the title (up to four words). The rest wrap underneath.
     title_n = min(4, len(pairs)) if slide.get("kind") == "chapter" else min(3, len(pairs))
@@ -493,10 +497,15 @@ def _layout_region(slide: dict, index: int, look: str, spoken: list, html: str) 
                           "words": words_out})
     objs = []
     for ob in objects_in_section(html, slide.get("id") or ""):
-        ox = x + 80 + (ob["x"] / 1920.0) * (CELL_W - 200)
-        oy = y + 80 + (ob["y"] / 1080.0) * (CELL_H - 180)
-        ow = max(80.0, ob["w"] * (CELL_W / 1920.0) * 0.9)
-        oh = max(60.0, ob["h"] * (CELL_H / 1080.0) * 0.9)
+        ox = x + 980
+        oy = y + 180
+        if ob["name"] == "phone":
+            ow, oh = 340.0, round(340.0 * PHONE_RATIO, 1)
+        elif ob["name"] == "chart":
+            ow, oh = 720.0, 520.0
+        else:
+            ow = max(280.0, ob["w"] * 1.4)
+            oh = max(220.0, ob["h"] * 1.4)
         objs.append({"name": ob["name"], "x": round(ox, 1), "y": round(oy, 1),
                      "w": round(ow, 1), "h": round(oh, 1), "label": ob.get("label") or "",
                      "t0": round(t0 + 0.1, 3), "t1": round(min(t1, t0 + 1.1), 3)})
@@ -507,6 +516,115 @@ def _layout_region(slide: dict, index: int, look: str, spoken: list, html: str) 
             "host": host, "lines": lines, "letters": letters, "objects": objs}
 
 
+def _letters_for_text(text: str, x: float, y: float, size: float, color: str,
+                      t0: float, t1: float, region: int) -> list:
+    letters = []
+    for item in schedule_word(text, t0, t1):
+        strokes = [{"i": i, "t0": a, "t1": b} for i, (a, b) in enumerate(item["times"])]
+        if not strokes:
+            continue
+        letters.append({"ch": item["ch"], "x": x, "y": y, "size": size, "color": color,
+                        "region": region, "strokes": strokes})
+    return letters
+
+
+def _narration_word(words: list, text: str):
+    key = (text or "").lower()
+    for w in words or []:
+        if str(w.get("text") or "").lower() == key:
+            return w
+    return None
+
+
+def compose_token_board(words: list, look: str, duration: float) -> dict:
+    """One dense board about how ChatGPT picks the next token.
+
+    Two idea clusters share the board. The camera frames each one tight,
+    rides the arrow between them, then pulls back onto the whole board.
+    Type sizes are chosen so a 1280x720 picture of this board still has a
+    heading in the 64–90px range and body type in the 36–48px range.
+    """
+    look = film_look_key(look)
+    pal = PALETTES[look]
+    ink, accent = pal["ink"], pal["accent"]
+    second = pal.get("accent2") or pal.get("blue") or accent
+    third = "#1f8a8a" if look == "sketchnote" else (pal.get("blue") or ink)
+    if look == "marker":
+        second, third = accent, ink
+    if look == "chalkboard":
+        second, third = accent, ink
+    token = _narration_word(words, "token") or {"start": 6.2, "end": 6.8}
+    duration = max(8.0, float(duration or 20))
+
+    def text(s, x, y, size, color, t0, t1, region=0):
+        return {"op": "text", "text": s, "x": x, "y": y, "size": size, "color": color,
+                "t0": round(t0, 3), "t1": round(t1, 3), "region": region}
+
+    phone_w = 320.0
+    phone_h = round(phone_w * PHONE_RATIO, 1)
+    ops = [
+        {"op": "plate", "x": 48, "y": 70, "w": 1080, "h": 940, "t0": 0.15, "t1": 0.55,
+         "color": {"whiteboard": "rgba(42,92,179,0.13)", "sketchnote": "rgba(31,138,138,0.12)",
+                   "chalkboard": "rgba(244,241,234,0.05)", "marker": "#f0e4d6"}[look], "region": 0},
+        {"op": "plate", "x": 1160, "y": 70, "w": 900, "h": 940, "t0": 9.05, "t1": 9.45,
+         "color": {"whiteboard": "rgba(217,119,87,0.14)", "sketchnote": "rgba(226,176,0,0.16)",
+                   "chalkboard": "rgba(227,155,74,0.10)", "marker": "#f6e1d2"}[look], "region": 1},
+        text("Next token", 90, 100, 96, accent if look != "marker" else ink, 0.25, 1.45),
+        text("Reads the prompt", 90, 220, 56, ink, 1.45, 3.05),
+        {"op": "step", "n": "1", "x": 92, "y": 390, "label": "Read the words", "t0": 2.3, "t1": 3.3,
+         "color": ink, "fill": accent, "region": 0},
+        {"op": "step", "n": "2", "x": 92, "y": 500, "label": "Cut into tokens", "t0": 3.2, "t1": 4.3,
+         "color": ink, "fill": second, "region": 0},
+        {"op": "phone", "x": 760, "y": 150, "w": phone_w, "h": phone_h, "t0": 0.45, "t1": 2.5,
+         "magnet": look == "whiteboard", "color": ink,
+         "fill": {"whiteboard": "rgba(42,92,179,0.82)", "sketchnote": "rgba(31,138,138,0.45)",
+                  "chalkboard": "rgba(244,241,234,0.22)", "marker": "rgba(27,28,32,0.10)"}[look],
+         "region": 0},
+        {"op": "chip", "text": "The", "x": 70, "y": 760, "w": 150, "h": 78, "t0": 3.6, "t1": 4.2, "color": ink, "region": 0},
+        {"op": "chip", "text": "cat", "x": 240, "y": 760, "w": 140, "h": 78, "t0": 4.2, "t1": 4.8, "color": ink, "region": 0},
+        {"op": "chip", "text": "sat", "x": 400, "y": 760, "w": 140, "h": 78, "t0": 4.8, "t1": 5.4, "color": ink, "region": 0},
+        {"op": "chip", "text": "on", "x": 560, "y": 760, "w": 120, "h": 78, "t0": 5.4, "t1": 6.0, "color": ink, "region": 0},
+        {"op": "arrow", "x1": 700, "y1": 800, "x2": 860, "y2": 800, "t0": 5.8, "t1": 6.4, "color": second, "region": 0},
+        text("token", 470, 860, 56, accent, float(token["start"]), float(token["end"])),
+        {"op": "arrow", "x1": 1080, "y1": 540, "x2": 1280, "y2": 420, "t0": 8.3, "t1": 9.3, "color": second, "region": 0},
+        text("Score the next word", 1220, 110, 84, accent if look != "marker" else ink, 9.3, 10.6, 1),
+        text("Taller bar, likelier word", 1220, 220, 56, ink, 10.5, 12.0, 1),
+        {"op": "chart", "x": 1240, "y": 340, "w": 760, "h": 460, "t0": 10.2, "t1": 13.4,
+         "bars": [0.42, 0.62, 0.34, 0.96], "labels": ["a", "the", "on", "mat"],
+         "color": ink, "fill": accent, "magnet": look == "whiteboard", "region": 1},
+        {"op": "step", "n": "3", "x": 1240, "y": 860, "label": "Score them", "t0": 12.2, "t1": 13.2,
+         "color": ink, "fill": third, "region": 1},
+        {"op": "step", "n": "4", "x": 1680, "y": 860, "label": "Pick one", "t0": 13.2, "t1": 14.3,
+         "color": ink, "fill": accent, "region": 1},
+        {"op": "callout", "text": "the", "x": 1860, "y": 470, "t0": 14.2, "t1": 15.1, "color": accent, "region": 1},
+    ]
+    letters = []
+    for op in ops:
+        if op.get("op") == "text":
+            letters.extend(_letters_for_text(op["text"], op["x"], op["y"], op["size"], op["color"],
+                                             op["t0"], op["t1"], op.get("region") or 0))
+        elif op.get("op") == "chip":
+            letters.extend(_letters_for_text(op["text"], op["x"] + 16, op["y"] + 12, 42, op["color"],
+                                             op["t0"], op["t1"], 0))
+    regions = [
+        {"id": "prompt", "i": 0, "x": 30, "y": 60, "w": 1100, "h": 960, "t0": 0.0, "t1": 9.0, "kind": "scene", "host": ""},
+        {"id": "score", "i": 1, "x": 1160, "y": 60, "w": 920, "h": 960, "t0": 9.0, "t1": duration, "kind": "slide", "host": ""},
+    ]
+    z_tight, z_back = 1.22, 0.90
+    camera = [
+        {"t": 0.0, "x": 620, "y": 530, "z": z_tight},
+        {"t": 8.2, "x": 620, "y": 530, "z": z_tight},
+        {"t": 8.6, "x": 1080, "y": 560, "z": 1.08},
+        {"t": 9.5, "x": 1320, "y": 500, "z": 1.08},
+        {"t": 10.0, "x": 1560, "y": 500, "z": 1.38},
+        {"t": 16.4, "x": 1560, "y": 500, "z": 1.38},
+        {"t": 18.5, "x": 1080, "y": 540, "z": z_back},
+        {"t": round(duration, 3), "x": 1080, "y": 540, "z": z_back},
+    ]
+    return {"ops": ops, "letters": letters, "regions": regions, "camera": camera,
+            "board": {"w": 2100, "h": 1080}}
+
+
 def film_payload(compiled: dict, words: Optional[list] = None, look: Optional[str] = None,
                  emphasis: Optional[dict] = None) -> dict:
     """What the board engine draws. Waves return a marker and nothing else,
@@ -514,6 +632,22 @@ def film_payload(compiled: dict, words: Optional[list] = None, look: Optional[st
     look = film_look_key(look)
     if look == "waves":
         return {"look": "waves"}
+    if (compiled or {}).get("packed") == "token":
+        duration = float((compiled or {}).get("end") or (compiled or {}).get("duration") or 20)
+        packed = compose_token_board(words or [], look, duration)
+        return {
+            "look": look,
+            "palette": PALETTES[look],
+            "ink": ink_rules(look),
+            "regions": packed["regions"],
+            "letters": packed["letters"],
+            "ops": packed["ops"],
+            "camera": packed["camera"],
+            "board": packed["board"],
+            "native": [],
+            "manual": [],
+            "emphasis": (emphasis or {}).get("marks") or [],
+        }
     slides = list((compiled or {}).get("slides") or [])
     html = (compiled or {}).get("html") or ""
     regions = []
@@ -715,12 +849,13 @@ def sample_lesson() -> dict:
 
 
 def demo_lesson() -> dict:
-    """About twenty seconds of the whiteboard look, for the committed sample."""
+    """About twenty seconds on how ChatGPT predicts the next token."""
     beats = [
-        _beat("d1", "scene", 0.0, 5.0, "A question lands on the board.", objects="phone"),
-        _beat("d2", "slide", 5.0, 10.5, "Tokens score the next word.", objects="chart"),
-        _beat("d3", "slide", 10.5, 15.5, "One model writes the reply.", host="pip"),
-        _beat("d4", "slide", 15.5, 20.0, "The whole lesson on one board.", fx="glitch", origin="auto"),
+        _beat("d1", "scene", 0.0, 9.0,
+              "ChatGPT reads your prompt and cuts it into a token.", objects="phone"),
+        _beat("d2", "slide", 9.0, 20.0,
+              "Then it scores the next word and the tallest bar wins.", objects="chart",
+              fx="glitch", origin="auto"),
     ]
     words = []
     parts = []
@@ -738,8 +873,9 @@ def demo_lesson() -> dict:
             f'<h1 class="h2">{b["spoken"]}</h1>{extra}</section>')
     slides = [{k: v for k, v in b.items() if k != "_objects"} for b in beats]
     return {"compiled": {"html": "\n".join(parts), "slides": slides, "duration": 20.0,
-                         "start": 0.0, "end": 20.0, "sections": ["Lesson"],
-                         "host_windows": [], "host_sections": [], "host_on": False},
+                         "start": 0.0, "end": 20.0, "sections": ["Next token"],
+                         "host_windows": [], "host_sections": [], "host_on": False,
+                         "packed": "token"},
             "words": words}
 
 
