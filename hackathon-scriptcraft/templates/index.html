@@ -15800,11 +15800,12 @@ Thank you for watching!`;
     }
 
     function _spsRunSelectedStageInner(checkedList) {
-      // Make sure #scriptInput is populated for processExistingScript(), which
-      // reads its value. If the script came from Create Script it lives in
-      // window.currentScript; copy it across.
+      // processExistingScript() reads #scriptInput. The script on screen lives in
+      // window.currentScript (Create Script, a loaded file and every earlier
+      // stage update it), so copy it across every time. Otherwise a second run
+      // (e.g. B-Roll after Shorten) would process the stale first version.
       const ta = document.getElementById('scriptInput');
-      if (ta && (!ta.value || !ta.value.trim()) && typeof window.currentScript === 'string' && window.currentScript.trim()) {
+      if (ta && typeof window.currentScript === 'string' && window.currentScript.trim()) {
         ta.value = window.currentScript;
       }
 

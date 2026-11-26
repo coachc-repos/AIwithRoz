@@ -41,3 +41,6 @@ azure-cognitiveservices-speech>=1.40.0
 faster-whisper>=1.0.3
 numpy>=1.26
 python-dotenv>=1.0
+
+# Explainer renders drive headless Chrome over the DevTools websocket.
+websockets>=12.0

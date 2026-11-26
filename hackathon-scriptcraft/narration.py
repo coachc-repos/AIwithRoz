@@ -406,6 +406,20 @@ def _estimate_words(text: str, duration: float) -> list:
     ]
 
 
+def _write_mp3_copy(wav: Path, text: str) -> Path | None:
+    """Save <stem>.mp3 (192 kbps) and <stem>.txt beside a narration WAV."""
+    mp3 = wav.with_suffix(".mp3")
+    try:
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav),
+                        "-codec:a", "libmp3lame", "-b:a", "192k", str(mp3)],
+                       check=True, timeout=600)
+        wav.with_suffix(".txt").write_text(text, encoding="utf-8")
+        return mp3
+    except Exception as exc:  # the WAV is still usable for playback
+        print(f"Could not write the MP3 copy of {wav.name}: {exc}")
+        return None
+
+
 def install(app, web_gui) -> None:
     """Point the existing voiceover button at the selected provider.
 
@@ -488,6 +502,10 @@ def install(app, web_gui) -> None:
             try:
                 web_gui._eleven_set(job_id, message=f"Reading with {chosen}…")
                 result = synthesize(text, out_path, provider=chosen, voice=voice)
+                # The Explainer Video dialog lists this script's voiceover MP3s
+                # and reads "<stem>.txt" as the exact spoken text, so save both
+                # next to the WAV (same stem, so <stem>.words.json is found too).
+                _write_mp3_copy(Path(result["wav"]), text)
                 web_gui._eleven_set(
                     job_id, status="done", path=result["wav"],
                     audio_seconds=int(result["seconds"]),
