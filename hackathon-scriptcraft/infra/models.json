@@ -1,0 +1,80 @@
+{
+  "note": "deploymentName is what the MAF agents request. modelNamePreference is matched against the region's model catalog at setup time. The first model that can be deployed wins. capacityFallback is tried from the top if the region rejects the quota. Standard (pay-per-token) SKUs only; provisioned throughput is never used.",
+  "deployments": [
+    {
+      "deploymentName": "claude-opus-5-5",
+      "envVar": "MAF_CLAUDE_MODEL",
+      "required": true,
+      "skuCandidates": [
+        "GlobalStandard",
+        "DataZoneStandard",
+        "Standard"
+      ],
+      "capacityFallback": [
+        20,
+        8,
+        4,
+        1
+      ],
+      "modelNamePreference": [
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-opus-4-5",
+        "claude-sonnet-4-5",
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-4.1",
+        "gpt-4o"
+      ]
+    },
+    {
+      "deploymentName": "claude-opus-5-5-2",
+      "envVar": "MAF_REVIEWER_MODEL",
+      "required": false,
+      "skuCandidates": [
+        "GlobalStandard",
+        "DataZoneStandard",
+        "Standard"
+      ],
+      "capacityFallback": [
+        20,
+        8,
+        4,
+        1
+      ],
+      "modelNamePreference": [
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-opus-4-5",
+        "claude-sonnet-4-5",
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-4.1",
+        "gpt-4o"
+      ]
+    },
+    {
+      "deploymentName": "gpt-5.4-mini",
+      "envVar": "MAF_SEARCH_MODEL",
+      "required": false,
+      "skuCandidates": [
+        "GlobalStandard",
+        "DataZoneStandard",
+        "Standard"
+      ],
+      "capacityFallback": [
+        50,
+        20,
+        8,
+        1
+      ],
+      "modelNamePreference": [
+        "gpt-5.4-mini",
+        "gpt-5-mini",
+        "gpt-4.1-mini",
+        "gpt-4o-mini",
+        "gpt-4o"
+      ]
+    }
+  ]
+}

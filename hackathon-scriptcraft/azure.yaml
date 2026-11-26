@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+# Infrastructure only. There is no service to deploy: the web app runs in Docker
+# on the sandbox machine. Use ./setup-azure.sh (it calls azd provision, or az
+# deployment if azd is not installed). Do not point this at another subscription's
+# resource names.
+name: scriptcraft-hackathon
+metadata:
+  template: scriptcraft-hackathon
+infra:
+  provider: bicep
+  path: infra
+  module: main

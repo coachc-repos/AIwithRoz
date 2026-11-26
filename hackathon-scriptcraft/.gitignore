@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+.hackathon-state.json
+infra/deployed-models.json
+__pycache__/
+*.py[cod]
+.venv/
+.venv-*/
+maf/.venv/
+.azure/
+*.tar
+*.tar.gz
+output/
+*.log
+.DS_Store
+.app-token
