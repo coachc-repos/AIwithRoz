@@ -314,6 +314,38 @@ import narration  # noqa: E402
 narration.install(app, web_gui)
 
 
+# --- 7. Claude calls on a Foundry deployment when there is no Anthropic key --
+# The Idea Generator, briefs, titles and the explainer planner call Anthropic
+# directly. Sandboxes rarely have that key, so route them to the Foundry model.
+import foundry_claude  # noqa: E402
+
+if not (os.environ.get("ANTHROPIC_API_KEY") or "").strip() and foundry_claude.configured():
+    def _foundry_anthropic_client(timeout: float = 60.0):
+        if (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
+            return _orig_get_anthropic_client(timeout=timeout)
+        return foundry_claude.FoundryAnthropic(timeout=timeout)
+
+    _orig_get_anthropic_client = web_gui._get_anthropic_client
+    web_gui._get_anthropic_client = _foundry_anthropic_client
+
+    _orig_explainer_options = app.view_functions.get("explainer_options")
+
+    def _explainer_options_foundry(*a, **kw):
+        resp = _orig_explainer_options(*a, **kw)
+        r = resp[0] if isinstance(resp, tuple) else resp
+        data = r.get_json(silent=True) if hasattr(r, "get_json") else None
+        if isinstance(data, dict) and data.get("success"):
+            data["claude"] = True
+            data["model"] = f"Foundry {foundry_claude._deployment()} (Claude stand-in)"
+            return jsonify(data)
+        return resp
+
+    if _orig_explainer_options is not None:
+        app.view_functions["explainer_options"] = _explainer_options_foundry
+    print(f"🤖 Claude calls use Foundry deployment {foundry_claude._deployment()!r} "
+          "(no ANTHROPIC_API_KEY)")
+
+
 @app.route("/healthz")
 def _container_healthz():
     tts = {}

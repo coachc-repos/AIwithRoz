@@ -63,7 +63,7 @@ RUN pip install --upgrade pip && pip install -r requirements.txt \
     && chmod -R a+rX /opt/whisper \
     && if [ -d /opt/hf ]; then chmod -R a+rX /opt/hf; fi
 
-COPY narration.py container_app.py web_gui.py \
+COPY narration.py container_app.py web_gui.py foundry_claude.py \
      explainer_articles.py explainer_brands.py explainer_imagery.py \
      explainer_scenes.py explainer_styles.py explainer_video.py ./
 COPY templates/ ./templates/
