@@ -1,0 +1,50 @@
+# One command from this folder: docker compose up --build
+# Open http://localhost:8080
+# Interpolation reads a local .env if you have one. Empty values fall back below.
+# Do not commit .env.
+
+services:
+  scriptcraft:
+    build: .
+    image: scriptcraft-hackathon:latest
+    ports:
+      - "8080:8080"
+    shm_size: "1gb"
+    environment:
+      PORT: "8080"
+      SCRIPTCRAFT_DISABLE_LOCAL_FEATURES: ${SCRIPTCRAFT_DISABLE_LOCAL_FEATURES:-1}
+      SCRIPTCRAFT_CHROME_NO_SANDBOX: "1"
+      SCRIPTCRAFT_SETTINGS_BLOB_CONTAINER: ${SCRIPTCRAFT_SETTINGS_BLOB_CONTAINER:-}
+      FINISHED_VIDEOS_BLOB_ACCOUNT: ${FINISHED_VIDEOS_BLOB_ACCOUNT:-}
+      FINISHED_VIDEOS_BLOB_CONTAINER: ${FINISHED_VIDEOS_BLOB_CONTAINER:-}
+      FOUNDRY_PROJECT_ENDPOINT: ${FOUNDRY_PROJECT_ENDPOINT:-}
+      AZURE_AI_PROJECT_ENDPOINT: ${AZURE_AI_PROJECT_ENDPOINT:-}
+      AI_PROJECT_ENDPOINT: ${AI_PROJECT_ENDPOINT:-}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-}
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
+      AZURE_SPEECH_KEY: ${AZURE_SPEECH_KEY:-}
+      AZURE_SPEECH_REGION: ${AZURE_SPEECH_REGION:-}
+      AZURE_SPEECH_ENDPOINT: ${AZURE_SPEECH_ENDPOINT:-}
+      TTS_PROVIDER: ${TTS_PROVIDER:-azure}
+      TTS_VOICE: ${TTS_VOICE:-en-US-AvaMultilingualNeural}
+      TTS_WPM: ${TTS_WPM:-175}
+      TTS_BASELINE_WPM: ${TTS_BASELINE_WPM:-150}
+      MAF_CLAUDE_MODEL: ${MAF_CLAUDE_MODEL:-}
+      MAF_REVIEWER_MODEL: ${MAF_REVIEWER_MODEL:-}
+      MAF_SEARCH_MODEL: ${MAF_SEARCH_MODEL:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ELEVENLABS_VOICE_ID: ${ELEVENLABS_VOICE_ID:-}
+      HEYGEN_API_KEY: ${HEYGEN_API_KEY:-}
+      HEYGEN_VOICE_ID: ${HEYGEN_VOICE_ID:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      AZURE_SEARCH_SERVICE: ${AZURE_SEARCH_SERVICE:-}
+      AZURE_SEARCH_API_KEY: ${AZURE_SEARCH_API_KEY:-}
+      APP_AUTH_TOKEN: ${APP_AUTH_TOKEN:-}
+    volumes:
+      - scriptcraft-out:/tmp/scriptcraft_output
+
+volumes:
+  scriptcraft-out:
