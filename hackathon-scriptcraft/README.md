@@ -107,6 +107,34 @@ Key Vault is not created. This app stores settings in the private blob and reads
 
 Speech does not need its own model deployment. Neural voices, including Ava, are part of the AI Services account. Setup writes `AZURE_SPEECH_REGION`, `AZURE_SPEECH_ENDPOINT`, and, when the CLI can list keys, `AZURE_SPEECH_KEY`.
 
+### Host it in Azure instead of local Docker
+
+If the sandbox has no Docker, run this after `setup-azure.sh`:
+
+```bash
+./deploy-containerapp.sh            # add --min-replicas 1 to avoid cold starts
+```
+
+It creates a Basic container registry, builds the image in Azure
+(`az acr build`), and deploys one Azure Container App (consumption plan, 1 vCPU,
+2 GiB, scales to zero) in the same resource group. The app signs in with its
+own managed identity (Cognitive Services User on the AI account, Storage Blob
+Data Contributor on the storage account), so no client secret or Speech key is
+copied into it. The public URL asks for a sign-in token, which the script
+writes to `.app-token` (mode 600, git-ignored) and does not print.
+
+Notes from the first real sandbox run (2026-11-26):
+
+- Claude models on Foundry ask for Anthropic marketplace details
+  (organization name, industry, country) before they deploy. Setup does not
+  fill those in for you, so the deployment names fall back to `gpt-5` and
+  `gpt-5.4-mini` under the same names the agents call.
+- Subscription Owner does not include Foundry data actions. Setup grants the
+  signed-in user Foundry Project Manager on the project so it can register the
+  hosted agents.
+- Optional keys such as `XAI_API_KEY` are read from `.env` only, never from the
+  shell that runs setup.
+
 ### Tear it down
 
 ```bash

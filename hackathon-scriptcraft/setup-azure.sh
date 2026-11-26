@@ -182,6 +182,14 @@ role(client_id, "Cognitive Services User", ai_id)
 role(client_id, "Storage Blob Data Contributor", storage_id)
 # Project identity: hosted agents call the model deployments in this account.
 role(project_principal, "Cognitive Services OpenAI User", ai_id)
+# The person running setup registers the hosted agents (data-plane write on
+# the project). Subscription Owner alone does not include data actions.
+me = subprocess.run(["az", "ad", "signed-in-user", "show", "--query", "id", "-o", "tsv"],
+                    capture_output=True, text=True)
+if me.returncode == 0 and me.stdout.strip():
+    role(me.stdout.strip(), "Foundry Project Manager", f"{ai_id}/projects/{project}")
+else:
+    print("Could not read the signed-in user; grant yourself Foundry Project Manager on the project.")
 
 values = {
     "AZURE_CLIENT_ID": client_id,
@@ -194,12 +202,18 @@ values = {
     "FINISHED_VIDEOS_BLOB_CONTAINER": videos,
     "SCRIPTCRAFT_SETTINGS_BLOB_CONTAINER": settings,
     "AZURE_SPEECH_REGION": location,
-    "AZURE_SPEECH_ENDPOINT": f"https://{location}.tts.speech.microsoft.com/cognitiveservices/v1",
+    # Entra (managed identity / service principal) auth for Speech.
+    "AZURE_SPEECH_RESOURCE_ID": ai_id,
+    "AZURE_SPEECH_ENDPOINT": f"wss://{location}.tts.speech.microsoft.com/cognitiveservices/websocket/v1",
     "TTS_PROVIDER": "azure",
     "TTS_VOICE": "en-US-AvaMultilingualNeural",
     "TTS_WPM": "175",
     "TTS_BASELINE_WPM": "150",
     "SCRIPTCRAFT_DISABLE_LOCAL_FEATURES": "1",
+    # The Pro writer's Anthropic path needs a custom role and the account name.
+    # The Responses path works with the roles this script grants.
+    "MAF_FOUNDRY_RESOURCE": ai,
+    "MAF_PRO_PATH": existing.get("MAF_PRO_PATH") or "responses",
 }
 if speech_key:
     values["AZURE_SPEECH_KEY"] = speech_key
@@ -245,6 +259,11 @@ if [ "$SKIP_AGENTS" -eq 0 ]; then
 import os, subprocess
 from pathlib import Path
 env = os.environ.copy()
+# Optional third-party keys come from .env only, never from the shell that
+# runs setup, so a key on the operator's machine is not copied into the
+# sandbox's hosted agents by accident.
+for name in ("XAI_API_KEY", "GROK_API_KEY", "ANTHROPIC_API_KEY"):
+    env.pop(name, None)
 for line in Path(".env").read_text(encoding="utf-8").splitlines():
     if not line or line.startswith("#") or "=" not in line:
         continue

@@ -19,7 +19,7 @@ var aiName = toLower('${take(namePrefix, 10)}${suffix}ai')
 var storageName = toLower('${take(namePrefix, 8)}${suffix}st')
 var projectName = '${namePrefix}-project'
 
-resource ai 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
+resource ai 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
   name: aiName
   location: location
   kind: 'AIServices'
@@ -30,6 +30,8 @@ resource ai 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
     type: 'SystemAssigned'
   }
   properties: {
+    // Required for Foundry projects (accounts/projects) on an AIServices account.
+    allowProjectManagement: true
     customSubDomainName: aiName
     publicNetworkAccess: 'Enabled'
     disableLocalAuth: false
@@ -39,7 +41,7 @@ resource ai 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
   }
 }
 
-resource project 'Microsoft.CognitiveServices/accounts/projects@2025-04-01-preview' = {
+resource project 'Microsoft.CognitiveServices/accounts/projects@2025-06-01' = {
   parent: ai
   name: projectName
   location: location

@@ -14,3 +14,4 @@ maf/.venv/
 output/
 *.log
 .DS_Store
+.app-token

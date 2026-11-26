@@ -182,6 +182,15 @@ def _speech_config(voice: str):
         from azure.identity import DefaultAzureCredential
         token = DefaultAzureCredential().get_token(
             "https://cognitiveservices.azure.com/.default").token
+        resource_id = _setting("AZURE_SPEECH_RESOURCE_ID")
+        if resource_id and region:
+            # Entra auth for Speech: "aad#<resource id>#<token>" with the region.
+            config = speechsdk.SpeechConfig(
+                auth_token=f"aad#{resource_id}#{token}", region=region)
+            config.speech_synthesis_voice_name = voice
+            config.set_speech_synthesis_output_format(
+                speechsdk.SpeechSynthesisOutputFormat.Riff48Khz16BitMonoPcm)
+            return config
         if not endpoint:
             if not region:
                 raise RuntimeError(

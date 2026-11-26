@@ -105,7 +105,7 @@ def env_for(portal_name: str):
             return None
         env["XAI_API_KEY"] = key
     for name in ("MAF_CLAUDE_MODEL", "MAF_REVIEWER_MODEL", "MAF_SEARCH_MODEL",
-                 "MAF_GROK_MODEL", "FOUNDRY_PROJECT_ENDPOINT"):
+                 "MAF_GROK_MODEL", "FOUNDRY_PROJECT_ENDPOINT", "MAF_FOUNDRY_RESOURCE"):
         value = (os.environ.get(name) or "").strip()
         if value:
             env[name] = value

@@ -18,3 +18,5 @@ tests
 smoke-test.sh
 setup-azure.sh
 teardown-azure.sh
+.app-token
+deploy-containerapp.sh
